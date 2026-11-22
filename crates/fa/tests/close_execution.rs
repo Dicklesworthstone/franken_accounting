@@ -17,6 +17,8 @@ use fa_policy::{Capability, Op, Profile};
 use fa_time::{DateDay, FiscalCalendar, PeriodTransition};
 use fgdb_types::VId;
 
+#[path = "close_execution/bank_checkpoint.rs"]
+mod bank_checkpoint;
 #[path = "close_execution/closing_checkpoint.rs"]
 mod closing_checkpoint;
 

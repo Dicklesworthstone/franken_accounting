@@ -564,6 +564,214 @@ pub struct AutomaticRuleSelection {
     pub versions: Vec<RuleVersionRow>,
 }
 
+/// Stable member identity shared by selected and automatic rule derivation.
+/// Preserve the CLI v1 domain and 64-byte hexadecimal key: adopting a complete
+/// group must not create a second identity for an already derived member.
+pub fn default_derivation_key(
+    rule: &CompiledRule,
+    event: VId,
+    inputs: &fa_canon::Inputs,
+) -> Result<String, EvalError> {
+    let encoded = fa_canon::encode_inputs(rule, inputs)?;
+    let inputs_digest = domain_digest(fa_canon::CANON_INPUTS_DOMAIN, &[&encoded]);
+    Ok(crate::evidence::hex(&domain_digest(
+        b"fa-cli:rule-derive-key:v1",
+        &[&rule.ir_digest(), &event.0.to_le_bytes(), &inputs_digest],
+    )))
+}
+
+fn draft_automatic_refusal() -> Refusal {
+    Refusal::new(
+        code::CANON_RULE,
+        exit::REFUSAL,
+        "the selected event cannot produce a complete admitted automatic rule group",
+        "plan §10.2 / §10.3 / §15.2 (complete automatic derivation discloses only admitted effects)",
+        "ask an authorized reviewer to verify the event, active rules and their input requirements",
+    )
+}
+
+fn redact_draft_automatic_error(error: KernelError) -> KernelError {
+    match error {
+        KernelError::Corrupt(_) => KernelError::Corrupt(
+            "the selected event or automatic rule sources failed integrity validation".into(),
+        ),
+        other => other,
+    }
+}
+
+/// Read only the named Event projection. The complete REA population is not
+/// part of a confined source grant. Canon reproduction witnesses this same
+/// immutable source when the retained group is planned and promoted.
+fn automatic_draft_event_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    event: VId,
+    at: CommitSeq,
+) -> Outcome<fa_model::EventSpec> {
+    if at > db.frontier()? {
+        return Ok(Err(draft_automatic_refusal()));
+    }
+    let Some(row) = db.vertex_at(event, at)? else {
+        return Ok(Err(draft_automatic_refusal()));
+    };
+    if !row.labels.contains(&label::EVENT) {
+        return Ok(Err(draft_automatic_refusal()));
+    }
+    let event_spec =
+        fa_model::EventSpec::decode(&bytes(&row, property::FA_PAYLOAD, "event payload")?)
+            .map_err(|_| corrupt("automatic event payload"))?;
+    let digest = event_spec
+        .event_digest()
+        .map_err(|_| corrupt("automatic event digest"))?;
+    if fa_model::event_vid(book.book_id, &event_spec.code) != event
+        || bytes(&row, property::BOOK_ID, "event book")? != book.book_id.0
+        || bytes(&row, property::FA_DIGEST, "event digest")? != digest
+    {
+        return Err(corrupt("automatic event identity or digest"));
+    }
+    Ok(Ok(event_spec))
+}
+
+/// Prepare the complete automatic group inside an owned draft's source grant.
+/// The catalog and source declarations never leave this boundary: all members
+/// must derive and pass effect admission before any typed effects are returned.
+/// The facade supplies a generic sealed description, without source metadata.
+pub fn prepare_automatic_rules_in_draft<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    admission: &crate::draft::DraftSourceAdmission,
+    event: VId,
+    description: Erasable<String>,
+) -> Outcome<fa_intents::PostBatch> {
+    let at = match admission.recheck(db, book)? {
+        Ok(at) => at,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let source = match automatic_draft_event_at(db, book, event, at)
+        .map_err(redact_draft_automatic_error)?
+    {
+        Ok(source) => source,
+        Err(_) => return Ok(Err(draft_automatic_refusal())),
+    };
+    let versions = match automatic_versions_for_event_at(db, book, &source, at)
+        .map_err(redact_draft_automatic_error)?
+    {
+        Ok(versions) => versions,
+        Err(_) => return Ok(Err(draft_automatic_refusal())),
+    };
+    let inputs = fa_canon::Inputs::new();
+    let mut members = Vec::with_capacity(versions.len());
+    let mut key_material = Vec::new();
+    for version in &versions {
+        let rule = &version.rule;
+        let derived = fa_canon::encode_inputs(rule, &inputs)
+            .and_then(|bytes| Ok((bytes, fa_canon::evaluate(rule, &source, &inputs)?)));
+        let (inputs_bytes, derivation) = match derived {
+            Ok(derived) => derived,
+            Err(_) => return Ok(Err(draft_automatic_refusal())),
+        };
+        let Some(binding_row) = db.vertex_at(rule_name_vid(book.book_id, rule.name()), at)? else {
+            return Ok(Err(draft_automatic_refusal()));
+        };
+        let Some(binding) =
+            RuleNameRow::decode(&binding_row).map_err(redact_draft_automatic_error)?
+        else {
+            return Err(redact_draft_automatic_error(corrupt("automatic rule name")));
+        };
+        if binding.name != rule.name() {
+            return Err(redact_draft_automatic_error(corrupt(
+                "automatic rule binding",
+            )));
+        }
+        if binding.bindings.in_force(derivation.effective) != Some(rule.ir_digest()) {
+            return Ok(Err(draft_automatic_refusal()));
+        }
+        let key = match default_derivation_key(rule, event, &inputs) {
+            Ok(key) => key,
+            Err(_) => return Ok(Err(draft_automatic_refusal())),
+        };
+        let proposal = match rule_derived_proposal(
+            book,
+            &RuleDerivation {
+                rule,
+                event,
+                inputs: &inputs_bytes,
+                derivation: &derivation,
+                evidence: &source.evidence,
+            },
+            admission.capability().holder(),
+            key.as_bytes(),
+            description.clone(),
+        ) {
+            Ok(proposal) => proposal,
+            Err(_) => return Ok(Err(draft_automatic_refusal())),
+        };
+        if let Err(refusal) = admission
+            .admit_derived_proposal(db, book, &proposal)
+            .map_err(redact_draft_automatic_error)?
+        {
+            return Ok(Err(refusal));
+        }
+        let member = match fa_intents::PostIntent::rule_derived(proposal, Vec::new()) {
+            Ok(member) => member,
+            Err(_) => return Ok(Err(draft_automatic_refusal())),
+        };
+        key_material.extend_from_slice(&rule.ir_digest());
+        key_material.extend_from_slice(key.as_bytes());
+        members.push(member);
+    }
+    let key = crate::evidence::hex(&domain_digest(
+        b"fa:automatic-rule-batch-key:v1",
+        &[&event.0.to_le_bytes(), &key_material],
+    ));
+    Ok(
+        fa_intents::PostBatch::automatic_rules(event, key.into_bytes(), members)
+            .map_err(|_| draft_automatic_refusal()),
+    )
+}
+
+/// Re-select a retained group's complete population only inside a native draft
+/// replay. The private admission proves the branch; callers authorize every
+/// retained member before this source observation. Unconfined planners retain
+/// ordinary whole-book Read/Post source admission.
+pub(crate) fn automatic_rules_for_draft_replay<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    event: VId,
+    at: CommitSeq,
+    admission: crate::post::Admission,
+) -> Outcome<Vec<RuleVersionRow>> {
+    if !admission.admits_confined_draft_sources(capability) {
+        return Ok(automatic_rules_at(db, book, capability, event, at)?
+            .map(|selection| selection.versions));
+    }
+    let Some(branch) = capability.branch() else {
+        return Ok(Err(draft_automatic_refusal()));
+    };
+    if let Err(denial) = fa_policy::admit_draft_container(
+        capability,
+        capability.holder(),
+        Op::Post,
+        book.book_id,
+        branch,
+    ) {
+        return Ok(Err(crate::policy::refusal(&denial)));
+    }
+    if let Err(refusal) = crate::policy::current_at(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let source = match automatic_draft_event_at(db, book, event, at)
+        .map_err(redact_draft_automatic_error)?
+    {
+        Ok(source) => source,
+        Err(_) => return Ok(Err(draft_automatic_refusal())),
+    };
+    Ok(automatic_versions_for_event_at(db, book, &source, at)
+        .map_err(redact_draft_automatic_error)?
+        .map_err(|_| draft_automatic_refusal()))
+}
+
 /// Admit the catalog and event observation before reading either. Planning
 /// remains available to Agent profiles; the batch's publication admission,
 /// not this source reader, decides whether the caller may write trunk.
@@ -628,12 +836,31 @@ pub fn automatic_rules_at<V: Vfs + Clone>(
             "fa event list names the recorded events",
         )));
     };
+    let versions = match automatic_versions_for_event_at(db, book, &event_row.spec, at)? {
+        Ok(versions) => versions,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    Ok(Ok(AutomaticRuleSelection {
+        event: event_row,
+        versions,
+    }))
+}
+
+/// One selection law for ordinary automatic batches and confined groups.
+/// Every active name is considered; source grants alter disclosure, never
+/// the completeness, input or population-bound rules.
+fn automatic_versions_for_event_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    event: &fa_model::EventSpec,
+    at: CommitSeq,
+) -> Outcome<Vec<RuleVersionRow>> {
     let mut versions = Vec::new();
     for name in rule_names_at(db, at)? {
         if name.vid != rule_name_vid(book.book_id, &name.name) {
             return Err(corrupt("an automatic rule name has another name's address"));
         }
-        let Some(digest) = name.bindings.in_force(event_row.spec.occurred_on) else {
+        let Some(digest) = name.bindings.in_force(event.occurred_on) else {
             continue;
         };
         let Some(version) = rule_version_at(db, book, &digest, at)? else {
@@ -645,14 +872,14 @@ pub fn automatic_rules_at<V: Vfs + Clone>(
         if version.rule.name() != name.name {
             return Err(corrupt("a rule name binds another name's version"));
         }
-        if version.rule.event() != event_row.spec.kind {
+        if version.rule.event() != event.kind {
             continue;
         }
         if !version.rule.inputs().is_empty() {
             return Ok(Err(derivation_refusal(
                 format!(
                     "automatic derivation of event {} includes rule {} v{}, which requires explicit inputs; no rule was selected for posting",
-                    event_row.spec.code,
+                    event.code,
                     version.rule.name(),
                     version.rule.version(),
                 ),
@@ -672,16 +899,13 @@ pub fn automatic_rules_at<V: Vfs + Clone>(
         return Ok(Err(derivation_refusal(
             format!(
                 "no activated rule matches event {} on {}",
-                event_row.spec.code,
-                event_row.spec.occurred_on.render(),
+                event.code,
+                event.occurred_on.render(),
             ),
             "fa rule list shows activated rules; activate a rule matching this event kind and date before automatic derivation",
         )));
     }
-    Ok(Ok(AutomaticRuleSelection {
-        event: event_row,
-        versions,
-    }))
+    Ok(Ok(versions))
 }
 
 /// A planned activation: what [`activate_rule_version`] rebuilds its

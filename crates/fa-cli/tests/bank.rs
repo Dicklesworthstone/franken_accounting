@@ -18,6 +18,9 @@ mod outstanding;
 #[path = "bank/kiting.rs"]
 mod kiting;
 
+#[path = "bank/close_run.rs"]
+mod close_run;
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }

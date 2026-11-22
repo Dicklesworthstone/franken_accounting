@@ -331,6 +331,70 @@ fn verify_account_pairs(procedures: &Document) -> Result<Registry, ReportError> 
 }
 
 #[test]
+fn unrecorded_liability_registry_requires_the_original_v2_window_and_uncalibrated_claim() {
+    let id = "completeness.unrecorded_liabilities";
+    let build = || {
+        let mut document = account_pair_document();
+        let row = &mut document.arrays.get_mut("procedure").unwrap()[0];
+        row.insert("id".into(), Value::Text(id.into()));
+        row.insert("evidence".into(), Value::Text("FA-EVID-L44".into()));
+        row.insert("complexity".into(), Value::Text("O(legs log legs)".into()));
+        document.arrays.insert(
+            "parameter".into(),
+            vec![BTreeMap::from([
+                ("procedure".into(), Value::Text(id.into())),
+                ("name".into(), Value::Text("window_days".into())),
+                ("default".into(), Value::Int(45)),
+            ])],
+        );
+        document
+    };
+    let original = build();
+    let verify = |document: &Document| {
+        let inputs = registry_inputs(document);
+        let native = closure(&inputs, &[0, 1, 2, 3], b"fa:report-registry-closure:v2");
+        let procedure = closure(&inputs, &[4, 3], b"fa:procedure-registry:v2");
+        verify_bound(
+            &inputs,
+            VerifiedProcedureParameters::UnrecordedLiabilities { window_days: 1 },
+            2,
+            native,
+            procedure,
+        )
+    };
+    assert!(!verify(&original).unwrap().unit_scales.is_empty());
+    for (name, value) in [
+        ("version", Value::Int(1)),
+        ("calibration", Value::Text("corpus".into())),
+        ("claim", Value::Text("invariant".into())),
+        ("artifact", Value::Text("FA-ART-CAL-01".into())),
+        ("effective_through", Value::Text("optional".into())),
+    ] {
+        let mut changed = build();
+        changed.arrays.get_mut("procedure").unwrap()[0].insert(name.into(), value);
+        assert_eq!(
+            verify(&changed).err().expect(name).predicate,
+            "registry_closure",
+            "{name}"
+        );
+    }
+    let mut changed = build();
+    changed.arrays.get_mut("parameter").unwrap()[0].insert("default".into(), Value::Int(30));
+    assert_eq!(
+        verify(&changed).err().expect("changed default").predicate,
+        "registry_closure"
+    );
+    let mut changed = original;
+    let mut input = account_input();
+    input.insert("procedure".into(), Value::Text(id.into()));
+    changed.arrays.get_mut("input").unwrap().push(input);
+    assert_eq!(
+        verify(&changed).err().expect("unexpected handle").predicate,
+        "registry_closure"
+    );
+}
+
+#[test]
 fn account_pair_registry_rejects_rehashed_changes_to_the_v2_law() {
     let original = account_pair_document();
     assert!(

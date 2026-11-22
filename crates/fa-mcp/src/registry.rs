@@ -2339,6 +2339,154 @@ mod tests {
     }
 
     #[test]
+    fn selected_rule_drafts_forward_without_implicit_dry_run() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_rules_derive").unwrap();
+        let schema = tool.input_schema(&mcp, reg);
+        assert_eq!(schema["properties"]["draft"]["type"], json!("string"));
+        let digest = "12".repeat(32);
+        let inv = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "rule": digest.clone(),
+                    "event": "EV-1",
+                    "draft": "rule-review",
+                }),
+            )
+            .unwrap();
+        assert!(
+            inv.argv
+                .windows(2)
+                .any(|pair| pair[0] == "--draft" && pair[1] == "rule-review")
+        );
+        assert!(
+            inv.argv
+                .windows(2)
+                .any(|pair| pair[0] == "--rule" && pair[1] == digest)
+        );
+        assert!(!inv.argv.iter().any(|arg| arg == "--dry-run"));
+        assert!(inv.stdin.is_none());
+
+        // Forward an explicit conflicting request unchanged so the CLI's
+        // pre-observation option check refuses it on every surface.
+        let conflict = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({
+                    "rule": digest,
+                    "event": "EV-1",
+                    "draft": "rule-review",
+                    "dry_run": true,
+                }),
+            )
+            .unwrap();
+        assert!(conflict.argv.iter().any(|arg| arg == "--draft"));
+        assert!(conflict.argv.iter().any(|arg| arg == "--dry-run"));
+    }
+
+    #[test]
+    fn selected_rule_draft_tools_admit_post_only_preparation_but_keep_direct_reads() {
+        let (mcp, reg) = embedded();
+        let authority = fa_cli::authority::LaunchAuthority::new(
+            std::path::PathBuf::from("unopened-rule-draft-book"),
+            None,
+            "confined-rule-preparer",
+            fa_cli::authority::LaunchProfile::Agent,
+            &["post"],
+        )
+        .unwrap();
+        for (wire, verb) in [
+            ("fa_rules_derive", "rule"),
+            ("fa_adjust_accrue", "accrue"),
+            ("fa_adjust_defer", "defer"),
+        ] {
+            let tool = mcp.tool_by_wire(wire).unwrap();
+            let invocation = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"rule": "12".repeat(32), "event": "EV-1", "draft": "review"}),
+                )
+                .unwrap();
+            let parsed =
+                fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            // The source factory subsequently requires a real issued
+            // capability confined to the owned draft before any source read.
+            assert_eq!(
+                fa_cli::cli::bound_command_ops(verb, &parsed)
+                    .unwrap()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                ["post"]
+            );
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, verb, &parsed, &authority).is_ok(),
+                "{wire}"
+            );
+            let direct = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"rule": "12".repeat(32), "event": "EV-1"}),
+                )
+                .unwrap();
+            let direct =
+                fa_cli::args::parse(&direct.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, verb, &direct, &authority).is_err(),
+                "{wire} must retain its direct read requirement"
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_rule_drafts_forward_the_complete_event_under_post_only_preflight() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_rules_derive").unwrap();
+        let authority = fa_cli::authority::LaunchAuthority::new(
+            std::path::PathBuf::from("unopened-automatic-rule-draft-book"),
+            None,
+            "automatic-rule-preparer",
+            fa_cli::authority::LaunchProfile::Agent,
+            &["post"],
+        )
+        .unwrap();
+        let invocation = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"event": "EV-1", "draft": "complete-review"}),
+            )
+            .unwrap();
+        assert!(invocation.stdin.is_none());
+        assert!(!invocation.argv.iter().any(|arg| arg == "--rule"));
+        assert!(!invocation.argv.iter().any(|arg| arg == "--dry-run"));
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("rule", &parsed)
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["post"]
+        );
+        // The factory subsequently admits the real issued capability's
+        // exact owned draft before observing the event or rule catalog.
+        assert!(fa_cli::cli::bound_command_admissible(reg, "rule", &parsed, &authority).is_ok());
+        let direct = tool
+            .invocation(&mcp, reg, &json!({"event": "EV-1"}))
+            .unwrap();
+        let direct =
+            fa_cli::args::parse(&direct.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert!(fa_cli::cli::bound_command_admissible(reg, "rule", &direct, &authority).is_err());
+    }
+
+    #[test]
     fn posting_tools_plan_inline_and_commit_exact_artifacts_under_launch_authority() {
         let (mcp, reg) = embedded();
         for wire in [
@@ -3378,12 +3526,7 @@ mod tests {
             .tool_by_wire("fa_match_three_way")
             .expect("three-way matching");
         let schema = matching.input_schema(&mcp, reg);
-        for field in [
-            "purchase_order",
-            "receiving_report",
-            "invoice_document",
-            "item",
-        ] {
+        for field in ["purchase_order", "receiving_report", "invoice_document"] {
             assert!(
                 schema["required"]
                     .as_array()
@@ -3424,6 +3567,33 @@ mod tests {
                 "{field}"
             );
         }
+    }
+
+    #[test]
+    fn complete_three_way_matching_forwards_the_all_items_switch_without_a_selected_item() {
+        let (mcp, reg) = embedded();
+        let matching = mcp.tool_by_wire("fa_match_three_way").unwrap();
+        let arguments = json!({
+            "purchase_order": format!("D:{}", "ab".repeat(32)),
+            "receiving_report": format!("D:{}", "bc".repeat(32)),
+            "invoice_document": format!("D:{}", "cd".repeat(32)),
+            "all_items": true,
+            "as_known_at": "17",
+            "expect_digest": "ef".repeat(32),
+        });
+        let invocation = matching.invocation(&mcp, reg, &arguments).unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["match", "three-way"]);
+        assert!(parsed.switch("--all-items"));
+        assert_eq!(parsed.flag("--item"), None);
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("match", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"]),
+        );
+        assert!(invocation.stdin.is_none());
     }
 
     #[test]

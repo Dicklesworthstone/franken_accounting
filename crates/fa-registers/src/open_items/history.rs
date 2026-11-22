@@ -91,6 +91,19 @@ fn restrict_effective(
     account: Option<VId>,
     through: DateDay,
 ) -> Result<(), RegisterError> {
+    validate_effective(entries, account, through)?;
+    entries.retain(|(_, entry, _)| entry.proposal.effective_date <= through);
+    Ok(())
+}
+
+/// Validate the selected link closure without discarding later-effective
+/// source rows. The resident fold uses the same law before installing a
+/// cutoff-bound prefix; an account-specific fallback still sees every target.
+pub(super) fn validate_effective(
+    entries: &[(VId, Entry, CommitSeq)],
+    account: Option<VId>,
+    through: DateDay,
+) -> Result<(), RegisterError> {
     let dates: BTreeMap<_, _> = entries
         .iter()
         .map(|(vid, entry, _)| (*vid, entry.proposal.effective_date))
@@ -138,7 +151,6 @@ fn restrict_effective(
             }
         }
     }
-    entries.retain(|(_, entry, _)| entry.proposal.effective_date <= through);
     // A valid recorded history can project to a live receipt whose target is
     // already reversed: the receipt's undo can have a later effective date
     // than the target's reversal. The payload fold omits dead target entries,
@@ -146,7 +158,7 @@ fn restrict_effective(
     // amount rather than preserve it as an unapplied credit.
     let mut reversed_by = BTreeMap::new();
     for (vid, entry, _) in entries.iter() {
-        if entry.proposal.class != EntryClass::REVERSAL {
+        if entry.proposal.effective_date > through || entry.proposal.class != EntryClass::REVERSAL {
             continue;
         }
         if let [supersession] = entry.proposal.supersession.as_slice()
@@ -158,7 +170,10 @@ fn restrict_effective(
     }
     let mut liveness = ReversalLiveness::new(&reversed_by);
     for (vid, entry, _) in entries.iter() {
-        if !carries_open_items(entry) || !liveness.is_live(*vid)? {
+        if entry.proposal.effective_date > through
+            || !carries_open_items(entry)
+            || !liveness.is_live(*vid)?
+        {
             continue;
         }
         for leg in &entry.proposal.legs {

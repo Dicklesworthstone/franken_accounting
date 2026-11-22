@@ -1550,7 +1550,7 @@ fn citing_entries_at<V: Vfs + Clone>(
     Ok(Ok(references.into_iter().collect()))
 }
 
-fn states_at<V: Vfs + Clone>(
+pub(crate) fn states_at<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,

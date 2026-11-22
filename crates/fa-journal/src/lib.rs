@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod account_role;
+pub mod adjustment_layer;
 pub mod allocation;
 mod application;
 pub mod asset_cost;
@@ -126,15 +127,17 @@ pub use draft::{
 };
 pub use engagement::{
     AdjustmentDecided, AdjustmentDecision, AdjustmentProposed, AdjustmentState, Carried,
-    CarriedForward, CarriedItem, CarryForward, CarryForwardView, CompletionView,
-    DocumentationCompleted, DocumentationCompletion, EngagementKind, EngagementOpened,
-    EngagementProfile, EngagementRequest, EngagementState, EngagementView, FindingFiled,
-    FindingInIndex, Materiality, OutOfPeriodCorrection, OutOfPeriodItem, ProposalLeg, ProposalView,
-    ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected, UncorrectedItem,
-    UncorrectedSummary, WorkpaperConfirmation, WorkpaperFiled, WorkpaperRepresentation,
-    WorkpaperView, carry_forward, complete_documentation, decide_adjustment, file_finding,
-    file_workpaper, list_engagements, open_engagement, prior_period_error, propose_adjustment,
-    read_engagement, superseder_at, uncorrected_misstatements, with_prior_period_error,
+    CarriedForward, CarriedItem, CarryForward, CarryForwardSource, CarryForwardView,
+    CompletionView, DocumentationCompleted, DocumentationCompletion, EngagementKind,
+    EngagementOpened, EngagementProfile, EngagementRequest, EngagementState, EngagementView,
+    FindingFiled, FindingInIndex, Materiality, OutOfPeriodCorrection, OutOfPeriodItem, ProposalLeg,
+    ProposalView, ProposedAdjustment, RecordedDecision, StatementEffect, Uncorrected,
+    UncorrectedItem, UncorrectedSummary, WorkpaperConfirmation, WorkpaperFiled,
+    WorkpaperRepresentation, WorkpaperView, carry_forward, carry_forward_qualified,
+    complete_documentation, decide_adjustment, file_finding, file_workpaper, list_engagements,
+    open_engagement, prior_period_error, propose_adjustment, read_engagement,
+    read_uncorrected_engagement_chain, superseder_at, uncorrected_misstatements,
+    with_prior_period_error,
 };
 pub use entry_history::{EntryHistoryVerification, verify_entry_history};
 pub use evidence::{

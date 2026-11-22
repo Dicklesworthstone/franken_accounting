@@ -31,6 +31,14 @@ pub enum ReviewedCloseAction {
     /// Every monetary task must precede this check; the terminal transition
     /// refuses if relevant accounting activity later changes that basis.
     VerifyYearEndClose { fiscal_year: i32 },
+    /// Require this exact retained statement's authenticated reconciliation
+    /// through the close period's last day. Cash contributions and match
+    /// history must still agree, including changes whose net balance is zero.
+    VerifyBankReconciliation { manifest_oid: fa_model::Oid },
+    /// Prove complete coverage of every registered BankAccount instrument.
+    /// The selected native manifests must cover their distinct account/unit
+    /// scopes one-to-one; an empty list proves an authenticated empty inventory.
+    VerifyBankInstrumentCoverage { manifest_oids: Vec<fa_model::Oid> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +179,31 @@ pub(crate) fn same_reviewed_rehearsal(
             // review basis still binds every ordered monetary identity and
             // content, routes, chart, currency and period state across FY.
             *source_digest = *reviewed_digest;
+        }
+        if let (
+            CloseTaskRehearsalOutcome::VerifiedBankReconciliation { verified_at, .. },
+            CloseTaskRehearsalOutcome::VerifiedBankReconciliation {
+                verified_at: reviewed_at,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            // The checkpoint independently binds the original attestation,
+            // manifest, period and exact cash/match contribution set. Only
+            // unrelated publications may advance this observation prefix.
+            *verified_at = *reviewed_at;
+        }
+        if let (
+            CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage { verified_at, .. },
+            CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                verified_at: reviewed_at,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            // Inventory and every exact statement/attestation binding remain
+            // equal. Only an unrelated publication may shift the read prefix.
+            *verified_at = *reviewed_at;
         }
     }
     current == *reviewed
@@ -383,6 +416,11 @@ impl Book {
         if let Err(refusal) = admit_execution(self, &capability)? {
             return Ok(Err(refusal));
         }
+        if let Err(refusal) =
+            self.admit_close_run_bank_sources(name, Some(task), None, &capability)?
+        {
+            return Ok(Err(refusal));
+        }
         let view = match self.close_run_status(name, &capability)? {
             Ok(Some(view)) => view,
             Ok(None) => return Ok(Err(invalid("the close run does not exist"))),
@@ -498,6 +536,9 @@ impl Book {
         rehearsal: Option<&CloseRunRehearsalCertificate>,
     ) -> Outcome<CloseRunExecution> {
         if let Err(refusal) = admit_execution(self, &capability)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = self.admit_close_run_bank_sources(name, None, None, &capability)? {
             return Ok(Err(refusal));
         }
         let mut run = match self.close_run_status(name, &capability)? {
@@ -621,7 +662,9 @@ impl Book {
                 .clone();
             let (plan, approvals) = match action {
                 CloseTaskBodyAction::PromoteDraft { .. }
-                | CloseTaskBodyAction::VerifyYearEndClose { .. } => (None, Vec::new()),
+                | CloseTaskBodyAction::VerifyYearEndClose { .. }
+                | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => (None, Vec::new()),
                 CloseTaskBodyAction::PeriodTransition { to } => match transition_input.as_ref() {
                     None => {
                         return Ok(Ok(CloseRunExecution {

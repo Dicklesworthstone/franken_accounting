@@ -1555,11 +1555,15 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
         *out.checked.entry(law.clone()).or_default() += 1;
         let mut verification = verify_recorded(db, &spec, &book.units, at, proposal)?;
         if verification.is_ok() && crate::carrying::is_source_bound(proposal) {
-            let prior = CommitSeq(row.created_at.0.checked_sub(1).ok_or_else(|| {
-                crate::KernelError::Corrupt("a settlement was recorded at sequence zero".into())
-            })?);
-            verification = crate::carrying::validate_post(db, cx, book, proposal, prior)?
-                .map_err(|refusal| refusal.message);
+            verification = crate::carrying::validate_recorded_post(
+                db,
+                cx,
+                book,
+                &entry,
+                row.vid,
+                row.created_at,
+            )?
+            .map_err(|refusal| refusal.message);
         }
         if verification.is_ok()
             && let Some((_, raw)) = proposal

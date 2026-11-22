@@ -22,7 +22,8 @@ use fa_time::DateDay;
 use crate::args::Args;
 use crate::cli::{
     Ctx, Fail, check_post_planning_options, emit_batch_plan, emit_post_plan, find_event, hex,
-    known_at_read_flag, parse_vid, read_plan_bytes, usage,
+    known_at_read_flag, parse_vid, plan_batch_into_draft, plan_intent_into_draft, read_plan_bytes,
+    usage,
 };
 use crate::json::{Json, obj, s};
 
@@ -32,7 +33,7 @@ const LIST: &str = "fa rule list [--as-known-at HEAD|<seq>]";
 const SHOW: &str = "fa rule show <ir_digest> [--as-known-at HEAD|<seq>]";
 const ACTIVATE: &str = "fa rule activate <ir_digest> --from YYYY-MM-DD [--key K] --dry-run";
 const COMMIT: &str = "fa rule activate --plan <file|-> --approval <vid> --approval <vid>";
-const DERIVE: &str = "fa rule derive --event <code|vid> [--rule <ir_digest> [--input <name>=<value>]... [--key K]] [--dry-run [--plan-out <new-file>]]";
+const DERIVE: &str = "fa rule derive --event <code|vid> [--rule <ir_digest> [--input <name>=<value>]... [--key K]] [--dry-run [--plan-out <new-file>] | --draft <name>]";
 const EVAL: &str = "fa rule eval (<rule-file|-> | --rule <ir_digest>) --event <code|vid> [--input <name>=<value>]... [--as-known-at HEAD|<seq>]";
 const TEST: &str = "fa rule test (<rule-file|-> | --rule <ir_digest>) --golden <file|dir>...";
 const GOLDEN: &str = "a golden case: [event] kind = \"sale\", occurred_on = \"2026-03-12\", resources = [\"net:40.00 USD\"]; optional [inputs] as_of = \"2026-03-31\"; [expect] legs = [\"debit 1000 40.00 USD\", \"credit 6000 40.00 USD region=EU\"] with an optional effective = \"2026-03-12\" and, for a rule that reverses, reverse_on = \"2026-04-01\", or refused = \"<part of the refusal>\"";
@@ -42,6 +43,9 @@ pub(crate) fn rule_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // The registry admits options for the whole verb. Reject unsupported
     // modes before any handler reads inputs or publishes a control/entry.
     let subcommand = args.positional.get(1).map(String::as_str);
+    if args.flag("--draft").is_some() && subcommand != Some("derive") {
+        return Err(usage("--draft is supported only by rule derive", DERIVE));
+    }
     if args.switch("--dry-run") && !matches!(subcommand, Some("activate" | "derive")) {
         return Err(usage(
             "--dry-run is supported only by rule activate and rule derive",
@@ -482,11 +486,12 @@ fn commit_activation(
 }
 
 /// `fa rule derive --rule <ir_digest> --event <code|vid> [--input …] [--key K]`:
-/// Prepare a portable native plan with --dry-run, or post the entry the
-/// version derives from the event. Both paths run the kernel's derivation
-/// and output-authority checks; committing a plan revalidates them.
+/// Prepare a portable native plan with --dry-run, retain a selected intent or
+/// complete automatic group with --draft, or post the derivation. Every route runs the
+/// kernel's derivation and output-authority checks; publication revalidates them.
 fn derive(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     check_post_planning_options(args)?;
+    derivation_draft(args)?;
     if args.positional.len() != 2 {
         return Err(usage(
             "rule derive takes no positional; name the version with --rule",
@@ -517,8 +522,9 @@ pub(crate) fn derive_business_intent(
     kind: RuleIntentKind,
 ) -> Result<(), Fail> {
     check_post_planning_options(args)?;
+    derivation_draft(args)?;
     let example = format!(
-        "fa {} --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>]]",
+        "fa {} --rule <ir_digest> --event <code|vid> [--input <name>=<value>]... [--key K] [--dry-run [--plan-out <new-file>] | --draft <name>]",
         kind.name().to_ascii_lowercase(),
     );
     if args.positional.len() != 1 {
@@ -542,7 +548,6 @@ pub(crate) fn derive_business_intent(
         "--description",
         "--evidence",
         "--period",
-        "--draft",
         "--scenario",
         "--plan",
         "--approval",
@@ -579,6 +584,23 @@ pub(crate) fn derive_business_intent(
     derive_selected(ctx, args, event, rule, Some(kind))
 }
 
+fn derivation_draft(args: &Args) -> Result<Option<&str>, Fail> {
+    if args.flag_all("--draft").len() > 1 {
+        return Err(usage("supply exactly one --draft", DERIVE));
+    }
+    let draft = args.flag("--draft");
+    if draft.is_some() && (args.switch("--dry-run") || args.flag("--plan-out").is_some()) {
+        return Err(usage(
+            "--draft retains a rehearsed derivation; it cannot be combined with --dry-run or --plan-out",
+            "choose --draft <name> to retain the intent, or --dry-run to prepare a portable native plan",
+        ));
+    }
+    if draft.is_some_and(str::is_empty) {
+        return Err(usage("--draft requires the owned draft's name", DERIVE));
+    }
+    Ok(draft)
+}
+
 /// Select one immutable version and event, parse only the rule's declared
 /// inputs, then use the same facade preparation and native posting laws on
 /// every surface. A business intent additionally requires its rule family.
@@ -592,6 +614,32 @@ fn derive_selected(
     let digest = digest_arg(selected_rule, DERIVE)?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read", "post"])?;
+    if let Some(name) = derivation_draft(args)?
+        && cap.branch().is_some()
+    {
+        // A confined preparer receives only its admitted posting effects.
+        // Resolve the explicit event address without listing the REA graph,
+        // and leave rule metadata and source-based diagnostics in the factory.
+        let mut book = ctx.books.open_admitted(args, |book| {
+            book.admit_draft_sources(&cap, name)??;
+            Ok(())
+        })?;
+        let target = target.strip_prefix("EV:").unwrap_or(target);
+        let event = if target.len() == 32 && target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            parse_vid(target, "event")?
+        } else {
+            fa_model::event_vid(book.context().book_id, target)
+        };
+        let given = supplied_inputs(&args.flag_all("--input"), &book.context().units)?;
+        let key = args.flag("--key").map(str::as_bytes);
+        let intent = match kind {
+            Some(kind) => {
+                book.prepare_rule_intent_in_draft(&cap, name, kind, &digest, event, &given, key)??
+            }
+            None => book.prepare_rule_entry_in_draft(&cap, name, &digest, event, &given, key)??,
+        };
+        return plan_intent_into_draft(&ctx.out, &mut book, cap, name, intent);
+    }
     let mut selected = None;
     let mut book = ctx.books.open_admitted(args, |book| {
         let scope = book.read_scope(who, &cap)??;
@@ -625,6 +673,15 @@ fn derive_selected(
         Some(key) => key.to_string(),
         None => default_key(event_vid, &rule, &given)?,
     };
+    if let Some(name) = derivation_draft(args)? {
+        let intent = match kind {
+            Some(kind) => {
+                book.prepare_rule_intent(&cap, kind, &digest, event_vid, &given, key.as_bytes())??
+            }
+            None => book.prepare_rule_entry(&cap, &digest, event_vid, &given, key.as_bytes())??,
+        };
+        return plan_intent_into_draft(&ctx.out, &mut book, cap, name, intent);
+    }
     if args.switch("--dry-run") {
         let intent = match kind {
             Some(kind) => {
@@ -669,6 +726,24 @@ fn derive_all(ctx: &mut Ctx<'_>, args: &Args, target: &str) -> Result<(), Fail> 
     }
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read", "post"])?;
+    if let Some(name) = derivation_draft(args)?
+        && cap.branch().is_some()
+    {
+        // The confined factory returns only the complete admitted posting
+        // group. It keeps the event and rule catalog behind draft admission.
+        let mut book = ctx.books.open_admitted(args, |book| {
+            book.admit_draft_sources(&cap, name)??;
+            Ok(())
+        })?;
+        let target = target.strip_prefix("EV:").unwrap_or(target);
+        let event = if target.len() == 32 && target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            parse_vid(target, "event")?
+        } else {
+            fa_model::event_vid(book.context().book_id, target)
+        };
+        let batch = book.prepare_rule_batch_in_draft(&cap, name, event)??;
+        return plan_batch_into_draft(&ctx.out, &mut book, cap, name, batch);
+    }
     let mut selected = None;
     let mut book = ctx.books.open_admitted(args, |book| {
         let scope = book.read_scope(who, &cap)??;
@@ -688,6 +763,9 @@ fn derive_all(ctx: &mut Ctx<'_>, args: &Args, target: &str) -> Result<(), Fail> 
         rules,
         batch,
     } = book.prepare_rule_batch(&cap, event.vid)??;
+    if let Some(name) = derivation_draft(args)? {
+        return plan_batch_into_draft(&ctx.out, &mut book, cap, name, batch);
+    }
     if args.switch("--dry-run") {
         let plan = book.plan_batch(batch, &cap)??;
         return emit_batch_plan(&ctx.out, &book, &ctx.files, args, &plan, &cap);
@@ -836,6 +914,33 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 /// Parse `--input <name>=<value>` against the rule's declared inputs.
+/// Parse only caller-supplied values for a source-only draft. The native
+/// factory checks the selected rule's declarations without exposing them.
+fn supplied_inputs(given: &[&str], units: &fa_money::UnitRegistry) -> Result<Inputs, Fail> {
+    let mut out = Inputs::new();
+    for &raw in given {
+        let Some((name, value)) = raw.split_once('=') else {
+            return Err(usage(
+                format!("--input `{raw}` is not <name>=<value>"),
+                "--input as_of=2026-03-31 or --input fee=\"10.00 USD\"",
+            ));
+        };
+        let parsed = match DateDay::parse(value) {
+            Ok(date) => InputValue::Date(date),
+            Err(_) => InputValue::Amount(Amount::parse(value, units).map_err(|error| {
+                usage(
+                    format!(
+                        "--input {name}: `{value}` is neither a date nor an exact amount: {error}"
+                    ),
+                    "supply YYYY-MM-DD or an exact amount with its unit, such as \"10.00 USD\"",
+                )
+            })?),
+        };
+        out.set(name, parsed);
+    }
+    Ok(out)
+}
+
 fn inputs(
     rule: &CompiledRule,
     given: &[&str],

@@ -539,16 +539,24 @@ pub(super) fn verify_procedure(
         ));
     };
     let benford = profile.is_benford();
+    let aging = matches!(
+        profile,
+        super::procedure::VerifiedProcedureParameters::OpenItemsAging { .. }
+    );
     let uncalibrated = benford
+        || aging
+        || profile.is_override_jet()
+        || profile.is_correction_history()
         || profile.is_trace()
         || profile.is_number_analytics()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
                 | super::procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                | super::procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         );
     if integer(row, "version")? != i128::from(version)
-        || if profile.is_trace() {
+        || if profile.is_trace() || aging {
             string(row, "effective_through")? != "required"
         } else if profile.supports_cutoff(version) {
             string(row, "effective_through")? != "optional"
@@ -557,7 +565,14 @@ pub(super) fn verify_procedure(
         }
         || string(row, "claim")? != "statistical"
         || string(row, "evidence")? != profile.evidence()
-        || string(row, "tie_break")? != if benford { "none" } else { "entry_vid" }
+        || string(row, "tie_break")?
+            != if benford {
+                "none"
+            } else if aging {
+                "account_vid"
+            } else {
+                "entry_vid"
+            }
         || string(row, "complexity")? != profile.complexity()
         || string(row, "calibration")?
             != if uncalibrated {
@@ -652,7 +667,9 @@ pub(super) fn verify_procedure(
         unit_currencies,
         account_types: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
+        entry_facts: BTreeMap::new(),
         trace: None,
+        open_items: None,
         policy_oid: procedure_policy_oid(&document(inputs[5].1)?)?,
     })
 }

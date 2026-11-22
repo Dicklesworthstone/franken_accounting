@@ -23,6 +23,8 @@ mod part370;
 mod principal_key;
 #[path = "cli/proportional_post.rs"]
 mod proportional_post;
+#[path = "cli/rule_drafts.rs"]
+mod rule_drafts;
 #[path = "cli/scenario_math.rs"]
 mod scenario_math;
 

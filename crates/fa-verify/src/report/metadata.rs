@@ -3,6 +3,8 @@
 
 mod asset_cost;
 mod cash_policy;
+#[cfg(test)]
+mod cutoff_tests;
 
 use super::{ReportError, Selection, failed, text};
 use crate::codec::Reader;
@@ -21,6 +23,8 @@ pub(super) struct EntryInfo<'a> {
     pub schema: Option<(u16, &'a [u8])>,
     pub time_tick: Option<super::temporal::TimeObservation>,
     pub period: Option<(&'a str, &'a str)>,
+    /// Literal document date from the authenticated entry, never a finding.
+    pub document_date: Option<i32>,
     pub resolution: Option<(u128, [u8; 32])>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
     pub supersession_reasons: Vec<u16>,
@@ -48,6 +52,9 @@ pub(super) struct EntryInfo<'a> {
     pub prior_period_adjustment: Option<&'a [u8]>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub principal: u128,
+    /// Literal registered origin tag; observational procedures distinguish
+    /// manual, rule and other sources without claiming rule admission.
+    pub origin: u8,
     pub identity: u128,
     /// Before replacement-pair identities were target-derived, the immutable
     /// corrected member used its ordinary key identity. Both encodings name
@@ -105,9 +112,35 @@ fn period_creation_identity(book: &[u8; 16], body: &[u8]) -> Result<u128, Report
     ))
 }
 
+/// Literal source shape decoded from the authenticated canonical proposal.
+/// This grants no authority and does not replace the valuation or lineage laws.
+#[derive(Default)]
+pub(super) struct EntrySourceShape {
+    pub lifecycle_free: bool,
+    pub aggregate_basis: bool,
+    pub extension_free: bool,
+}
+
+pub(super) fn entry_source_shape(
+    proposal: &[u8],
+    envelope: &LeafEnvelope,
+) -> Result<EntrySourceShape, ReportError> {
+    let mut shape = EntrySourceShape::default();
+    entry_info_with_shape(proposal, envelope, Some(&mut shape))?;
+    Ok(shape)
+}
+
 pub(super) fn entry_info<'a>(
     proposal: &'a [u8],
     envelope: &LeafEnvelope,
+) -> Result<EntryInfo<'a>, ReportError> {
+    entry_info_with_shape(proposal, envelope, None)
+}
+
+fn entry_info_with_shape<'a>(
+    proposal: &'a [u8],
+    envelope: &LeafEnvelope,
+    source_shape: Option<&mut EntrySourceShape>,
 ) -> Result<EntryInfo<'a>, ReportError> {
     let mut first = Reader::new(proposal);
     first.u16("entry.major")?;
@@ -116,9 +149,10 @@ pub(super) fn entry_info<'a>(
     first.fixed::<16>("entry.branch")?;
     first.u16("entry.class")?;
     first.i32("entry.effective")?;
-    if first.present("entry.document_date")? {
-        first.i32("entry.document_date")?;
-    }
+    let document_date = first
+        .present("entry.document_date")?
+        .then(|| first.i32("entry.document_date"))
+        .transpose()?;
     skip_erasable(&mut first, "entry.description")?;
     let period = if first.present("entry.period")? {
         Some((
@@ -331,8 +365,11 @@ pub(super) fn entry_info<'a>(
     let mut case_member = None;
     let mut prior_period_adjustment = None;
     let mut cash_policy_body = false;
+    let mut aggregate_basis = false;
+    let mut extension_free = true;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
+        extension_free = n == 0;
         let mut previous = None;
         for _ in 0..n {
             let tag = r.u16("extension.tag")?;
@@ -344,6 +381,9 @@ pub(super) fn entry_info<'a>(
                 ));
             }
             previous = Some(tag);
+            // Intrinsic close, revaluation, prior-period adjustment,
+            // allocated carrying, lot disposal and asset-charge sources.
+            aggregate_basis |= matches!(tag, 12 | 16 | 36 | 37 | 38 | 39);
             if tag == 12 {
                 if envelope.class != 8
                     || !matches!(n, 1 | 2)
@@ -513,10 +553,16 @@ pub(super) fn entry_info<'a>(
     if let Some(occurrence) = recurring {
         identity = occurrence;
     }
+    if let Some(shape) = source_shape {
+        shape.lifecycle_free = !has_control && !has_pending && supersession.is_empty();
+        shape.aggregate_basis = aggregate_basis;
+        shape.extension_free = extension_free;
+    }
     Ok(EntryInfo {
         schema,
         time_tick,
         period,
+        document_date,
         resolution,
         supersession,
         supersession_reasons,
@@ -530,6 +576,7 @@ pub(super) fn entry_info<'a>(
         prior_period_adjustment,
         evidence,
         principal,
+        origin,
         identity,
         legacy_identity,
     })
@@ -993,6 +1040,29 @@ impl Schema {
             // The authenticated control changes no chart or period facts;
             // ordinary reports do not re-prove the admission policy.
             25 => return Ok(()),
+            // An adjustment-layer anchor names a parent snapshot without
+            // changing this book's accounts or periods. Validate its exact
+            // frame; ordinary native reports do not authenticate the parent
+            // book or combine its balances with the layer's own postings.
+            26 => {
+                if &r.fixed::<{ b"fa:adjustment-layer:v1".len() }>("adjustment_layer.format")?
+                    != b"fa:adjustment-layer:v1"
+                {
+                    return Err(failed(
+                        "schema_history",
+                        "unknown adjustment-layer anchor format",
+                    ));
+                }
+                let anchored_book = r.fixed::<16>("adjustment_layer.book")?;
+                let parent_book = r.fixed::<16>("adjustment_layer.parent")?;
+                let parent_known_at = r.u64("adjustment_layer.parent_known_at")?;
+                if &anchored_book != book || parent_book == anchored_book || parent_known_at == 0 {
+                    return Err(failed(
+                        "schema_history",
+                        "invalid adjustment-layer parent anchor",
+                    ));
+                }
+            }
             // Existing REA controls, role/closing/FX declarations,
             // dimension values (17), requirements (18) and closes (19), and
             // Canon rule versions (20) change neither the immutable account
@@ -1227,6 +1297,59 @@ impl Schema {
         }
         Ok(code.clone())
     }
+
+    /// Resolve a document against authenticated period declarations. Native
+    /// calendars can generate absent years from BookSpec; the portable native
+    /// closure does not authenticate that generator, so absence stays None.
+    /// The birth law changes only Normal periods to Historical; special
+    /// periods retain their kinds, so both 0 and 4 identify calendar normals.
+    pub(super) fn document_period(
+        &self,
+        hint: Option<(&str, &str)>,
+        day: i32,
+    ) -> Result<Option<String>, ReportError> {
+        let hinted = if let Some((calendar, code)) = hint {
+            if self.calendar.as_deref() != Some(calendar) {
+                return Err(failed(
+                    "procedure_period",
+                    "document hint names another calendar",
+                ));
+            }
+            Some((
+                code,
+                self.periods.get(code).ok_or_else(|| {
+                    failed("procedure_period", "document hint names an absent period")
+                })?,
+            ))
+        } else {
+            None
+        };
+        let mut normal = self.periods.iter().filter(|(_, period)| {
+            matches!(period.kind, 0 | 4) && period.start <= day && day < period.end
+        });
+        let Some((code, period)) = normal.next() else {
+            return Ok(None);
+        };
+        if normal.next().is_some() {
+            return Err(failed(
+                "procedure_period",
+                "document date has ambiguous normal periods",
+            ));
+        }
+        if let Some((hint_code, hint_period)) = hinted
+            && hint_period.start <= day
+            && day < hint_period.end
+        {
+            if hint_period.fiscal_year != period.fiscal_year {
+                return Err(failed(
+                    "procedure_period",
+                    "document hint crosses fiscal years",
+                ));
+            }
+            return Ok(Some(hint_code.into()));
+        }
+        Ok(Some(code.clone()))
+    }
 }
 const MAX_ROWS: usize = 1 << 20;
 
@@ -1347,6 +1470,52 @@ mod account_hierarchy_tests {
         let mut trailing = valid;
         trailing.push(0);
         assert!(schema.apply(21, &trailing, &book, 7).is_err());
+    }
+
+    #[test]
+    fn adjustment_layer_anchors_validate_their_frame_without_changing_native_accounts() {
+        let book = [21; 16];
+        let parent = [22; 16];
+        let id = crate::ads::account_vid(&book, "110");
+        let mut schema = Schema::default();
+        let mut chart = Writer::default();
+        chart.count(1).fixed(&declaration("110", None, true).buf);
+        schema.apply(1, &chart.buf, &book, 3).unwrap();
+        let encode = |book: [u8; 16], parent: [u8; 16], known_at: u64| {
+            let mut w = Writer::default();
+            w.fixed(b"fa:adjustment-layer:v1")
+                .fixed(&book)
+                .fixed(&parent)
+                .u64(known_at);
+            w.buf
+        };
+        let valid = encode(book, parent, u64::MAX);
+        schema.apply(26, &valid, &book, 4).unwrap();
+        assert_eq!(schema.accounts.len(), 1);
+        assert_eq!(schema.accounts[&id].created_at, 3);
+        assert_eq!(schema.accounts[&id].name, "110");
+        assert_eq!(schema.accounts[&id].unit_policy, -1);
+        assert!(schema.parents.is_empty());
+        assert!(schema.periods.is_empty());
+        for invalid in [
+            encode(parent, book, 1),
+            encode(book, book, 1),
+            encode(book, parent, 0),
+        ] {
+            assert!(schema.apply(26, &invalid, &book, 5).is_err());
+        }
+        for end in 0..valid.len() {
+            assert!(
+                schema.apply(26, &valid[..end], &book, 5).is_err(),
+                "truncation {end}"
+            );
+        }
+        let mut unknown = valid.clone();
+        unknown[0] ^= 1;
+        assert!(schema.apply(26, &unknown, &book, 5).is_err());
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(schema.apply(26, &trailing, &book, 5).is_err());
     }
 }
 

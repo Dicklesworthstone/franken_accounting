@@ -161,8 +161,9 @@ impl PostIntent {
         })
     }
 
-    /// Retain an exact rule-derived request for a native PostPlan or a
-    /// member of [`PostBatch::automatic_rules`].
+    /// Retain an exact rule-derived request for a native PostPlan, an
+    /// automatic selection, or an explicitly selected draft member.
+    /// See [`PostBatch::automatic_rules`] and [`PostBatch::for_draft`].
     /// The kernel must witness the rule version, activation, event and inputs,
     /// reproduce the derivation, and enforce both caller and rule authority.
     /// This constructor only checks the origin and canonical Entry structure.
@@ -603,6 +604,7 @@ impl ReplacementPlan {
 
 const BATCH_MAGIC: &[u8; 9] = b"FA-BATCH\0";
 const RULE_BATCH_MAGIC: &[u8; 14] = b"FA-RULE-BATCH\0";
+const DRAFT_BATCH_MAGIC: &[u8; 15] = b"FA-DRAFT-BATCH\0";
 
 /// Hard decode bound for a whole batch transcript. Each member keeps its
 /// own registered Entry bound; this caps what one request can allocate.
@@ -615,6 +617,7 @@ pub const MAX_BATCH_BYTES: usize = 4 * MAX_ENTRY_BYTES;
 enum BatchKind {
     PostEntry,
     AutomaticRules { event_ref: VId },
+    ExplicitDraft,
 }
 
 impl BatchKind {
@@ -622,6 +625,7 @@ impl BatchKind {
         match self {
             Self::PostEntry => BATCH_MAGIC,
             Self::AutomaticRules { .. } => RULE_BATCH_MAGIC,
+            Self::ExplicitDraft => DRAFT_BATCH_MAGIC,
         }
     }
 
@@ -629,6 +633,7 @@ impl BatchKind {
         match self {
             Self::PostEntry => b"fa:intent:post-batch:v1",
             Self::AutomaticRules { .. } => b"fa:intent:rule-batch:v1",
+            Self::ExplicitDraft => b"fa:intent:draft-batch:v1",
         }
     }
 }
@@ -636,8 +641,8 @@ impl BatchKind {
 /// An ordered list of posting intents committed atomically in one substrate
 /// transaction (plan §5.8): all or none, in order, each member seeing every
 /// earlier member's staged effects. The ordinary profile admits PostEntry
-/// intents; automatic event derivation has its own checked constructor,
-/// framing and digest domain.
+/// intents; automatic event derivation and explicitly selected draft rules
+/// have separate checked constructors, framing and digest domains.
 ///
 /// An ordinary member names an earlier member by its identity-derived entry
 /// vid (an invoice and its application in one batch). A forward or absent
@@ -660,6 +665,30 @@ impl PostBatch {
     /// encoding retain the original PostEntry-only protocol.
     pub fn new(idempotency_key: Vec<u8>, members: Vec<PostIntent>) -> Result<Self, IntentError> {
         Self::checked(BatchKind::PostEntry, idempotency_key, members)
+    }
+
+    /// The ordered execution of explicitly selected draft members. Ordinary
+    /// members preserve the original PostEntry profile and bytes. A draft
+    /// containing RuleDerived members retains each original typed intent in
+    /// a distinct profile, including when ordinary entries accompany them.
+    ///
+    /// This is not an automatic rule selection: no complete-catalog claim is
+    /// made. Native admission permits this profile only during an owned
+    /// draft's preview, scratch rehearsal or authorized promotion. Direct
+    /// posting and portable batch-plan admission must refuse it.
+    pub fn for_draft(
+        idempotency_key: Vec<u8>,
+        members: Vec<PostIntent>,
+    ) -> Result<Self, IntentError> {
+        let kind = if members
+            .iter()
+            .any(|member| member.kind == PostIntentKind::RuleDerived)
+        {
+            BatchKind::ExplicitDraft
+        } else {
+            BatchKind::PostEntry
+        };
+        Self::checked(kind, idempotency_key, members)
     }
 
     /// Retain the complete automatic derivation of one recorded event.
@@ -703,6 +732,15 @@ impl PostBatch {
                 "a batch has at most max_batch_entries members",
             ));
         }
+        if matches!(kind, BatchKind::ExplicitDraft)
+            && !members
+                .iter()
+                .any(|member| member.kind == PostIntentKind::RuleDerived)
+        {
+            return Err(IntentError::Invalid(
+                "the explicit-rule draft profile requires a RuleDerived member",
+            ));
+        }
         let head = first.proposal();
         let mut keys = std::collections::BTreeSet::new();
         let mut versions = std::collections::BTreeSet::new();
@@ -713,6 +751,23 @@ impl PostBatch {
                     if member.kind != PostIntentKind::PostEntry {
                         return Err(IntentError::Invalid(
                             "PostEntry batches require Intent-origin members",
+                        ));
+                    }
+                }
+                BatchKind::ExplicitDraft => {
+                    if p.branch_id != Id128::TRUNK {
+                        return Err(IntentError::Invalid(
+                            "explicit draft members target the trunk",
+                        ));
+                    }
+                    if member.kind == PostIntentKind::RuleDerived
+                        && !matches!(
+                            p.class,
+                            fa_model::EntryClass::ORIGINAL | fa_model::EntryClass::ADJUSTING
+                        )
+                    {
+                        return Err(IntentError::Invalid(
+                            "explicit draft rules produce Original or Adjusting entries",
                         ));
                     }
                 }
@@ -783,13 +838,19 @@ impl PostBatch {
     }
 
     /// The event whose complete active rule selection this request asserts,
-    /// or None for an ordinary explicit PostEntry batch.
+    /// or None for an ordinary PostEntry batch or explicit draft members.
     #[must_use]
     pub fn automatic_event(&self) -> Option<VId> {
         match self.kind {
-            BatchKind::PostEntry => None,
+            BatchKind::PostEntry | BatchKind::ExplicitDraft => None,
             BatchKind::AutomaticRules { event_ref } => Some(event_ref),
         }
+    }
+
+    /// This request requires the native draft lifecycle's private admission.
+    #[must_use]
+    pub fn is_draft_only(&self) -> bool {
+        matches!(self.kind, BatchKind::ExplicitDraft)
     }
 
     #[must_use]
@@ -858,7 +919,11 @@ impl PostBatch {
     pub fn decode(bytes: &[u8]) -> Result<Self, IntentError> {
         bounded(bytes, MAX_BATCH_BYTES)?;
         let mut r = Reader::new(bytes);
-        let kind = if bytes.starts_with(RULE_BATCH_MAGIC) {
+        let kind = if bytes.starts_with(DRAFT_BATCH_MAGIC) {
+            r.fixed::<15>("batch.magic")?;
+            version(&mut r)?;
+            BatchKind::ExplicitDraft
+        } else if bytes.starts_with(RULE_BATCH_MAGIC) {
             r.fixed::<14>("batch.magic")?;
             version(&mut r)?;
             BatchKind::AutomaticRules {
@@ -1547,6 +1612,72 @@ mod tests {
                 "PostEntry batches require Intent-origin members"
             ))
         ));
+    }
+
+    #[test]
+    fn explicit_rule_draft_batches_preserve_intent_kinds_and_ordinary_bytes() {
+        let ordinary_entry = legacy_entry();
+        let ordinary = PostIntent::new(
+            ordinary_entry.proposal.clone(),
+            ordinary_entry.approvals.clone(),
+        )
+        .unwrap();
+        let unchanged = PostBatch::for_draft(b"draft".to_vec(), vec![ordinary.clone()]).unwrap();
+        assert!(!unchanged.is_draft_only());
+        assert_eq!(
+            unchanged,
+            PostBatch::new(b"draft".to_vec(), vec![ordinary.clone()]).unwrap()
+        );
+
+        let rule = PostIntent::rule_derived(rule_proposal(), Vec::new()).unwrap();
+        let batch =
+            PostBatch::for_draft(b"draft".to_vec(), vec![ordinary.clone(), rule.clone()]).unwrap();
+        assert!(batch.is_draft_only());
+        assert_eq!(batch.automatic_event(), None);
+        let bytes = batch.canonical_bytes().unwrap();
+        let decoded = PostBatch::decode(&bytes).unwrap();
+        assert_eq!(decoded, batch);
+        assert_eq!(
+            decoded.members()[0].canonical_bytes().unwrap(),
+            ordinary.canonical_bytes().unwrap()
+        );
+        assert_eq!(
+            decoded.members()[1].canonical_bytes().unwrap(),
+            rule.canonical_bytes().unwrap()
+        );
+        assert_eq!(
+            batch.digest().unwrap(),
+            domain_digest(b"fa:intent:draft-batch:v1", &[&bytes])
+        );
+        assert!(bytes.starts_with(b"FA-DRAFT-BATCH\0"));
+
+        // The new profile cannot be reinterpreted as a legacy manual batch.
+        let mut relabeled = b"FA-BATCH\0".to_vec();
+        relabeled.extend_from_slice(&bytes[b"FA-DRAFT-BATCH\0".len()..]);
+        assert!(PostBatch::decode(&relabeled).is_err());
+        // Conversely, an all-ordinary request has exactly its old profile.
+        let old = unchanged.canonical_bytes().unwrap();
+        let mut mislabeled = b"FA-DRAFT-BATCH\0".to_vec();
+        mislabeled.extend_from_slice(&old[b"FA-BATCH\0".len()..]);
+        assert!(PostBatch::decode(&mislabeled).is_err());
+        for end in 0..bytes.len() {
+            assert!(
+                PostBatch::decode(&bytes[..end]).is_err(),
+                "truncated at {end}"
+            );
+        }
+
+        let mut not_trunk = rule.proposal().clone();
+        not_trunk.branch_id = Id128([91; 16]);
+        assert!(
+            PostBatch::for_draft(
+                b"draft".to_vec(),
+                vec![PostIntent::rule_derived(not_trunk, Vec::new()).unwrap()],
+            )
+            .is_err()
+        );
+        let reversed = correction_plan(true, false);
+        assert!(PostBatch::for_draft(b"draft".to_vec(), vec![reversed.intent().clone()]).is_err());
     }
 
     #[test]

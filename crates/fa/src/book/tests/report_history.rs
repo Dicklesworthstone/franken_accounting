@@ -147,3 +147,51 @@ fn resident_open_item_facade_preserves_admission_and_does_not_wait_for_its_memo(
     assert_eq!(open_item_work(&book).1.snapshot_reads, 0);
     assert_eq!(book.head().unwrap(), at);
 }
+
+#[test]
+fn resident_effective_open_item_facade_shares_aging_and_keeps_nonblocking_fallback() {
+    let (book, _, _, _) = certified_fixture();
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let at = book.head().unwrap();
+    let buckets = crate::AgingBuckets::thirty_day();
+    let snapshot = book.open_items_as_of(None, through, Some(at)).unwrap();
+    assert_eq!(open_item_work(&book).0, Some(at));
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 1);
+    let literal = with_store!(&book.store, core => {
+        fa_registers::open_items::aging::effective_date_aging(
+            &core.db,
+            core.context(),
+            None,
+            through,
+            Some(at),
+            &buckets,
+        ).unwrap()
+    });
+    let aged = book
+        .effective_date_aging(None, through, Some(at), &buckets)
+        .unwrap();
+    assert_eq!(aged, literal);
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 0);
+    assert_eq!(open_item_work(&book).1.entries_decoded, 0);
+
+    // A resident optimization may neither wait on another reader nor change
+    // the observed amounts when its disposable memo is unavailable.
+    let held = with_store!(&book.store, core => core.open_item_history.lock().unwrap());
+    assert_eq!(
+        book.open_items_as_of(None, through, Some(at)).unwrap(),
+        snapshot
+    );
+    assert_eq!(
+        book.effective_date_aging(None, through, Some(at), &buckets)
+            .unwrap(),
+        aged
+    );
+    drop(held);
+    assert_eq!(
+        book.effective_date_aging(None, through, Some(at), &buckets)
+            .unwrap(),
+        aged
+    );
+    assert_eq!(open_item_work(&book).1.snapshot_reads, 0);
+    assert_eq!(book.head().unwrap(), at);
+}

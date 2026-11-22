@@ -115,6 +115,12 @@
 //! remaining debit capacities, preserving both margins in each legal entity
 //! and native unit. It rebuilds consecutive-gap transfer chains, including
 //! split-leg multiplicity, exact thresholds and complete candidate counts.
+//! Graph round trips v2 reuse that independent allocation and select only
+//! asset accounts. Two-hop mode reproduces earliest opposite-direction pairs;
+//! longer searches independently select canonical temporal cycles through up
+//! to eight accounts. Exact amounts and unit/entity partitions, period-end
+//! severity, path citations and one-use transfer identity are reproduced.
+//! Exhausting the declared search budget refuses the entire result.
 //! Quadratic allocation expansion is bounded before construction; exceeding
 //! that bound refuses the report instead of omitting transfers.
 //! Findings, citations, population, work and every output digest are rebuilt.
@@ -2189,12 +2195,15 @@ fn verify_report_with_native_subledger_input(
             ));
         }
         let (verified_procedure, output) = if let Some(request) = &procedure {
-            let period_transitions =
-                if request.parameters == procedure::VerifiedProcedureParameters::PostClosing {
-                    procedure::period_transitions(&cert.book, envelopes, &records, &infos)?
-                } else {
-                    BTreeMap::new()
-                };
+            let period_transitions = if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::PostClosing
+                    | procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+            ) {
+                procedure::period_transitions(&cert.book, envelopes, &records, &infos)?
+            } else {
+                BTreeMap::new()
+            };
             let mut tracing =
                 request
                     .parameters
@@ -2208,6 +2217,7 @@ fn verify_report_with_native_subledger_input(
                         entries: BTreeMap::new(),
                     });
             let mut leg_parties = BTreeMap::new();
+            let mut entry_facts = BTreeMap::new();
             let entries = infos
                 .iter()
                 .filter(|(index, _)| {
@@ -2218,10 +2228,23 @@ fn verify_report_with_native_subledger_input(
                         request.parameters,
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
                             | procedure::VerifiedProcedureParameters::PostClosing
-                    ) && !legs[index].is_empty()
+                            | procedure::VerifiedProcedureParameters::PeriodBoundary
+                            | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
+                            | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
+                            | procedure::VerifiedProcedureParameters::LargeRoundReversals { .. }
+                            | procedure::VerifiedProcedureParameters::ReversalPatterns
+                            | procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+                    ) && (!legs[index].is_empty()
+                        || (matches!(
+                            request.parameters,
+                            procedure::VerifiedProcedureParameters::SubsequentEvents { .. }
+                        ) && period_transitions.contains_key(&index)))
                     {
                         let effective = envelopes[index].effective_day.ok_or_else(|| {
-                            failed("procedure_period", "monetary entry has no effective date")
+                            failed(
+                                "procedure_period",
+                                "period-bearing entry has no effective date",
+                            )
                         })?;
                         let code = schema.entry_period(info, effective)?;
                         let (_, end, _, _) = schema.period_state(&code).ok_or_else(|| {
@@ -2231,6 +2254,31 @@ fn verify_report_with_native_subledger_input(
                             code,
                             effective,
                             end,
+                            document: if matches!(request.parameters,
+                                procedure::VerifiedProcedureParameters::PeriodBoundary
+                                    | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }) {
+                                info.document_date
+                                    .map(|date| -> Result<_, ReportError> {
+                                        let code = if matches!(request.parameters,
+                                            procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. })
+                                            && date >= effective {
+                                            None
+                                        } else {
+                                            schema.document_period(info.period, date)?
+                                        };
+                                        let end = code.as_deref().and_then(|code| {
+                                            schema.period_state(code).map(|(_, end, _, _)| end)
+                                        });
+                                        Ok(procedure::DocumentPeriod {
+                                            date,
+                                            code,
+                                            end,
+                                        })
+                                    })
+                                    .transpose()?
+                            } else {
+                                None
+                            },
                         })
                     } else {
                         None
@@ -2238,6 +2286,15 @@ fn verify_report_with_native_subledger_input(
                     let details = crate::envelope::proposal_leg_details(
                         &records[index].1[..records[index].0],
                     )?;
+                    if request.parameters.is_override_jet() {
+                        entry_facts.insert(
+                            info.identity,
+                            procedure::EntryFacts {
+                                principal: info.principal,
+                                origin: info.origin,
+                            },
+                        );
+                    }
                     if request.parameters.is_number_analytics() {
                         leg_parties.insert(
                             info.identity,
@@ -2303,9 +2360,12 @@ fn verify_report_with_native_subledger_input(
                 .ok_or_else(|| failed("registry_closure", "procedure registries are absent"))?;
             if request.parameters.is_benford()
                 || request.parameters.is_number_analytics()
+                || request.parameters.is_override_jet()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
+                        | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
+                        | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                 )
             {
                 definitions.account_types = schema
@@ -2316,6 +2376,34 @@ fn verify_report_with_native_subledger_input(
             }
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
+            definitions.entry_facts = entry_facts;
+            if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::OpenItemsAging { .. }
+            ) {
+                let cutoff = request.effective_through.ok_or_else(|| {
+                    failed(
+                        "procedure_selection",
+                        "open-item aging requires an effective cutoff",
+                    )
+                })?;
+                definitions.open_items = Some(
+                    open_items::replay_as_of(
+                        cert.known_at,
+                        *account_filter,
+                        cutoff,
+                        &units,
+                        &schema,
+                        envelopes,
+                        &infos,
+                        &legs,
+                        &records,
+                        &visible_migrations,
+                        &migration_activations,
+                    )?
+                    .items,
+                );
+            }
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
             (Some(verified), output)

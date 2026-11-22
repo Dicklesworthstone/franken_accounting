@@ -21,6 +21,10 @@
 //!   A v5 Plan record retains one complete Reversal/Replacement correction
 //!   in a dedicated draft. Its members share one record and are never
 //!   independently publishable or mixed with ordinary draft members.
+//!   A v6 Plan record retains a complete automatic Canon selection, including
+//!   its event, batch key and ordered reviewed members. Every subsequent
+//!   preview, scratch rehearsal and promotion rechecks that complete group
+//!   against the active catalog without flattening away its selection claim.
 //! - **Promote** (`Open → Promoted`) replays the planned intents to trunk in
 //!   one `PostBatch`, or through the native correction-pair protocol, in the same transaction as the
 //!   record (FA-INV-09). The promoter holds `approve` (the `draft-promote`
@@ -51,7 +55,7 @@ use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, Write
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
-use crate::batch::{BatchStage, commit_batch, read_outcome, stage_batch};
+use crate::batch::{BatchStage, commit_batch, read_outcome, stage_draft_batch};
 use crate::genesis::BookContext;
 use crate::policy::{capability_witness, refusal as denial, steward};
 use crate::post::Admission;
@@ -62,6 +66,7 @@ mod batch;
 mod correction;
 mod rehearsal;
 mod reversal_source;
+pub(crate) use batch::AutomaticDraftGroup;
 use batch::decode_plan_record;
 pub use batch::plan_batch_into_draft;
 pub use correction::plan_correction_into_draft;
@@ -146,6 +151,47 @@ impl DraftSourceAdmission {
 
     pub fn capability(&self) -> &Capability {
         &self.capability
+    }
+
+    /// Resolve one reviewed dependency from this owner's intent log. Only
+    /// complete retained Entries are usable: a historical proposal or digest
+    /// alone cannot stand in for the effects the native preview admitted.
+    /// This grants no publication authority; every new append and promotion
+    /// still replays the complete ordered draft under its retained planners.
+    pub(crate) fn retained_source_entry<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        ctx: &PurposeContexts,
+        book: &BookContext,
+        vid: VId,
+    ) -> Outcome<Option<Entry>> {
+        if let Err(refusal) = self.recheck(db, book)? {
+            return Ok(Err(refusal));
+        }
+        let view = match owned_draft(db, ctx, book, &self.capability, &self.name)? {
+            Ok(view) => view,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut found = None;
+        for planned in &view.intents {
+            let proposal = planned.intent.proposal();
+            if proposal.class != EntryClass::ORIGINAL
+                || fa_model::entry_vid(
+                    book.book_id,
+                    &proposal.principal_ref.0.to_le_bytes(),
+                    &proposal.idempotency_key,
+                ) != vid
+            {
+                continue;
+            }
+            if found.is_some() {
+                return Err(KernelError::Corrupt(
+                    "a draft repeats a retained source identity".into(),
+                ));
+            }
+            found = planned.resolved_entry.clone();
+        }
+        Ok(Ok(found))
     }
 
     /// Re-admit before observing sources and after any suspended source I/O.
@@ -1303,6 +1349,7 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     view: &DraftView,
     candidates: &[(PostIntent, &Capability)],
+    incoming_group: Option<AutomaticDraftGroup>,
 ) -> Outcome<DraftPreview> {
     if correction::is_correction(view) {
         if !candidates.is_empty() {
@@ -1316,7 +1363,7 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
         members.push(intent.clone());
         capabilities.push((*capability).clone());
     }
-    let batch = match PostBatch::new(promotion_key(view.vid), members) {
+    let batch = match PostBatch::for_draft(promotion_key(view.vid), members) {
         Ok(batch) => batch,
         Err(error) => {
             return Ok(Err(usage(
@@ -1371,13 +1418,16 @@ async fn preview_ordered<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    let staged = match stage_batch(
+    let mut groups = batch::automatic_groups(db, book, view)?;
+    groups.extend(incoming_group);
+    let staged = match stage_draft_batch(
         db,
         ctx,
         book,
         &capabilities,
         &batch,
         planning_admission(book, &view.body.name),
+        &groups,
     )? {
         Err(refusal) => return Ok(Err(refusal)),
         Ok(BatchStage::Recorded(_)) => {
@@ -1483,7 +1533,9 @@ pub async fn preview_draft<V: asupersync::fs::Vfs + Clone>(
     if view.intents.is_empty() {
         return Ok(Ok(None));
     }
-    Ok(preview_ordered(db, ctx, book, &view, &[]).await?.map(Some))
+    Ok(preview_ordered(db, ctx, book, &view, &[], None)
+        .await?
+        .map(Some))
 }
 
 /// Original resolved entries retained with the owner's planned requests.
@@ -1517,7 +1569,7 @@ pub async fn draft_entries<V: asupersync::fs::Vfs + Clone>(
     if view.state != DraftState::Open {
         return Ok(Err(not_open(&view.body, view.state)));
     }
-    Ok(preview_ordered(db, ctx, book, &view, &[])
+    Ok(preview_ordered(db, ctx, book, &view, &[], None)
         .await?
         .map(|preview| {
             preview
@@ -1694,11 +1746,19 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     // Rehearse (plan §15.3): each member sees its predecessors' effects.
-    let plan =
-        match preview_ordered(db, ctx, book, &view, &[(intent.clone(), &req.capability)]).await? {
-            Err(refusal) => return Ok(Err(refusal)),
-            Ok(plan) => plan,
-        };
+    let plan = match preview_ordered(
+        db,
+        ctx,
+        book,
+        &view,
+        &[(intent.clone(), &req.capability)],
+        None,
+    )
+    .await?
+    {
+        Err(refusal) => return Ok(Err(refusal)),
+        Ok(plan) => plan,
+    };
     let resolved_entry = &plan
         .members()
         .last()
@@ -2037,7 +2097,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     }
     let members: Vec<PostIntent> = view.intents.iter().map(|i| i.intent.clone()).collect();
     let capabilities: Vec<Capability> = view.intents.iter().map(|i| i.capability.clone()).collect();
-    let batch = match PostBatch::new(promotion_key(view.vid), members) {
+    let batch = match PostBatch::for_draft(promotion_key(view.vid), members) {
         Ok(b) => b,
         Err(e) => {
             return Ok(Err(usage(
@@ -2046,18 +2106,11 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     };
-    let mut staged = match correction::stage(
-        db,
-        ctx,
-        book,
-        &capabilities,
-        &batch,
-        admission,
-        correction::is_correction(&view),
-    )? {
-        Err(refusal) => return Ok(Err(refusal)),
-        Ok(staged) => staged,
-    };
+    let mut staged =
+        match correction::stage(db, ctx, book, &capabilities, &batch, admission, &view)? {
+            Err(refusal) => return Ok(Err(refusal)),
+            Ok(staged) => staged,
+        };
     if let Err(refusal) = check_resolved_members(name, &view.intents, &staged.entries) {
         staged.abort();
         return Ok(Err(refusal));

@@ -19,7 +19,9 @@ fn registry() -> Registry {
         unit_currencies: BTreeMap::from([(1, 840)]),
         account_types: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
+        entry_facts: BTreeMap::new(),
         trace: None,
+        open_items: None,
         policy_oid: [7; 32],
     }
 }
@@ -39,6 +41,7 @@ fn posting(identity: u128, recorded_at: u64, period: &str) -> Entry {
             code: period.into(),
             effective: 5,
             end: 31,
+            document: None,
         }),
         transition: None,
     }

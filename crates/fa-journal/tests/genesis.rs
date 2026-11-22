@@ -59,6 +59,8 @@ mod disposal_tests;
 mod draft_authority_tests;
 #[path = "genesis/draft_correction.rs"]
 mod draft_correction_tests;
+#[path = "genesis/engagement_outcome_keys.rs"]
+mod engagement_outcome_keys;
 #[path = "genesis/entry_storage.rs"]
 mod entry_storage_tests;
 #[path = "genesis/external_subledger.rs"]
@@ -77,6 +79,8 @@ mod period_outcome_keys;
 mod policy_outcome_keys;
 #[path = "genesis/prior_period_adjustment.rs"]
 mod prior_period_adjustment_tests;
+#[path = "genesis/production_outcome_keys.rs"]
+mod production_outcome_keys;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
 #[path = "genesis/rea_outcome_keys.rs"]
@@ -87,6 +91,8 @@ mod recurring_tests;
 mod register_capacity;
 #[path = "genesis/registration_outcome_keys.rs"]
 mod registration_outcome_keys;
+#[path = "genesis/rule_draft_admission.rs"]
+mod rule_draft_admission_tests;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/settlement_scaling.rs"]
@@ -498,6 +504,22 @@ fn harness_configured_coverage(
     cash_limit: Option<BalanceLimit>,
     coverage: bool,
 ) -> Harness {
+    harness_with_calendar(
+        entities,
+        time_zone_policy,
+        cash_limit,
+        coverage,
+        FiscalCalendar::monthly("cal", 1, 1).unwrap(),
+    )
+}
+
+fn harness_with_calendar(
+    entities: Vec<LegalEntitySpec>,
+    time_zone_policy: Option<TimeZonePolicy>,
+    cash_limit: Option<BalanceLimit>,
+    coverage: bool,
+    calendar: FiscalCalendar,
+) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -513,7 +535,6 @@ fn harness_configured_coverage(
 
     let units = UnitRegistry::with_defaults();
     let usd = units.lookup("USD").unwrap();
-    let calendar = FiscalCalendar::monthly("cal", 1, 1).unwrap();
     let book_id = Id128([9; 16]);
     let spec = BookSpec {
         book_id,

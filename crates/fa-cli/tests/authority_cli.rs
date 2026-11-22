@@ -2587,6 +2587,115 @@ mod source_draft_tests {
     }
 
     #[test]
+    fn post_only_draft_prepares_its_new_fx_invoice_and_payment_in_one_publication() {
+        let mut f = Fixture::new();
+        f.owner(&["chart", "import", "-"], Some(r#"{"accounts":[{"code":"3900","name":"FX Conversion","type":"Equity","unit":"any-currency"},{"code":"4900","name":"Realized FX","type":"Revenue","unit":"USD"}]}"#));
+        let quote = format!(
+            r#"{{"base_unit":"USD","quote_unit":"EUR","rate_num":"12","rate_den":"10","rounding":"HalfEven","as_of":"{DATE}","retrieved_at_ns":1772712000000000000,"purpose":"settlement","source":"independent payment quote"}}"#
+        );
+        let rate = f.owner(&["fx", "rate", "add", "--from-json", "-"], Some(&quote));
+        let rate = text(field(&rate, "data"), "oid").to_string();
+        let name = "new-invoice-and-payment";
+        let (cap, authority) = f.agent("dependent-fx-agent", Some(name));
+        f.open(&authority, name);
+        let before = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        let purchase = f.fx_intent("new-draft-foreign-invoice");
+        let (exit, invoice) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&purchase),
+        );
+        assert_eq!(exit, 0, "{invoice:?}");
+        let target = text(field(&invoice, "data"), "entry").to_string();
+        let target_vid = VId(u128::from_str_radix(&target, 16).unwrap());
+        let source = f.book.draft_entries(&cap, name).unwrap().unwrap()[0].clone();
+        assert!(f.book.read_entry(target_vid).unwrap().is_none());
+        assert_eq!(source.proposal.legs[1].amount.mantissa, 10_000);
+        assert_eq!(
+            source.proposal.legs[1].base_amount.unwrap().mantissa,
+            11_000
+        );
+
+        let payment = format!(
+            r#"{{"effective_date":"{DATE}","idempotency_key":"new-draft-fx-payment","evidence":["{}"],"legs":[{{"side":"debit","account":"2100","amount":"100.00 EUR","settles":[{{"entry":"{target}","ordinal":1,"amount":"100.00 EUR"}}]}},{{"side":"credit","account":"1000","amount":"120.00 USD"}}],"fx":{{"law":"SettlementCarryingBasis","rates":["D:{rate}"],"conversion_account":"3900","realized_fx_account":"4900"}}}}"#,
+            f.evidence,
+        );
+        let (exit, planned) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&payment),
+        );
+        assert_eq!(exit, 0, "{planned:?}");
+        assert_eq!(text(&planned, "event"), "draft_planned");
+        let payment_vid =
+            VId(u128::from_str_radix(text(field(&planned, "data"), "entry"), 16).unwrap());
+        let reviewed = f.book.draft_entries(&cap, name).unwrap().unwrap();
+        assert_eq!(reviewed.len(), 2);
+        assert_eq!(reviewed[0], source);
+        let p = &reviewed[1].proposal;
+        assert_eq!(p.legs.len(), 5);
+        assert_eq!(
+            p.base_totals.as_ref().unwrap().fx_law_oid,
+            fa::FxLawId::SettlementCarryingBasis.oid()
+        );
+        assert_eq!(p.legs[0].amount.mantissa, 10_000);
+        assert_eq!(p.legs[0].base_amount.unwrap().mantissa, 11_000);
+        assert_eq!(p.legs[0].settles[0].target, source.entry_ref(target_vid));
+        assert_eq!(p.legs[0].settles[0].ordinal, 1);
+        assert_eq!(p.legs[3].amount.mantissa, 12_000);
+        assert_eq!(p.legs[3].side, fa_money::Side::Credit);
+        assert_eq!(p.legs[4].amount.mantissa, 1_000);
+        assert_eq!(p.legs[4].side, fa_money::Side::Debit);
+        for vid in [target_vid, payment_vid] {
+            assert!(f.book.read_entry(vid).unwrap().is_none());
+        }
+        let after = f.owner(&["tb", "--period", "FY2026-P03"], None);
+        assert_eq!(
+            field(field(&before, "data"), "rows"),
+            field(field(&after, "data"), "rows")
+        );
+
+        let (exit, retry) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&payment),
+        );
+        assert_eq!(exit, 0, "{retry:?}");
+        assert_eq!(
+            field(field(&retry, "data"), "already_recorded"),
+            &Json::Bool(true)
+        );
+        assert_eq!(
+            text(field(&retry, "data"), "control_entry"),
+            text(field(&planned, "data"), "control_entry")
+        );
+        let retained = f.book.draft(name).unwrap().unwrap();
+        let duplicate = payment.replace("new-draft-fx-payment", "second-relief-of-new-invoice");
+        let (exit, refused) = f.bound(
+            &authority,
+            &["post", "--intent", "-", "--draft", name],
+            Some(&duplicate),
+        );
+        assert_eq!(exit, 3, "{refused:?}");
+        assert_eq!(
+            text(field(&refused, "data"), "refusal_id"),
+            fa_journal::refusal::code::SETTLE_SHAPE
+        );
+        assert_eq!(f.book.draft(name).unwrap().unwrap(), retained);
+        assert_eq!(f.book.draft_entries(&cap, name).unwrap().unwrap(), reviewed);
+
+        f.promote_exact(&cap, name, 2);
+        let source_at = f.book.read_entry(target_vid).unwrap().unwrap().1;
+        let settlement_at = f.book.read_entry(payment_vid).unwrap().unwrap().1;
+        assert_eq!(
+            source_at, settlement_at,
+            "one atomic accounting publication"
+        );
+        let verified = f.book.verify_fx_conversions(None).unwrap();
+        assert!(verified.is_green(), "{:?}", verified.drift);
+    }
+
+    #[test]
     fn promotion_readmits_a_post_only_draft_against_current_trunk() {
         let mut f = Fixture::new();
         let bill = format!(

@@ -1094,6 +1094,7 @@ mod tests {
             schema: None,
             time_tick: None,
             period: None,
+            document_date: None,
             resolution: None,
             supersession: Vec::new(),
             supersession_reasons: Vec::new(),
@@ -1107,6 +1108,7 @@ mod tests {
             prior_period_adjustment: Some(prior),
             evidence: Vec::new(),
             principal: 0,
+            origin: 0,
             identity: 9,
             legacy_identity: None,
         }

@@ -40,7 +40,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Fold open items through an inclusive civil date at one known-at
     /// frontier. Later-effective applications and reversals do not change
     /// this historical balance. This is an embedded read, not session-scoped
-    /// authorization or a certified report.
+    /// authorization or a certified report. Repeated reads at one effective
+    /// cutoff reuse an authenticated native prefix and fold its exact suffix.
     pub fn open_items_as_of(
         &self,
         cx: &PurposeContexts,
@@ -51,6 +52,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         query.with_restriction(|| {
+            if let Ok(mut history) = self.open_item_history.try_lock() {
+                return fa_registers::open_items::open_items_as_of_carried(
+                    &self.db,
+                    &query,
+                    self.context(),
+                    account,
+                    effective_through,
+                    known_at,
+                    &mut history,
+                )
+                .map_err(BookError::from);
+            }
             fa_registers::open_items::history::open_items_as_of(
                 &self.db,
                 self.context(),
@@ -74,18 +87,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         known_at: Option<CommitSeq>,
         buckets: &AgingBuckets,
     ) -> Result<EffectiveDateAging, BookError> {
+        let snapshot = self.open_items_as_of(cx, account, effective_through, known_at)?;
         let query = cx.query();
         query.checkpoint().map_err(BookError::Context)?;
         query.with_restriction(|| {
-            fa_registers::open_items::aging::effective_date_aging(
-                &self.db,
-                self.context(),
-                account,
-                effective_through,
-                known_at,
-                buckets,
-            )
-            .map_err(BookError::from)
+            fa_registers::open_items::aging::age_snapshot(snapshot, buckets)
+                .map_err(BookError::from)
         })
     }
 

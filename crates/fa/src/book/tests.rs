@@ -10,6 +10,7 @@ use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
 mod class_scoped_approval;
 mod report_history;
+mod rule_drafts;
 
 fn maintenance_capability(principal: VId) -> Capability {
     Capability::embedded(principal, &["read", "verify", "maintain"]).unwrap()

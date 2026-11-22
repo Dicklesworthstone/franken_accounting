@@ -443,6 +443,14 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
                 crate::dimension::DimensionConstraintSpec::decode(canonical_bytes)?;
                 continue;
             }
+            // An adjustment-layer anchor changes book composition, not accounts.
+            Some(ControlPayload::SchemaChange {
+                kind: crate::adjustment_layer::SCHEMA_CHANGE_ADJUSTMENT_LAYER,
+                canonical_bytes,
+            }) => {
+                crate::adjustment_layer::AdjustmentLayerAnchor::decode(canonical_bytes)?;
+                continue;
+            }
             // A rule version is policy data; it changes no account.
             Some(ControlPayload::SchemaChange {
                 kind: crate::rule::SCHEMA_CHANGE_RULE_VERSION,

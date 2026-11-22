@@ -4,7 +4,11 @@
 //! surface accepts document identities and an item selector, never monetary
 //! assertions or a path from which a purported match could be reconstructed.
 
-use fa::matching::{THREE_WAY_PROFILE, ThreeWayMatchRequest, ThreeWayMatchSource};
+use fa::matching::{
+    THREE_WAY_DOCUMENT_PROFILE, THREE_WAY_PROFILE, ThreeWayDocumentMatchReport,
+    ThreeWayDocumentMatchRequest, ThreeWayDocumentSource, ThreeWayMatchRequest,
+    ThreeWayMatchSource,
+};
 use fa_model::Oid;
 use fa_policy::Op;
 use fa_registers::reconciliation::ThreeWayMatchVerdict;
@@ -15,7 +19,7 @@ use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, parse_digest, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa match three-way --purchase-order D:<oid> --receiving-report D:<oid> --invoice-document D:<oid> --item <exact-item-code> [--as-known-at HEAD|<seq>] [--expect-digest <retained-result-digest>] --json";
+const EXAMPLE: &str = "fa match three-way --purchase-order D:<oid> --receiving-report D:<oid> --invoice-document D:<oid> (--item <exact-item-code> | --all-items) [--as-known-at HEAD|<seq>] [--expect-digest <retained-result-digest>] --json";
 
 fn one<'a>(args: &'a Args, flag: &str) -> Result<Option<&'a str>, Fail> {
     if args.flag_all(flag).len() > 1 {
@@ -68,7 +72,17 @@ pub(crate) fn match_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         required(args, "--invoice-document")?,
         "--invoice-document",
     )?);
-    let item_code = required(args, "--item")?.to_string();
+    let all_items = args.switch("--all-items");
+    let item_code = one(args, "--item")?;
+    if all_items == item_code.is_some() {
+        return Err(usage(
+            "select exactly one of --item and --all-items",
+            EXAMPLE,
+        ));
+    }
+    if item_code.is_some_and(str::is_empty) {
+        return Err(usage("--item requires a nonempty exact item code", EXAMPLE));
+    }
     let known_at = match one(args, "--as-known-at")? {
         None | Some("HEAD") => None,
         Some(value) => Some(CommitSeq(value.parse::<u64>().map_err(|_| {
@@ -98,6 +112,22 @@ pub(crate) fn match_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         book.read_scope(capability.holder(), &capability)??;
         Ok(())
     })?;
+    if all_items {
+        let report = book.match_three_way_documents(
+            &capability,
+            ThreeWayDocumentMatchRequest {
+                purchase_order_oid,
+                receiving_report_oid,
+                invoice_oid,
+                known_at,
+                expected_digest,
+            },
+        )??;
+        return render_documents(ctx, &book, report);
+    }
+    let item_code = item_code
+        .ok_or_else(|| usage("select --item or --all-items", EXAMPLE))?
+        .to_string();
     let report = book.match_three_way(
         &capability,
         ThreeWayMatchRequest {
@@ -225,6 +255,209 @@ pub(crate) fn match_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     ctx.out.event("three_way_match", fields, &format!(
         "three-way match for {:?} at sequence {}: {verdict}; advisory comparison of retained sources, not a payment approval",
         report.item_code, report.known_at.0,
+    ));
+    Ok(())
+}
+
+fn document_source_json(source: &ThreeWayDocumentSource, policy: &EvidencePolicy) -> Json {
+    obj(vec![
+        ("oid", s(hex(&source.oid.0))),
+        ("doc_commit", s(hex(&source.doc_commit))),
+        ("kind_id", Json::Int(i128::from(source.kind))),
+        ("grade_id", Json::Int(i128::from(source.grade))),
+        (
+            "grade",
+            s(policy
+                .grade_by_tag(source.grade)
+                .map_or("unknown", |grade| grade.name.as_str())),
+        ),
+        ("uploader", s(format!("{:032x}", source.uploader.0))),
+        ("recorded_at", Json::Int(i128::from(source.recorded_at.0))),
+        ("line_count", Json::Int(i128::from(source.line_count))),
+    ])
+}
+
+fn render_documents(
+    ctx: &mut Ctx<'_>,
+    book: &fa::Book,
+    report: ThreeWayDocumentMatchReport,
+) -> Result<(), Fail> {
+    let render = |amount: Option<fa_money::Amount>| -> Result<Json, Fail> {
+        amount
+            .map(|amount| amount.try_render(&book.context().units).map(s))
+            .transpose()
+            .map(|value| value.unwrap_or(Json::Null))
+            .map_err(|error| Fail::Internal(format!("matching result amount: {error}")))
+    };
+    let ordinal = |ordinal: Option<u32>| ordinal.map_or(Json::Null, |n| Json::Int(i128::from(n)));
+    let quantity = |quantity: Option<i128>| quantity.map_or(Json::Null, |n| s(n.to_string()));
+    let mut rows = Vec::with_capacity(report.items.len());
+    for item in &report.items {
+        let po = item.purchase_order.as_ref();
+        let receipt = item.receiving_report.as_ref();
+        let invoice = item.invoice.as_ref();
+        let mut missing = Vec::new();
+        if po.is_none() {
+            missing.push(s("PurchaseOrder"));
+        }
+        if receipt.is_none() {
+            missing.push(s("ReceivingReport"));
+        }
+        if invoice.is_none() {
+            missing.push(s("Invoice"));
+        }
+        let (verdict, card, card_digest) = match &item.result {
+            Some(result) => {
+                let verdict = match result.verdict {
+                    ThreeWayMatchVerdict::Matched => "matched",
+                    ThreeWayMatchVerdict::QuantityVariance { .. } => "quantity_variance",
+                    ThreeWayMatchVerdict::PriceVariance { .. } => "price_variance",
+                    ThreeWayMatchVerdict::ExtensionMismatch { .. } => "extension_mismatch",
+                };
+                let card = result
+                    .decision_card
+                    .canonical_bytes()
+                    .map_err(|error| Fail::Internal(error.to_string()))?;
+                let digest = result
+                    .decision_card
+                    .digest()
+                    .map_err(|error| Fail::Internal(error.to_string()))?;
+                (verdict, s(hex(&card)), s(hex(&digest)))
+            }
+            None => ("missing_sources", Json::Null, Json::Null),
+        };
+        rows.push(obj(vec![
+            (
+                "item_code",
+                untrusted_text_json(
+                    Some(item.item_code.clone()),
+                    "retained purchase evidence".into(),
+                ),
+            ),
+            ("verdict", s(verdict)),
+            ("matched", Json::Bool(item.is_matched())),
+            ("missing_sources", Json::Arr(missing)),
+            (
+                "purchase_order_line",
+                ordinal(po.map(|source| source.ordinal)),
+            ),
+            (
+                "receiving_report_line",
+                ordinal(receipt.map(|source| source.ordinal)),
+            ),
+            (
+                "invoice_line",
+                ordinal(invoice.map(|source| source.ordinal)),
+            ),
+            (
+                "quantity_ordered",
+                quantity(po.map(|source| source.line.quantity)),
+            ),
+            (
+                "quantity_received",
+                quantity(receipt.map(|source| source.line.quantity_received)),
+            ),
+            (
+                "quantity_billed",
+                quantity(invoice.map(|source| source.line.quantity_billed)),
+            ),
+            (
+                "po_unit_price",
+                render(po.map(|source| source.line.unit_price))?,
+            ),
+            (
+                "invoice_unit_price",
+                render(invoice.map(|source| source.line.unit_price_billed))?,
+            ),
+            (
+                "invoice_total",
+                render(invoice.map(|source| source.line.total_billed))?,
+            ),
+            (
+                "invoice_expected_total",
+                render(item.invoice_expected_total)?,
+            ),
+            ("decision_card", card),
+            ("decision_card_digest", card_digest),
+        ]));
+    }
+    let matched_count = report.items.iter().filter(|item| item.is_matched()).count();
+    let missing_count = report
+        .items
+        .iter()
+        .filter(|item| !item.is_complete())
+        .count();
+    let exception_count = report
+        .items
+        .len()
+        .checked_sub(matched_count)
+        .ok_or_else(|| Fail::Internal("matching counts are inconsistent".into()))?;
+    let count = |value: usize| -> Result<Json, Fail> {
+        i128::try_from(value)
+            .map(Json::Int)
+            .map_err(|_| Fail::Internal("matching result count exceeds i128".into()))
+    };
+    let digest = hex(&report.result_digest);
+    let policy = EvidencePolicy::embedded()
+        .map_err(|error| Fail::Internal(format!("matching evidence policy: {error}")))?;
+    let replay_argv = vec![
+        s("fa"),
+        s("match"),
+        s("three-way"),
+        s("--purchase-order"),
+        s(format!("D:{}", hex(&report.purchase_order_source.oid.0))),
+        s("--receiving-report"),
+        s(format!("D:{}", hex(&report.receiving_report_source.oid.0))),
+        s("--invoice-document"),
+        s(format!("D:{}", hex(&report.invoice_source.oid.0))),
+        s("--all-items"),
+        s("--as-known-at"),
+        s(report.known_at.0.to_string()),
+        s("--expect-digest"),
+        s(&digest),
+        s("--json"),
+    ];
+    let matched = report.is_matched();
+    let fields = vec![
+        ("profile", s(THREE_WAY_DOCUMENT_PROFILE)),
+        ("source_profile", s(THREE_WAY_PROFILE)),
+        ("known_at", Json::Int(i128::from(report.known_at.0))),
+        ("verdict", s(if matched { "matched" } else { "exceptions" })),
+        ("matched", Json::Bool(matched)),
+        ("advisory", Json::Bool(true)),
+        ("confirmed", Json::Bool(false)),
+        (
+            "vendor",
+            untrusted_text_json(
+                Some(report.vendor),
+                format!("D:{}", hex(&report.purchase_order_source.oid.0)),
+            ),
+        ),
+        ("item_count", count(report.items.len())?),
+        ("matched_count", count(matched_count)?),
+        ("exception_count", count(exception_count)?),
+        ("missing_source_count", count(missing_count)?),
+        (
+            "purchase_order_source",
+            document_source_json(&report.purchase_order_source, &policy),
+        ),
+        (
+            "receiving_report_source",
+            document_source_json(&report.receiving_report_source, &policy),
+        ),
+        (
+            "invoice_source",
+            document_source_json(&report.invoice_source, &policy),
+        ),
+        ("items", Json::Arr(rows)),
+        ("result_digest", s(digest)),
+        ("replay_argv", Json::Arr(replay_argv)),
+    ];
+    ctx.out.at_book(book)?;
+    ctx.out.known_at(report.known_at);
+    ctx.out.event("three_way_document_match", fields, &format!(
+        "complete three-way match at sequence {}: {matched_count} of {} items matched; {missing_count} items have missing source lines; advisory comparison of retained documents",
+        report.known_at.0, report.items.len(),
     ));
     Ok(())
 }

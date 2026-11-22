@@ -6,6 +6,7 @@
 use super::*;
 
 mod differences;
+mod fresh_source;
 
 #[derive(Clone)]
 pub(super) struct Application {
@@ -711,14 +712,14 @@ fn late_undo_cannot_conceal_prior_overapplication_or_duplicate_reversal_lineage(
 }
 
 #[test]
-fn carrying_source_must_preexist_the_publication_and_remain_live() {
+fn carrying_source_cannot_be_from_a_future_publication_or_reversed() {
     let (records, rates, source) = history(10, 15, (3, 2), (2, 1));
     let effects = component(&source, 0, "1100", true, 4, 6, 8);
-    let mut same_commit = records.clone();
-    same_commit[3].envelope.commit_seq = 6;
-    same_commit.sort_by_key(|record| record.envelope.commit_seq);
-    same_commit.push(payment(6, 20, b"same-commit", &effects, &rates[1]));
-    assert!(replay_settlements(&same_commit, &rates).is_err());
+    let mut future = records.clone();
+    future[3].envelope.commit_seq = 7;
+    future.push(payment(6, 20, b"future-source", &effects, &rates[1]));
+    future.sort_by_key(|record| record.envelope.commit_seq);
+    assert!(replay_settlements(&future, &rates).is_err());
 
     let mut reversed = records;
     let reversed_source = vec![

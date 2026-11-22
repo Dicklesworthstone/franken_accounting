@@ -54,7 +54,7 @@ impl AssetCostKind {
 }
 
 /// An immutable registration, with one original acquisition debit as its
-/// source. The kernel restricts version 1 to monthly fiscal periods, native
+/// source. The kernel restricts version 1 to complete normal fiscal periods, native
 /// base-currency acquisitions and supported account/dimension shapes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetScheduleSpec {

@@ -686,20 +686,13 @@ async fn apply_reviewed_draft(
         .iter()
         .map(|plan| plan.capability.clone())
         .collect();
-    let batch = PostBatch::new(promotion_key(view.vid), members).map_err(intent_error)?;
+    let batch = PostBatch::for_draft(promotion_key(view.vid), members).map_err(intent_error)?;
     let admission = Admission::ScratchDraft(Rehearsing(fa_model::draft_branch(
         book.book_id,
         &view.body.name,
     )));
-    let staged = match correction::stage(
-        target,
-        cx,
-        book,
-        &capabilities,
-        &batch,
-        admission,
-        correction::is_correction(view),
-    )? {
+    let staged = match correction::stage(target, cx, book, &capabilities, &batch, admission, view)?
+    {
         Ok(staged) => staged,
         Err(refusal) => return Ok(Err(refusal)),
     };

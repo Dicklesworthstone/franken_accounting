@@ -15,6 +15,7 @@
 
 mod allocated;
 pub(crate) mod differences;
+mod draft_sources;
 mod history;
 mod reversal;
 pub(crate) use allocated::ReleaseIndex as AllocatedReleaseIndex;
@@ -27,6 +28,7 @@ pub use differences::{
     prepare_fx_settlement_group_with_differences_in_draft, prepare_fx_settlement_with_differences,
     prepare_fx_settlement_with_differences_in_draft,
 };
+pub(crate) use draft_sources::{fresh_source_shape, validate_recorded_post};
 pub use history::CarryingPopulationWork;
 pub(crate) use history::cached_liveness as reversal_liveness;
 pub(crate) use history::{CarryingHistory, CarryingIndex};
@@ -1089,6 +1091,10 @@ fn draft_source_entry<V: Vfs + Clone>(
     };
     let scope = crate::policy::account_scope(db, book, &current)?;
     let txn = db.begin(&cx.txn())?;
+    if txn.vertex_has_label(db, vid, label::ENTRY)?.is_none() {
+        txn.abort();
+        return draft_sources::retained_source(db, cx, book, admission, vid);
+    }
     let result = (|| {
         if txn.vertex_has_label(db, vid, label::ENTRY)? != Some(true)
             || !matches!(
@@ -1356,8 +1362,9 @@ pub fn prepare_fx_settlement_in_draft<V: Vfs + Clone>(
 
 /// Derive a complete disjoint group under the draft's original authority.
 /// Source explanations remain internal; only the admitted proposal is returned.
-/// Targets are existing trunk items. Draft append and promotion retain the
-/// independent carrying-batch rule: one target leg cannot occur in two members.
+/// Targets are existing trunk items or exact reviewed quoted Originals earlier
+/// in this draft. One target leg cannot occur in two members; the native batch
+/// proves source order and revalidates the original before deriving relief.
 pub fn prepare_fx_settlement_group_in_draft<V: Vfs + Clone>(
     db: &mut Database<V>,
     cx: &PurposeContexts,
@@ -1728,10 +1735,11 @@ fn prepare_fx_settlement_inner<V: Vfs + Clone>(
     };
     let query = cx.query();
     let carrying = match query.with_restriction(|| {
-        open_item_carrying_with_audits(
+        draft_sources::prepared_item(
             db,
             cx,
             book,
+            draft,
             request.target,
             request.target_ordinal,
             at,
@@ -1930,6 +1938,33 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
     proposal: &EntryPayload,
     at: CommitSeq,
 ) -> Outcome<()> {
+    validate_post_with_sources(db, cx, book, proposal, at, draft_sources::Sources::None)
+}
+
+pub(crate) fn validate_staged_post<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    txn: &fgdb::WriteTxn,
+    fresh_sources: bool,
+) -> Outcome<()> {
+    let sources = if fresh_sources {
+        draft_sources::Sources::Staged(txn)
+    } else {
+        draft_sources::Sources::None
+    };
+    validate_post_with_sources(db, cx, book, proposal, txn.basis(), sources)
+}
+
+fn validate_post_with_sources<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    at: CommitSeq,
+    sources: draft_sources::Sources<'_>,
+) -> Outcome<()> {
     if !is_source_bound(proposal) {
         return Ok(Ok(()));
     }
@@ -1979,6 +2014,7 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
                 .and_then(|terms| terms.component(range.start)),
             &proposal.legs[range],
             &mut audits,
+            sources,
         )? {
             return Ok(Err(refusal));
         }
@@ -2407,6 +2443,7 @@ fn validate_component<V: Vfs + Clone>(
     terms: Option<&fa_model::FxSettlementComponent>,
     legs: &[fa_model::LegPayload],
     audits: &mut SuccessfulHistoryAudits,
+    sources: draft_sources::Sources<'_>,
 ) -> Outcome<()> {
     let applying: Vec<_> = legs.iter().filter(|leg| !leg.settles.is_empty()).collect();
     let [leg] = applying.as_slice() else {
@@ -2425,8 +2462,8 @@ fn validate_component<V: Vfs + Clone>(
         )));
     }
     cx.query().with_restriction(|| {
-        let carrying = match open_item_carrying_with_audits(
-            db, cx, book, application.target, application.ordinal, at, Some(audits),
+        let carrying = match draft_sources::validated_item(
+            db, cx, book, application.target, application.ordinal, at, Some(audits), sources,
         )? {
             Ok(value) => value,
             Err(refusal) => return Ok(Err(refusal)),

@@ -537,6 +537,14 @@ pub enum KernelError {
     Date(fa_time::DateError),
     /// A stored row is not decodable as the schema it claims.
     Corrupt(String),
+    /// A selected SUD source cannot be resolved against the current
+    /// engagement ancestry. Review is required before returning amounts;
+    /// this does not judge whether a previous source state was valid.
+    EngagementSourceChanged {
+        engagement: String,
+        prior: fgdb_types::VId,
+        detail: String,
+    },
     /// A mirror value could not be built as a substrate scalar.
     Scalar(&'static str),
     /// The caller's entropy source failed while sealing a field the kernel
@@ -554,6 +562,15 @@ impl fmt::Display for KernelError {
             Self::Mirror(e) => write!(f, "mirror: {e}"),
             Self::Date(e) => write!(f, "date: {e:?}"),
             Self::Corrupt(what) => write!(f, "corrupt row: {what}"),
+            Self::EngagementSourceChanged {
+                engagement,
+                prior,
+                detail,
+            } => write!(
+                f,
+                "engagement `{engagement}` carry-forward from {:032x} needs review: {detail}",
+                prior.0
+            ),
             Self::Scalar(what) => write!(f, "cannot build scalar `{what}`"),
             Self::Entropy(e) => write!(f, "entropy: {e}"),
         }

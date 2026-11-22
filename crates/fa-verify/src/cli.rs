@@ -2363,7 +2363,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         (
             "proof_scope",
             s(
-                "exact statistical replay; fraud, approval admission and policy activation are not established",
+                "exact statistical replay; fraud, approval admission, rule execution and policy activation are not established",
             ),
         ),
     ]);
@@ -2377,8 +2377,13 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         let rendered_value = if matches!(
             finding.statistic,
             crate::report::VerifiedProcedureStatistic::TracedAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::AgedOpenAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::SplitTotal { .. }
                 | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
+                | crate::report::VerifiedProcedureStatistic::RoundTrip { .. }
+                | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
+                | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
         ) {
             amount(value)
         } else {
@@ -2409,6 +2414,39 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::AgedOpenAmount {
+                account,
+                unit,
+                debit,
+                totals,
+                items,
+                legs,
+                ..
+            } => {
+                details.extend([
+                    ("account", s(format!("{account:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    ("side", s(if *debit { "debit" } else { "credit" })),
+                    ("items", n(*items)),
+                    (
+                        "buckets",
+                        Json::List(totals.iter().copied().map(amount).collect()),
+                    ),
+                    (
+                        "legs",
+                        Json::List(
+                            legs.iter()
+                                .map(|(entry, ordinal)| {
+                                    Json::Obj(vec![
+                                        ("entry", s(format!("{entry:032x}"))),
+                                        ("ordinal", n(u64::from(*ordinal))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ]);
+            }
             crate::report::VerifiedProcedureStatistic::RoundLegs { ordinals } => {
                 details.push((
                     "leg_ordinals",
@@ -2460,7 +2498,28 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             | crate::report::VerifiedProcedureStatistic::CommitsAfterClose { period, .. } => {
                 details.push(("period", s(period)));
             }
-            crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
+            crate::report::VerifiedProcedureStatistic::DaysBetweenPeriods {
+                effective_period,
+                document_period,
+                ..
+            } => {
+                details.push(("effective_period", s(effective_period)));
+                details.push(("document_period", s(document_period)));
+            }
+            crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount {
+                account,
+                unit,
+                effective_period,
+                document_period,
+                ..
+            } => {
+                details.push(("account", s(format!("{account:032x}"))));
+                details.push(("unit", n(u64::from(*unit))));
+                details.push(("effective_period", s(effective_period)));
+                details.push(("document_period", s(document_period)));
+            }
+            crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. }
+            | crate::report::VerifiedProcedureStatistic::ReversalChainEntries { entries } => {
                 details.push((
                     "entries",
                     Json::List(
@@ -2481,6 +2540,37 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             .collect(),
                     ),
                 ));
+            }
+            crate::report::VerifiedProcedureStatistic::PreparerAccountPostings {
+                account, ..
+            }
+            | crate::report::VerifiedProcedureStatistic::RuleShare { account, .. } => {
+                details.push(("account", s(format!("{account:032x}"))));
+            }
+            crate::report::VerifiedProcedureStatistic::DaysToReversal {
+                original,
+                reversal,
+                ..
+            } => {
+                details.push(("original_entry", s(format!("{original:032x}"))));
+                details.push(("reversal_entry", s(format!("{reversal:032x}"))));
+            }
+            crate::report::VerifiedProcedureStatistic::SubsequentEventAmount {
+                unit,
+                period,
+                prior_period,
+                original,
+                ..
+            } => {
+                details.extend([
+                    ("unit", n(u64::from(*unit))),
+                    ("period", s(period)),
+                    ("prior_period", s(prior_period)),
+                    (
+                        "original_entry",
+                        original.map_or(Json::Null, |entry| s(format!("{entry:032x}"))),
+                    ),
+                ]);
             }
             crate::report::VerifiedProcedureStatistic::RelativeSizeFactor {
                 largest_entry,
@@ -2530,6 +2620,58 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                             entries
                                 .iter()
                                 .map(|entry| s(format!("{entry:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                ]);
+            }
+            crate::report::VerifiedProcedureStatistic::RoundTrip {
+                outbound,
+                returned,
+                from,
+                to,
+                unit,
+                entity,
+                ..
+            } => {
+                details.extend([
+                    ("outbound_entry", s(format!("{outbound:032x}"))),
+                    ("return_entry", s(format!("{returned:032x}"))),
+                    ("from_account", s(format!("{from:032x}"))),
+                    ("to_account", s(format!("{to:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                ]);
+            }
+            crate::report::VerifiedProcedureStatistic::RoundTripCycle {
+                hops,
+                unit,
+                entity,
+                ..
+            } => {
+                details.extend([
+                    ("hop_count", n(hops.len() as u64)),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                    (
+                        "entries",
+                        Json::List(
+                            hops.iter()
+                                .map(|(entry, _)| s(format!("{entry:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "accounts",
+                        Json::List(
+                            hops.iter()
+                                .map(|(_, account)| s(format!("{account:032x}")))
                                 .collect(),
                         ),
                     ),
@@ -7328,6 +7470,28 @@ mod tests {
         assert!(json.contains("\"to_account\":\"00000000000000000000000000000014\""));
         assert!(json.contains("\"legal_entity\":\"0000000000000000000000000000001e\""));
         assert!(json.contains("\"transfers\":3"));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
+        run.procedure = "graph.round_trips".into();
+        run.parameters = VerifiedProcedureParameters::GraphRoundTrips {
+            max_hops: 8,
+            max_search_steps: 250_000,
+            period_end_days: 7,
+            window_days: 5,
+        };
+        run.findings[0].statistic = VerifiedProcedureStatistic::RoundTripCycle {
+            hops: vec![(11, 10), (12, 20), (13, 40)],
+            unit: 1,
+            entity: Some(30),
+            mantissa: i128::MAX,
+            scale: 2,
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"round_trip_mantissa\""));
+        assert!(json.contains("\"max_hops\":8"));
+        assert!(json.contains("\"hop_count\":3"));
+        assert!(json.contains("\"entries\":[\"0000000000000000000000000000000b\",\"0000000000000000000000000000000c\",\"0000000000000000000000000000000d\"]"));
+        assert!(json.contains("\"accounts\":[\"0000000000000000000000000000000a\",\"00000000000000000000000000000014\",\"00000000000000000000000000000028\"]"));
+        assert!(json.contains("\"legal_entity\":\"0000000000000000000000000000001e\""));
         assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
         run.procedure = "numbers.relative_size_factor".into();
         run.parameters = VerifiedProcedureParameters::RelativeSizeFactor {

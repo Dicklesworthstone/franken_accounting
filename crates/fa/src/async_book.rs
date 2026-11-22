@@ -1678,6 +1678,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Admit a selected task or combined close from declaration/state metadata
+    /// before any native history is hydrated. Historical status and exact
+    /// completed receipts do not acquire fresh bank-verification requirements.
+    pub(crate) fn admit_close_run_bank_sources(
+        &self,
+        cx: &PurposeContexts,
+        name: &str,
+        task: Option<&str>,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::admit_close_run_bank_sources(
+                db, book, capability, name, task, known_at,
+            )?)
+        })
+    }
+
     async fn prepare_close_history(
         &mut self,
         cx: &PurposeContexts,
@@ -1808,6 +1826,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         tasks: Vec<crate::ReviewedCloseTask>,
         description: &str,
     ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if tasks.iter().any(|task| {
+            matches!(
+                task.action,
+                crate::ReviewedCloseAction::VerifyBankReconciliation { .. }
+                    | crate::ReviewedCloseAction::VerifyBankInstrumentCoverage { .. }
+            )
+        }) && let Err(denial) = fa_policy::require(
+            &capability,
+            fa_policy::Op::Reconcile,
+            "declaring a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1825,6 +1856,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let action = match task.action {
                 crate::ReviewedCloseAction::VerifyYearEndClose { fiscal_year } => {
                     fa_journal::CloseTaskAction::VerifyYearEndClose { fiscal_year }
+                }
+                crate::ReviewedCloseAction::VerifyBankReconciliation { manifest_oid } => {
+                    fa_journal::CloseTaskAction::VerifyBankReconciliation { manifest_oid }
+                }
+                crate::ReviewedCloseAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                    fa_journal::CloseTaskAction::VerifyBankInstrumentCoverage { manifest_oids }
                 }
                 crate::ReviewedCloseAction::PeriodTransition(transition) => {
                     fa_journal::CloseTaskAction::PeriodTransition(transition)
@@ -1871,6 +1908,19 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         description: &str,
     ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if definition.tasks.iter().any(|task| {
+            matches!(
+                task.action,
+                fa_journal::CloseTaskAction::VerifyBankReconciliation { .. }
+                    | fa_journal::CloseTaskAction::VerifyBankInstrumentCoverage { .. }
+            )
+        }) && let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "declaring a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1939,6 +1989,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         at: CommitSeq,
     ) -> Outcome<()> {
+        if let Err(refusal) = self.admit_close_run_bank_sources(cx, name, None, None, capability)? {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
             return Ok(Err(refusal));
         }
@@ -1946,6 +1999,79 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(fa_journal::close_run::verify_close_run_checkpoints(
                 db, cx, book, name, capability, at,
             )?)
+        })
+    }
+
+    /// Authenticate a retained bank reconciliation at the selected prefix.
+    /// Current whole-book Read and Reconcile precede history hydration. The
+    /// statement must end with the close period and its cash and match claims
+    /// must still hold; this read does not create or refresh an attestation.
+    pub async fn verify_bank_reconciliation_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        manifest_oid: fa_model::Oid,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankReconciliationCheckpoint> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "verifying a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(
+                fa_journal::close_run::verify_bank_reconciliation_checkpoint(
+                    db,
+                    cx,
+                    book,
+                    capability,
+                    manifest_oid,
+                    period,
+                    known_at,
+                )?,
+            )
+        })
+    }
+
+    /// Authenticate complete registered-bank coverage at one recorded prefix.
+    /// Current whole-book Read and Reconcile precede source hydration, even
+    /// when the explicitly selected manifest list or native inventory is empty.
+    pub async fn verify_bank_instrument_coverage_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        manifest_oids: &[fa_model::Oid],
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankInstrumentCoverageCheckpoint> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "verifying complete registered-bank close coverage",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(
+                fa_journal::close_run::verify_bank_instrument_coverage_checkpoint(
+                    db,
+                    cx,
+                    book,
+                    capability,
+                    manifest_oids,
+                    period,
+                    known_at,
+                )?,
+            )
         })
     }
 
@@ -1961,6 +2087,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         key: &[u8],
         description: &str,
     ) -> Outcome<fa_journal::TransitionPlan> {
+        if let Err(refusal) =
+            self.admit_close_run_bank_sources(cx, name, Some(task), None, capability)?
+        {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -2019,6 +2150,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         approvals: Vec<fa_model::ApprovalRef>,
         review: Option<fa_journal::close_run::CloseTaskReview>,
     ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        if let Err(refusal) =
+            self.admit_close_run_bank_sources(cx, name, Some(task), None, &capability)?
+        {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -3196,6 +3332,37 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         effective_date: DateDay,
         idempotency_key: &[u8],
     ) -> Outcome<fa_journal::CarriedForward> {
+        self.carry_forward_qualified(
+            cx,
+            capability,
+            engagement,
+            prior,
+            turned_around,
+            corrected,
+            Vec::new(),
+            Vec::new(),
+            effective_date,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Carry forward an engagement's complete unresolved source ancestry,
+    /// optionally disposing of older items by originating engagement/ordinal.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn carry_forward_qualified(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        engagement: &str,
+        prior: &str,
+        turned_around: Vec<u32>,
+        corrected: Vec<u32>,
+        turned_around_sources: Vec<fa_journal::CarryForwardSource>,
+        corrected_sources: Vec<fa_journal::CarryForwardSource>,
+        effective_date: DateDay,
+        idempotency_key: &[u8],
+    ) -> Outcome<fa_journal::CarriedForward> {
         let description =
             format!("carry engagement {prior}'s uncorrected misstatements into {engagement}");
         let req = self.engagement_request(
@@ -3205,7 +3372,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &description,
             idempotency_key,
         )?;
-        Ok(fa_journal::carry_forward(
+        Ok(fa_journal::carry_forward_qualified(
             &mut self.db,
             cx,
             &self.context,
@@ -3213,6 +3380,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             prior,
             turned_around,
             corrected,
+            turned_around_sources,
+            corrected_sources,
             req,
         )
         .await?)
@@ -3226,6 +3395,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<Option<fa_journal::EngagementView>, BookError> {
         self.query(cx, |db, context| {
             Ok(fa_journal::read_engagement(db, context, engagement)?)
+        })
+    }
+
+    /// The complete native SUD source ancestry, with its oldest engagement
+    /// first, bounded and checked before monetary replay.
+    pub fn uncorrected_engagement_chain(
+        &self,
+        cx: &PurposeContexts,
+        engagement: &str,
+    ) -> Result<Option<Vec<fa_journal::EngagementView>>, BookError> {
+        self.query(cx, |db, context| {
+            Ok(fa_journal::read_uncorrected_engagement_chain(
+                db, context, engagement,
+            )?)
         })
     }
 
@@ -6480,6 +6663,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &journal,
                 certificate.known_at,
             )?
+        {
+            return Ok(Err(refusal));
+        }
+        if let ReportBundleCertificate::Procedure(procedure) = report
+            && let Err(refusal) = self.check_offline_procedure_periods(cx, procedure, &journal)?
         {
             return Ok(Err(refusal));
         }

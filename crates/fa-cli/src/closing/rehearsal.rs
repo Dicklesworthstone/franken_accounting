@@ -102,87 +102,136 @@ pub(crate) fn render(
         .tasks
         .iter()
         .map(|task| {
-            let (state, receipt, batch, at, entries, transition, verification) = match &task.outcome
-            {
-                CloseTaskRehearsalOutcome::AlreadyCompleted(receipt) => (
-                    "completed-on-trunk",
-                    obj(vec![
-                        ("record", s(format!("{:032x}", receipt.record.0))),
-                        ("effect", s(format!("{:032x}", receipt.effect.0))),
-                        ("recorded_at", Json::Int(i128::from(receipt.recorded_at.0))),
-                        ("principal", s(format!("{:032x}", receipt.principal.0))),
-                    ]),
-                    Json::Null,
-                    Json::Int(i128::from(receipt.recorded_at.0)),
-                    Vec::new(),
-                    Json::Null,
-                    Json::Null,
-                ),
-                CloseTaskRehearsalOutcome::Rehearsed {
-                    batch_outcome,
-                    recorded_at,
-                    entries,
-                } => (
-                    "rehearsed",
-                    Json::Null,
-                    s(format!("{:032x}", batch_outcome.0)),
-                    Json::Int(i128::from(recorded_at.0)),
-                    entries
-                        .iter()
-                        .map(|entry| {
-                            obj(vec![
-                                ("vid", s(format!("{:032x}", entry.vid.0))),
-                                ("digest", s(hex(&entry.entry_digest))),
-                            ])
-                        })
-                        .collect(),
-                    Json::Null,
-                    Json::Null,
-                ),
-                CloseTaskRehearsalOutcome::AwaitingNativeTransitionReview { to } => (
-                    "transition-review-required",
-                    Json::Null,
-                    Json::Null,
-                    Json::Null,
-                    Vec::new(),
-                    s(match to {
-                        2 => "soft-close",
-                        3 => "close",
-                        4 => "lock",
-                        _ => "invalid",
-                    }),
-                    Json::Null,
-                ),
-                CloseTaskRehearsalOutcome::VerifiedYearEndClose {
-                    fiscal_year,
-                    base_unit,
-                    verified_at,
-                    latest_close,
-                    source_digest,
-                    review_basis,
-                } => (
-                    "year-end-verified",
-                    Json::Null,
-                    Json::Null,
-                    Json::Int(i128::from(verified_at.0)),
-                    Vec::new(),
-                    Json::Null,
-                    obj(vec![
-                        ("fiscal_year", Json::Int(i128::from(*fiscal_year))),
-                        ("base_unit", Json::Int(i128::from(*base_unit))),
-                        ("verified_at", Json::Int(i128::from(verified_at.0))),
-                        (
-                            "latest_close",
-                            obj(vec![
-                                ("vid", s(format!("{:032x}", latest_close.vid.0))),
-                                ("digest", s(hex(&latest_close.entry_digest))),
-                            ]),
-                        ),
-                        ("source_digest", s(hex(source_digest))),
-                        ("review_basis", s(hex(review_basis))),
-                    ]),
-                ),
-            };
+            let (state, receipt, batch, at, entries, transition, verification, bank_verification) =
+                match &task.outcome {
+                    CloseTaskRehearsalOutcome::AlreadyCompleted(receipt) => (
+                        "completed-on-trunk",
+                        obj(vec![
+                            ("record", s(format!("{:032x}", receipt.record.0))),
+                            ("effect", s(format!("{:032x}", receipt.effect.0))),
+                            ("recorded_at", Json::Int(i128::from(receipt.recorded_at.0))),
+                            ("principal", s(format!("{:032x}", receipt.principal.0))),
+                        ]),
+                        Json::Null,
+                        Json::Int(i128::from(receipt.recorded_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
+                    CloseTaskRehearsalOutcome::Rehearsed {
+                        batch_outcome,
+                        recorded_at,
+                        entries,
+                    } => (
+                        "rehearsed",
+                        Json::Null,
+                        s(format!("{:032x}", batch_outcome.0)),
+                        Json::Int(i128::from(recorded_at.0)),
+                        entries
+                            .iter()
+                            .map(|entry| {
+                                obj(vec![
+                                    ("vid", s(format!("{:032x}", entry.vid.0))),
+                                    ("digest", s(hex(&entry.entry_digest))),
+                                ])
+                            })
+                            .collect(),
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
+                    CloseTaskRehearsalOutcome::AwaitingNativeTransitionReview { to } => (
+                        "transition-review-required",
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Vec::new(),
+                        s(match to {
+                            2 => "soft-close",
+                            3 => "close",
+                            4 => "lock",
+                            _ => "invalid",
+                        }),
+                        Json::Null,
+                        Json::Null,
+                    ),
+                    CloseTaskRehearsalOutcome::VerifiedYearEndClose {
+                        fiscal_year,
+                        base_unit,
+                        verified_at,
+                        latest_close,
+                        source_digest,
+                        review_basis,
+                    } => (
+                        "year-end-verified",
+                        Json::Null,
+                        Json::Null,
+                        Json::Int(i128::from(verified_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        obj(vec![
+                            ("fiscal_year", Json::Int(i128::from(*fiscal_year))),
+                            ("base_unit", Json::Int(i128::from(*base_unit))),
+                            ("verified_at", Json::Int(i128::from(verified_at.0))),
+                            (
+                                "latest_close",
+                                obj(vec![
+                                    ("vid", s(format!("{:032x}", latest_close.vid.0))),
+                                    ("digest", s(hex(&latest_close.entry_digest))),
+                                ]),
+                            ),
+                            ("source_digest", s(hex(source_digest))),
+                            ("review_basis", s(hex(review_basis))),
+                        ]),
+                        Json::Null,
+                    ),
+                    CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                        verified_at,
+                        ..
+                    } => (
+                        "bank-instrument-coverage-verified",
+                        Json::Null,
+                        Json::Null,
+                        Json::Int(i128::from(verified_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
+                    CloseTaskRehearsalOutcome::VerifiedBankReconciliation {
+                        manifest_oid,
+                        verified_at,
+                        attestation,
+                        statement_date,
+                        account,
+                        unit,
+                        source_digest,
+                    } => (
+                        "bank-reconciliation-verified",
+                        Json::Null,
+                        Json::Null,
+                        Json::Int(i128::from(verified_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        Json::Null,
+                        obj(vec![
+                            ("manifest_oid", s(hex(&manifest_oid.0))),
+                            ("verified_at", Json::Int(i128::from(verified_at.0))),
+                            (
+                                "attestation",
+                                obj(vec![
+                                    ("vid", s(format!("{:032x}", attestation.vid.0))),
+                                    ("digest", s(hex(&attestation.digest))),
+                                ]),
+                            ),
+                            ("statement_date", s(statement_date.render())),
+                            ("account", s(format!("{:032x}", account.0))),
+                            ("unit_id", Json::Int(i128::from(unit.0))),
+                            ("source_digest", s(hex(source_digest))),
+                        ]),
+                    ),
+                };
             human.push(format!("  {}: {state}", task.id));
             obj(vec![
                 ("id", s(&task.id)),
@@ -193,6 +242,49 @@ pub(crate) fn render(
                 ("entries", Json::Arr(entries)),
                 ("transition", transition),
                 ("verification", verification),
+                ("bank_verification", bank_verification),
+                (
+                    "bank_instrument_coverage",
+                    match &task.outcome {
+                        CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                            verified_at,
+                            inventory_digest,
+                            source_digest,
+                            instruments,
+                        } => obj(vec![
+                            ("verified_at", Json::Int(i128::from(verified_at.0))),
+                            ("inventory_digest", s(hex(inventory_digest))),
+                            ("source_digest", s(hex(source_digest))),
+                            (
+                                "instruments",
+                                Json::Arr(
+                                    instruments
+                                        .iter()
+                                        .map(|item| {
+                                            obj(vec![
+                                                ("instrument", s(format!("{:032x}", item.instrument.0))),
+                                                ("code", s(&item.code)),
+                                                ("account", s(format!("{:032x}", item.account.0))),
+                                                ("unit_id", Json::Int(i128::from(item.unit.0))),
+                                                ("manifest_oid", s(hex(&item.manifest_oid.0))),
+                                                (
+                                                    "attestation",
+                                                    obj(vec![
+                                                        ("vid", s(format!("{:032x}", item.attestation.vid.0))),
+                                                        ("digest", s(hex(&item.attestation.digest))),
+                                                    ]),
+                                                ),
+                                                ("statement_date", s(item.statement_date.render())),
+                                                ("checkpoint_digest", s(hex(&item.checkpoint_digest))),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ]),
+                        _ => Json::Null,
+                    },
+                ),
             ])
         })
         .collect();

@@ -321,6 +321,320 @@ fn three_way_matching_requires_launch_reconcile_before_book_observation() {
 }
 
 #[test]
+fn complete_purchase_matching_exposes_omitted_items_and_replays_exact_inventory() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let mut args = f.args(&f.invoice);
+    args.truncate(args.len() - 2);
+    args.push("--all-items");
+    let complete = ok(&f.book, &args);
+    assert_eq!(text(&complete, "event"), "three_way_document_match");
+    let result = data(&complete);
+    assert_eq!(text(result, "verdict"), "exceptions");
+    assert_eq!(result.get("matched"), Some(&Json::Bool(false)));
+    assert_eq!(result.get("advisory"), Some(&Json::Bool(true)));
+    assert_eq!(result.get("confirmed"), Some(&Json::Bool(false)));
+    assert_eq!(result.get("item_count"), Some(&Json::Int(2)));
+    assert_eq!(result.get("matched_count"), Some(&Json::Int(1)));
+    assert_eq!(result.get("exception_count"), Some(&Json::Int(1)));
+    assert_eq!(result.get("missing_source_count"), Some(&Json::Int(1)));
+    let Json::Arr(items) = result.get("items").unwrap() else {
+        panic!("item union");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        text(items[0].get("item_code").unwrap(), "untrusted_content"),
+        "SKU-1"
+    );
+    assert_eq!(text(&items[0], "verdict"), "matched");
+    assert_eq!(
+        text(items[1].get("item_code").unwrap(), "untrusted_content"),
+        "SKU-2"
+    );
+    assert_eq!(text(&items[1], "verdict"), "missing_sources");
+    assert_eq!(
+        items[1].get("missing_sources"),
+        Some(&Json::Arr(vec![Json::Str("Invoice".into())]))
+    );
+    assert_eq!(items[1].get("invoice_line"), Some(&Json::Null));
+    assert_eq!(items[1].get("quantity_billed"), Some(&Json::Null));
+    assert_eq!(items[1].get("decision_card"), Some(&Json::Null));
+    assert_eq!(text(&items[1], "quantity_ordered"), "2");
+    assert_eq!(text(&items[1], "quantity_received"), "2");
+    assert_eq!(
+        result.get("invoice_source").unwrap().get("line_count"),
+        Some(&Json::Int(1))
+    );
+    assert_eq!(head(&f.book), before);
+
+    let extra = f.source("whole-extra.csv", "Invoice", &format!(
+        "purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency\n{},\"Vendor, Inc\",SKU-1,4,2.50,10.00,USD\n{},\"Vendor, Inc\",UNORDERED,1,999.00,999.00,USD\n", f.po, f.po
+    ));
+    let Json::Arr(replay) = result.get("replay_argv").unwrap() else {
+        panic!("replay argv");
+    };
+    let replay: Vec<_> = replay
+        .iter()
+        .skip(1)
+        .map(|v| v.as_str().unwrap())
+        .filter(|arg| *arg != "--json")
+        .collect();
+    assert_eq!(data(&ok(&f.book, &replay)), result);
+    let mut changed = f.args(&extra);
+    changed.truncate(changed.len() - 2);
+    changed.push("--all-items");
+    let report = ok(&f.book, &changed);
+    assert_eq!(data(&report).get("item_count"), Some(&Json::Int(3)));
+    assert_eq!(
+        data(&report).get("missing_source_count"),
+        Some(&Json::Int(2))
+    );
+    let Json::Arr(items) = data(&report).get("items").unwrap() else {
+        panic!("items");
+    };
+    let extra = &items[2];
+    assert_eq!(
+        text(extra.get("item_code").unwrap(), "untrusted_content"),
+        "UNORDERED"
+    );
+    assert_eq!(extra.get("purchase_order_line"), Some(&Json::Null));
+    assert_eq!(extra.get("receiving_report_line"), Some(&Json::Null));
+    assert_eq!(text(extra, "invoice_total"), "999.00 USD");
+    assert_ne!(
+        text(data(&report), "result_digest"),
+        text(result, "result_digest")
+    );
+    changed.extend([
+        "--as-known-at",
+        "HEAD",
+        "--expect-digest",
+        text(result, "result_digest"),
+    ]);
+    assert_eq!(run(&f.book, &changed).0, 2);
+}
+
+#[test]
+fn complete_purchase_matching_requires_exact_selection_and_current_launch_authority() {
+    let f = Fixture::new();
+    let mut both = f.args(&f.invoice);
+    both.push("--all-items");
+    assert_eq!(run(&f.book, &both).0, 2);
+    let mut neither = f.args(&f.invoice);
+    neither.truncate(neither.len() - 2);
+    assert_eq!(run(&f.book, &neither).0, 2);
+    let absent = f.dir.join("no-document-match-book");
+    let authority = LaunchAuthority::new(
+        absent.clone(),
+        None,
+        "whole-purchase-observer",
+        LaunchProfile::Preparer,
+        &["read"],
+    )
+    .unwrap();
+    let mut args = neither;
+    args.extend(["--all-items", "--json"]);
+    let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let (status, output) = fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(status, 7, "{output:?}");
+    assert!(
+        !absent.exists(),
+        "authority refusal must precede book observation"
+    );
+}
+
+#[test]
+fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
+    static NEXT_CHAIN: AtomicU64 = AtomicU64::new(0);
+    let dir = loop {
+        let path = std::env::temp_dir().join(format!(
+            "fa-recon-chain-cli-{}-{}",
+            std::process::id(),
+            NEXT_CHAIN.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create {}: {error}", path.display()),
+        }
+    };
+    let books: Vec<_> = ["primary", "tax", "statutory", "management"]
+        .iter()
+        .map(|name| dir.join(name))
+        .collect();
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Capital","type":"Equity","unit":"USD"}
+        ]}"#,
+    )
+    .unwrap();
+    let evidence = dir.join("basis.txt");
+    std::fs::write(&evidence, "Synthetic adjustment-layer ancestry fixture").unwrap();
+    let mut documents = Vec::new();
+    for (index, book) in books.iter().enumerate() {
+        ok(book, &["book", "create", "--name", "Layer chain fixture"]);
+        ok(book, &["chart", "import", chart.to_str().unwrap()]);
+        ok(book, &["period", "create", "--fiscal-year", "2026"]);
+        ok(book, &["period", "open", "FY2026-P03"]);
+        let document = ok(
+            book,
+            &[
+                "document",
+                "add",
+                evidence.to_str().unwrap(),
+                "--kind",
+                "Memo",
+                "--grade",
+                "HumanUpload",
+            ],
+        );
+        documents.push(text(data(&document), "oid").to_string());
+        if index > 0 {
+            ok(
+                book,
+                &[
+                    "recon",
+                    "anchor",
+                    "--parent-book",
+                    books[index - 1].to_str().unwrap(),
+                    "--grant",
+                    "schema_change",
+                ],
+            );
+        }
+        let amount = ["1000.00", "100.00", "20.00", "5.00"][index];
+        let intent = dir.join(format!("entry-{index}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"idempotency_key":"chain-{index}","effective_date":"2026-03-31",
+                "description":"Synthetic basis adjustment",
+                "legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"}},
+                {{"side":"credit","account":"3000","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let mut args = if index == 0 {
+            vec!["post"]
+        } else {
+            vec!["recon", "post", "--reason-code", "STAT-RESERVE-BASIS"]
+        };
+        args.extend([
+            "--intent",
+            intent.to_str().unwrap(),
+            "--evidence",
+            documents[index].as_str(),
+        ]);
+        ok(book, &args);
+    }
+    let primary = books[0].to_str().unwrap();
+    let tax = books[1].to_str().unwrap();
+    let statutory = books[2].to_str().unwrap();
+    let args = [
+        "recon",
+        "book-to-book",
+        "--period",
+        "FY2026-P03",
+        "--parent-book",
+        statutory,
+        "--ancestor-book",
+        tax,
+        "--ancestor-book",
+        primary,
+    ];
+    let original_heads: Vec<_> = books.iter().map(|book| head(book)).collect();
+    let first = ok(&books[3], &args);
+    let rows = data(&first).get("rows").and_then(Json::as_arr).unwrap();
+    let cash = rows.iter().find(|row| text(row, "code") == "1000").unwrap();
+    assert_eq!(text(cash, "parent_net"), "1120.00 USD");
+    assert_eq!(text(cash, "adjustments_net"), "5.00 USD");
+    assert_eq!(text(cash, "layered_net"), "1125.00 USD");
+    let ancestry = data(&first)
+        .get("parent_ancestry")
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(ancestry.len(), 3);
+    for (index, coordinate) in ancestry.iter().enumerate() {
+        assert_eq!(
+            coordinate.get("known_at"),
+            Some(&Json::Int(original_heads[index]))
+        );
+        assert_eq!(text(coordinate, "book_id").len(), 32);
+    }
+    assert_eq!(
+        books.iter().map(|book| head(book)).collect::<Vec<_>>(),
+        original_heads,
+        "complete source replay is read-only"
+    );
+
+    // Missing, reversed and unused ancestor directories are explicit failures.
+    for ancestors in [
+        vec![],
+        vec![tax],
+        vec![primary, tax],
+        vec![tax, primary, primary],
+    ] {
+        let mut invalid = vec![
+            "recon",
+            "book-to-book",
+            "--as-of",
+            "2026-03-31",
+            "--parent-book",
+            statutory,
+        ];
+        for ancestor in ancestors {
+            invalid.extend(["--ancestor-book", ancestor]);
+        }
+        let (status, error) = run(&books[3], &invalid);
+        assert_eq!(status, 2, "{}", error.render());
+    }
+    assert_eq!(
+        books.iter().map(|book| head(book)).collect::<Vec<_>>(),
+        original_heads,
+        "ancestor refusals preserve every source and target head"
+    );
+
+    // Later primary activity and a later tax anchor must not affect statutory's
+    // already-recorded tax prefix, including the recursive source commitment.
+    let late = dir.join("late-primary.json");
+    std::fs::write(
+        &late,
+        r#"{"idempotency_key":"late-primary","effective_date":"2026-03-31",
+            "description":"Later primary correction",
+            "legs":[{"side":"debit","account":"1000","amount":"900.00 USD"},
+            {"side":"credit","account":"3000","amount":"900.00 USD"}]}"#,
+    )
+    .unwrap();
+    ok(
+        &books[0],
+        &[
+            "post",
+            "--intent",
+            late.to_str().unwrap(),
+            "--evidence",
+            &documents[0],
+        ],
+    );
+    ok(
+        &books[1],
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            primary,
+            "--grant",
+            "schema_change",
+        ],
+    );
+    let after = ok(&books[3], &args);
+    assert_eq!(data(&after), data(&first));
+    assert_eq!(head(&books[2]), original_heads[2]);
+    assert_eq!(head(&books[3]), original_heads[3]);
+}
+
+#[test]
 fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     static NEXT_RECON: AtomicU64 = AtomicU64::new(0);
     let dir = loop {
@@ -500,6 +814,8 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     );
 
     // Reconcile via --parent-book and decode canonical BookToBookBridge bytes.
+    let native_parent_head = head(&gaap);
+    let native_layer_head = head(&tax);
     let reconciled = ok(
         &tax,
         &[
@@ -512,6 +828,16 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
         ],
     );
     assert_eq!(text(&reconciled, "event"), "book_to_book_reconciled");
+    assert_eq!(
+        head(&gaap),
+        native_parent_head,
+        "internal source certification is read-only"
+    );
+    assert_eq!(
+        head(&tax),
+        native_layer_head,
+        "native-source reconciliation is read-only"
+    );
     let bridge_data = data(&reconciled);
     let bridge_digest = text(bridge_data, "bridge_digest").to_string();
     let bridge_hex = text(bridge_data, "bytes");
@@ -545,7 +871,8 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     assert_eq!(text(meals_exp, "reason_code"), "M1-PERM-MEALS");
     assert_eq!(meals_exp.get("permanent"), Some(&Json::Bool(true)));
 
-    // Also reconcile via certified parent trial balance hex (--parent-certificate, the MCP path).
+    // A supplied certificate must replay against the native parent. Its
+    // self-consistent hashes alone grant no cross-book source authority.
     let cert_out = Command::new(env!("CARGO_BIN_EXE_fa"))
         .arg("--book")
         .arg(&gaap)
@@ -562,6 +889,24 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
         .find(|j| text(j, "event") == "report_certificate")
         .expect("report_certificate event");
     let cert_hex = text(data(&cert_line), "bytes");
+    let layer_head = head(&tax);
+    let parent_head = head(&gaap);
+    for args in [
+        vec!["recon", "anchor", "--parent-certificate", cert_hex],
+        vec![
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-certificate",
+            cert_hex,
+        ],
+    ] {
+        let (status, refused) = run(&tax, &args);
+        assert_eq!(status, 3, "{}", refused.render());
+        assert_eq!(text(data(&refused), "refusal_id"), "FA-REF-194");
+        assert!(text(data(&refused), "message").contains("does not authenticate"));
+    }
     let via_cert = ok(
         &tax,
         &[
@@ -571,9 +916,127 @@ fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
             "FY2026-P03",
             "--parent-certificate",
             cert_hex,
+            "--parent-book",
+            gaap.to_str().unwrap(),
         ],
     );
     assert_eq!(text(data(&via_cert), "bridge_digest"), bridge_digest);
+    let anchor_retry = ok(
+        &tax,
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            cert_hex,
+        ],
+    );
+    assert_eq!(
+        data(&anchor_retry).get("already_recorded"),
+        Some(&Json::Bool(true))
+    );
+
+    // Plant a balanced false parent output and repair both public hashes.
+    // The artifact still decodes; only replay against the original parent
+    // can establish that these monetary amounts were never its report.
+    let certificate_bytes: Vec<u8> = cert_hex
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let mut forged = fa::ReportCertificate::decode(&certificate_bytes).unwrap();
+    let mut false_output = fa_registers::TrialBalance::decode(&forged.output).unwrap();
+    let debit = false_output
+        .rows
+        .iter_mut()
+        .find(|row| row.code == "5000")
+        .unwrap();
+    debit.debits += 1;
+    let unit = debit.unit_id;
+    false_output
+        .rows
+        .iter_mut()
+        .find(|row| row.code == "1500")
+        .unwrap()
+        .credits += 1;
+    let totals = false_output.unit_totals.get_mut(&unit).unwrap();
+    totals.0 += 1;
+    totals.1 += 1;
+    forged.output = false_output.canonical_bytes().unwrap();
+    forged.output_digest = fa_verify::blake3::hash_parts(b"fa:report-output:v1", &[&forged.output]);
+    let body = forged.canonical_bytes().unwrap();
+    forged.digest = fa_verify::blake3::hash_parts(
+        fa::certificate::CERTIFICATE_FORMAT,
+        &[&body[..body.len() - 32]],
+    );
+    let forged_bytes = forged.canonical_bytes().unwrap();
+    fa::ReportCertificate::decode(&forged_bytes).expect("forgery has consistent public hashes");
+    let forged_hex = fa_verify::blake3::hex(&forged_bytes);
+    for args in [
+        vec![
+            "recon",
+            "anchor",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            forged_hex.as_str(),
+        ],
+        vec![
+            "recon",
+            "book-to-book",
+            "--period",
+            "FY2026-P03",
+            "--parent-book",
+            gaap.to_str().unwrap(),
+            "--parent-certificate",
+            forged_hex.as_str(),
+        ],
+    ] {
+        let (status, refused) = run(&tax, &args);
+        assert_ne!(status, 0, "{}", refused.render());
+        assert_eq!(text(&refused, "event"), "error");
+    }
+    assert_eq!(
+        head(&tax),
+        layer_head,
+        "parent reads and refusals do not publish in the layer"
+    );
+    assert_eq!(
+        head(&gaap),
+        parent_head,
+        "parent verification never publishes in its source"
+    );
+
+    let absent_parent = dir.join("unopened-parent");
+    let authority = LaunchAuthority::new(
+        tax.clone(),
+        None,
+        "tax-reader",
+        LaunchProfile::Preparer,
+        &["read", "reconcile"],
+    )
+    .unwrap();
+    let bound_args: Vec<_> = [
+        "recon",
+        "book-to-book",
+        "--period",
+        "FY2026-P03",
+        "--parent-book",
+        absent_parent.to_str().unwrap(),
+        "--json",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let (status, output) = fa_with_authority(&bound_args, Files::default(), &authority, true);
+    assert_eq!(status, 2, "{output:?}");
+    assert!(
+        !absent_parent.exists(),
+        "a bound request cannot open a second host book"
+    );
 
     // Planted negative 1 (ParentBookRestated): advancing GAAP parent without re-anchoring refuses.
     let gaap_late = dir.join("gaap_late.json");

@@ -654,6 +654,17 @@ fn a_rehearsed_case_is_approved_under_dual_control() {
         .unwrap();
     assert!(again.already_recorded);
     assert_eq!(book.head().unwrap(), head);
+    for changed in [Vec::new(), vec![alice], vec![bob, alice], vec![alice, own]] {
+        let refused = book
+            .approve_case(restate.clone(), 1, changed, date, b"dual")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            (code::IDEMPOTENCY_CONFLICT, 6)
+        );
+        assert_eq!(book.head().unwrap(), head);
+    }
     let twice = book
         .approve_case(restate, 1, vec![alice, bob], date, b"again")
         .unwrap()
@@ -866,7 +877,8 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(own_entry.code, "FA-REF-008", "{own_entry:?}");
     assert_eq!(book.head().unwrap(), head);
     assert_eq!(book.case(1).unwrap().unwrap().state, CaseState::Rehearsed);
-    book.approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
+    let original_approval = book
+        .approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
         .unwrap()
         .unwrap();
 
@@ -1092,7 +1104,7 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
     assert_eq!(again.case, posted.case);
     assert_eq!(book.head().unwrap(), head);
     let twice = book
-        .post_case(poster, 1, date, b"again")
+        .post_case(poster.clone(), 1, date, b"again")
         .unwrap()
         .unwrap_err();
     assert_eq!(twice.code, code::CASE_STATE, "{twice:?}");
@@ -1532,6 +1544,46 @@ fn a_prior_period_adjustment_case_posts_its_approved_manifest_once() {
         .unwrap();
     assert_eq!(closed.case.state, CaseState::Closed);
     assert_eq!(closed.case.disclosure, Some(disclosure));
+    let closed_head = book.head().unwrap();
+    // A successful lifecycle intent keeps its original result after later
+    // transitions. Its complete ordered approval input remains immutable.
+    let approval_retry = book
+        .approve_case(restate.clone(), 1, vec![alice, bob], date, b"dual")
+        .unwrap()
+        .unwrap();
+    assert!(approval_retry.already_recorded);
+    assert_eq!(
+        approval_retry.control_entry,
+        original_approval.control_entry
+    );
+    assert_eq!(approval_retry.recorded_at, original_approval.recorded_at);
+    assert_eq!(approval_retry.case.state, CaseState::Closed);
+    let changed_approval = book
+        .approve_case(restate.clone(), 1, vec![bob, alice], date, b"dual")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(changed_approval.code, code::IDEMPOTENCY_CONFLICT);
+    let post_retry = book.post_case(poster, 1, date, b"post").unwrap().unwrap();
+    assert!(post_retry.already_recorded);
+    assert_eq!(post_retry.control_entry, posted.control_entry);
+    assert_eq!(post_retry.recorded_at, posted.recorded_at);
+    assert_eq!(post_retry.case.state, CaseState::Closed);
+    let reader = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    assert_eq!(
+        book.approve_case(reader.clone(), 1, vec![alice, bob], date, b"dual")
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    assert_eq!(
+        book.post_case(reader, 1, date, b"post")
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    assert_eq!(book.head().unwrap(), closed_head);
     equity_disclosure::replay_after_disclosure(&mut book, &equity_attachment);
     assert_eq!(
         closed

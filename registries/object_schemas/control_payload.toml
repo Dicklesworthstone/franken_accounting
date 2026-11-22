@@ -84,6 +84,13 @@ rationale = "One immutable canonical version-1 body (fa:dimension-value:v1) decl
 tracking_bead = "fa-ficc"
 
 [[decision]]
+field = "SchemaChange.kind=26"
+appendix_a = "Authorized adjustment-layer parent anchor (plan §12.2)"
+code_type = "fa-journal::adjustment_layer::AdjustmentLayerAnchor; SchemaChange subkind 26"
+rationale = "The existing fa:adjustment-layer:v1 bytes name this book, a distinct parent book and a committed parent prefix. Only an immutable SchemaControl admitted under whole-book SchemaChange authority activates those bytes; an uploaded document is never control authority. The control, its successful-intent claim, and newly needed evidence and custody receipt publish in one native transaction. Later controls may only advance the same parent prefix. Historical reads verify the original control and claim and its evidence, then fold activations in recorded order. Existing unactivated v1 documents remain ordinary evidence and require an explicit authorized activation. This declaration neither authenticates an external parent certificate nor translates currencies."
+tracking_bead = "fa-259c"
+
+[[decision]]
 field = "SchemaChange.kind=18"
 appendix_a = "Account.dimension_requirements (plan §4.3, bead fa-ficc)"
 code_type = "fa-journal::dimension::DimensionRequirementSpec; SchemaChange subkind 18"

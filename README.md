@@ -1491,6 +1491,29 @@ frequency, population, citations and work counts, including historical
 reversals. This profile accepts `max_pair_count` and `min_population`; it
 refuses the older v1 algorithm and effective-date cutoffs.
 
+The standalone verifier also replays `jet.unusual_preparers`,
+`jet.manual_vs_rule`, and `jet.large_round_reversals` v1. Preparer analysis
+counts each live entry once per account from its authenticated author, even
+when that entry splits an account across multiple legs. Manual-versus-rule
+analysis reconstructs the exact rule-origin share in basis points and flags
+manual entries on qualifying accounts. These two procedures apply complete
+reversal and replacement history before counting. Large-round reversal
+analysis instead retains canceled entries and reversals of reversals, checks
+roundness in each unit's whole-value scale, and reproduces cross-period
+reversal distances within the inclusive `window_days` limit. The observations
+do not establish that a principal was authorized or a rule was properly admitted.
+
+`reversal.patterns` v2 and `events.subsequent` v3 export with the same complete
+historical journal closure. Reversal patterns reproduce correction chains,
+cross-period severity, ordered citations, and deterministic successor selection.
+Subsequent events reconstruct the latest period close or reopening from
+authenticated control records, then apply the materiality threshold and exact
+period-end window, including its first day. Supersession findings retain their
+original period relationship even if that period is later reopened. All five
+profiles reproduce findings, populations, narratives and work counts at the
+certificate's original recorded frontier and require an all-date population;
+they accept no effective cutoff or external input handles.
+
 `numbers.relative_size_factor` v1 and `numbers.threshold_splitting` v1 also
 export for independent replay. Relative-size analysis preserves separate party
 or account groups and units, exact largest-to-second-largest ratios, and
@@ -1501,6 +1524,33 @@ the original recorded frontier, including reversal history. Their v1 contracts
 take no effective cutoff; the threshold and floor are declared integer mantissas
 in the selected currency. These are statistical observations, not determinations
 of a reporting obligation or wrongdoing.
+
+`aging.open_items` v1 exports for standalone replay with a required inclusive
+`--effective-through` date and three strictly ascending `bucket_1`, `bucket_2`
+and `bucket_3` day limits (defaults: 30, 60 and 90). The verifier independently
+reconstructs open amounts from the complete historical application and reversal
+history before aging them. Debit and credit balances remain separate for every
+account and unit. It reproduces all bucket amounts, oldest-item citations,
+severity and work counts; JSON carries monetary mantissas as decimal strings.
+Payments and reversals effective after the selected date cannot change its
+earlier result.
+
+`graph.round_trips` v2 exports both two-account returns and cycles through
+up to eight asset accounts (`max_hops=2..=8`).
+The verifier reconstructs capacity-conserving credit-to-debit allocations from
+original legs. At two hops it pairs the earliest eligible unused return; above
+two it independently searches chronological alternatives for the first complete
+simple cycle, consuming each transfer at most once. All hops have the same
+exact amount, unit and entity within the inclusive date window, and each comes
+from a distinct entry. The verifier checks authenticated asset-account types,
+period-end severity, ordered path citations and exact work counts. Exhausting
+the declared search budget refuses the entire result, including findings found
+before the limit. JSON lists the cycle's entries and accounts in path order
+and carries its monetary mantissa as a decimal string. These are reproducible
+motifs, not tracing-law allocations or conclusions about wrongdoing.
+The portable profile requires all four parameters (`max_hops`,
+`max_search_steps`, `period_end_days`, `window_days`) and takes no effective
+cutoff.
 
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or

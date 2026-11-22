@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 
+pub use fa_journal::close_run::BankInstrumentCoverageItem;
 use fa_journal::close_run::{CloseRunView, CloseTaskReceipt};
 use fa_journal::draft::DraftRehearsalStep;
 use fa_journal::{Refusal, exit};
@@ -60,6 +61,26 @@ pub enum CloseTaskRehearsalOutcome {
         latest_close: EntryRef,
         source_digest: [u8; 32],
         review_basis: [u8; 32],
+    },
+    /// An authentic statement reconciliation whose original cash and match
+    /// claims still hold after every preceding hypothetical monetary task.
+    /// Verification is a read; no new reconciliation attestation is invented.
+    VerifiedBankReconciliation {
+        manifest_oid: fa_model::Oid,
+        verified_at: CommitSeq,
+        attestation: fa_journal::bank::BankDecisionRef,
+        statement_date: fa_time::DateDay,
+        account: VId,
+        unit: fa_money::UnitId,
+        source_digest: [u8; 32],
+    },
+    /// The complete authenticated registered-bank inventory and its exact
+    /// one-to-one native period-end reconciliation sources, after all drafts.
+    VerifiedBankInstrumentCoverage {
+        verified_at: CommitSeq,
+        inventory_digest: [u8; 32],
+        source_digest: [u8; 32],
+        instruments: Vec<BankInstrumentCoverageItem>,
     },
 }
 
@@ -292,6 +313,40 @@ impl CloseRunRehearsal {
                     }
                     all_completed = false;
                 }
+                CloseTaskRehearsalOutcome::VerifiedBankReconciliation { verified_at, .. } => {
+                    if *verified_at != next {
+                        return Err(invalid(
+                            "a bank check must observe the preceding combined monetary result",
+                        ));
+                    }
+                    all_completed = false;
+                }
+                CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                    verified_at,
+                    instruments,
+                    ..
+                } => {
+                    let mut accounts = BTreeSet::new();
+                    let mut manifests = BTreeSet::new();
+                    let mut attestations = BTreeSet::new();
+                    if *verified_at != next
+                        || instruments.len() > fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE
+                        || !instruments
+                            .windows(2)
+                            .all(|pair| pair[0].instrument < pair[1].instrument)
+                        || instruments.iter().any(|item| {
+                            item.code.is_empty()
+                                || !accounts.insert((item.account, item.unit))
+                                || !manifests.insert(item.manifest_oid.0)
+                                || !attestations.insert(item.attestation.vid)
+                        })
+                    {
+                        return Err(invalid(
+                            "bank coverage must preserve its combined prefix and bounded, ordered one-to-one inventory",
+                        ));
+                    }
+                    all_completed = false;
+                }
             }
         }
         if self.rehearsal_known_at != next
@@ -350,6 +405,47 @@ impl CloseRunRehearsal {
                         latest_close.encode(w);
                         w.fixed(source_digest);
                         w.fixed(review_basis);
+                    }
+                    CloseTaskRehearsalOutcome::VerifiedBankReconciliation {
+                        manifest_oid,
+                        verified_at,
+                        attestation,
+                        statement_date,
+                        account,
+                        unit,
+                        source_digest,
+                    } => {
+                        w.u8(4)
+                            .fixed(&manifest_oid.0)
+                            .u64(verified_at.0)
+                            .u128(attestation.vid.0)
+                            .fixed(&attestation.digest)
+                            .i32(statement_date.0)
+                            .u128(account.0)
+                            .u32(unit.0)
+                            .fixed(source_digest);
+                    }
+                    CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                        verified_at,
+                        inventory_digest,
+                        source_digest,
+                        instruments,
+                    } => {
+                        w.u8(5)
+                            .u64(verified_at.0)
+                            .fixed(inventory_digest)
+                            .fixed(source_digest)
+                            .list(instruments, |w, item| {
+                                w.u128(item.instrument.0)
+                                    .str(&item.code)
+                                    .u128(item.account.0)
+                                    .u32(item.unit.0)
+                                    .fixed(&item.manifest_oid.0)
+                                    .u128(item.attestation.vid.0)
+                                    .fixed(&item.attestation.digest)
+                                    .i32(item.statement_date.0)
+                                    .fixed(&item.checkpoint_digest);
+                            });
                     }
                 }
             })
@@ -610,7 +706,11 @@ impl Book {
         &mut self,
         capability: &Capability,
         name: &str,
+        known_at: Option<CommitSeq>,
     ) -> Outcome<CloseRunView> {
+        if let Err(refusal) = self.admit_close_run_bank_sources(name, None, known_at, capability)? {
+            return Ok(Err(refusal));
+        }
         Ok(match self.close_run_status(name, capability)? {
             Ok(Some(view)) => Ok(view),
             Ok(None) => Err(invalid("the selected close run does not exist")),
@@ -800,6 +900,54 @@ impl Book {
         let mut rehearsal_at = source_at;
         for task in ordered {
             let outcome = match &task.action {
+                CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
+                    // Like the year-end checkpoint, every monetary task must
+                    // precede this check. The owned scratch therefore includes
+                    // the complete hypothetical cash contribution set.
+                    let source = match scratch.as_mut() {
+                        Some(scratch) => scratch,
+                        None => &mut *self,
+                    };
+                    let verified = match source.verify_bank_reconciliation_checkpoint(
+                        *manifest_oid,
+                        &view.body.period,
+                        Some(rehearsal_at),
+                        capability,
+                    )? {
+                        Ok(verified) => verified,
+                        Err(refusal) => return Ok(Err(in_task(&task.id, refusal))),
+                    };
+                    CloseTaskRehearsalOutcome::VerifiedBankReconciliation {
+                        manifest_oid: verified.manifest_oid(),
+                        verified_at: verified.known_at(),
+                        attestation: verified.attestation(),
+                        statement_date: verified.statement_date(),
+                        account: verified.account(),
+                        unit: verified.unit(),
+                        source_digest: *verified.source_digest(),
+                    }
+                }
+                CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                    let source = match scratch.as_mut() {
+                        Some(scratch) => scratch,
+                        None => &mut *self,
+                    };
+                    let verified = match source.verify_bank_instrument_coverage_checkpoint(
+                        manifest_oids,
+                        &view.body.period,
+                        Some(rehearsal_at),
+                        capability,
+                    )? {
+                        Ok(verified) => verified,
+                        Err(refusal) => return Ok(Err(in_task(&task.id, refusal))),
+                    };
+                    CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                        verified_at: verified.known_at(),
+                        inventory_digest: *verified.inventory_digest(),
+                        source_digest: *verified.source_digest(),
+                        instruments: verified.instruments().to_vec(),
+                    }
+                }
                 CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
                     // The graph requires every monetary task to precede this
                     // check, so the owned scratch contains exactly its basis.
@@ -925,7 +1073,7 @@ impl Book {
         if let Err(refusal) = authorize(self, principal, capability, false)? {
             return Ok(Err(refusal));
         }
-        let view = match self.close_rehearsal_view(capability, name)? {
+        let view = match self.close_rehearsal_view(capability, name, None)? {
             Ok(view) => view,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -955,7 +1103,7 @@ impl Book {
         if let Err(refusal) = authorize(self, principal, capability, true)? {
             return Ok(Err(refusal));
         }
-        let view = match self.close_rehearsal_view(capability, name)? {
+        let view = match self.close_rehearsal_view(capability, name, None)? {
             Ok(view) => view,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1047,7 +1195,11 @@ impl Book {
         if certificate.body.book_id != self.context().book_id {
             return Ok(Err(invalid("the close rehearsal belongs to another book")));
         }
-        let view = match self.close_rehearsal_view(capability, certificate.name())? {
+        let view = match self.close_rehearsal_view(
+            capability,
+            certificate.name(),
+            Some(certificate.known_at()),
+        )? {
             Ok(view) => view,
             Err(refusal) => return Ok(Err(refusal)),
         };

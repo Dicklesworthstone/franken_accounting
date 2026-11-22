@@ -13,6 +13,10 @@ use fa_journal::rule::{
 };
 use fa_model::{EventKind, EventResource, EventSpec};
 
+#[path = "rule_authority/automatic_drafts.rs"]
+mod automatic_drafts;
+#[path = "rule_authority/drafts.rs"]
+mod drafts;
 #[path = "rule_authority/outcome_keys.rs"]
 mod outcome_keys;
 

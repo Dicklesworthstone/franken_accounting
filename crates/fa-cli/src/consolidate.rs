@@ -355,11 +355,29 @@ fn render_consolidation_basis(
 // ---------------------------------------------------------------------------
 
 const RECON_USAGE: &str = "fa recon <anchor|post|book-to-book> ...";
-const RECON_ANCHOR_EXAMPLE: &str = "fa recon anchor (--parent-certificate <hex|file> | --parent-book <dir> [--parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>) --book <layer-dir> --json";
+const RECON_ANCHOR_EXAMPLE: &str = "fa recon anchor (--parent-book <dir> [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>) --book <layer-dir> --json";
 const RECON_POST_EXAMPLE: &str = "fa recon post --reason-code <M1-TEMP-DEPRECIATION|M1-PERM-MEALS|...> [--rule-oid <64-hex>] --intent <file|-> [--approval <vid>]... [--dry-run [--plan-out <new-file>]] --book <layer-dir> --json";
-const RECON_BRIDGE_EXAMPLE: &str = "fa recon book-to-book (--period <code> | --as-of YYYY-MM-DD) (--parent-certificate <hex|file> | --parent-book <dir> [--parent-known-at HEAD|<seq>]) [--as-known-at HEAD|<seq>|<RFC3339>] --book <layer-dir> --json";
+const RECON_BRIDGE_EXAMPLE: &str = "fa recon book-to-book (--period <code> | --as-of YYYY-MM-DD) --parent-book <dir> [--ancestor-book <dir>]... [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] [--as-known-at HEAD|<seq>|<RFC3339>] --book <layer-dir> --json";
+
+fn unverified_parent_certificate() -> Fail {
+    Fail::Refusal(fa_journal::Refusal::new(
+        "FA-REF-194",
+        fa_journal::refusal::exit::REFUSAL,
+        "a parent certificate alone does not authenticate the parent book's snapshot",
+        "plan §12.2, FA-INV-13 (authenticated parent snapshots)",
+        "pass --parent-book <dir> with --parent-certificate so the certificate is replayed against the parent's retained native history; run this source read on the host CLI",
+    ))
+}
 
 pub(crate) fn recon_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.flag("--ancestor-book").is_some()
+        && args.positional.get(1).map(String::as_str) != Some("book-to-book")
+    {
+        return Err(usage(
+            "--ancestor-book is only used by recon book-to-book",
+            RECON_BRIDGE_EXAMPLE,
+        ));
+    }
     match args.positional.get(1).map(String::as_str) {
         Some("anchor") => recon_anchor(ctx, args),
         Some("post") => recon_post(ctx, args),
@@ -420,7 +438,7 @@ fn parse_parent_known_at(
 fn read_parent_certificate(
     files: &crate::cli::Files,
     raw: &str,
-) -> Result<(fa::ReportCertificate, fa_registers::TrialBalance), Fail> {
+) -> Result<fa::ReportCertificate, Fail> {
     let trimmed = raw.trim();
     let is_inline_hex = trimmed != "-"
         && trimmed.len() >= 64
@@ -455,13 +473,7 @@ fn read_parent_certificate(
             "certify a native cumulative stock trial balance in the parent book (`fa tb --period <code> --certify --book <parent-dir>`)",
         ));
     }
-    let tb = fa_registers::TrialBalance::decode(&cert.output).map_err(|e| {
-        usage(
-            format!("--parent-certificate trial balance payload failed to decode: {e}"),
-            RECON_BRIDGE_EXAMPLE,
-        )
-    })?;
-    Ok((cert, tb))
+    Ok(cert)
 }
 
 fn decode_unlimited_hex(hex_text: &str, flag: &str) -> Result<Vec<u8>, Fail> {
@@ -489,11 +501,15 @@ fn open_parent_book(
     files: &crate::cli::Files,
     bound_or_daemon: bool,
     raw_dir: &str,
+    capability: &fa_policy::Capability,
 ) -> Result<Book, Fail> {
+    fa_policy::require(capability, fa_policy::Op::Read, "reading the parent book")
+        .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
+        .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;
     if bound_or_daemon {
         return Err(usage(
             "--parent-book cannot open an arbitrary host directory in a daemon or launch-bound request",
-            "certify the parent book's trial balance (`fa tb --period <code> --certify`) and pass its hex via --parent-certificate",
+            "run recon on the host CLI with --parent-book <dir>; certificate-only parent imports remain unavailable until an authenticated portable parent source is supplied",
         ));
     }
     let dir = files.resolve(raw_dir);
@@ -504,7 +520,116 @@ fn open_parent_book(
         )));
     }
     let keys = fa::BookKeys::load(&dir.join("book.keys"))?;
-    Ok(Book::open_dir(&dir, keys, fa::Entropy::production())?)
+    let parent = Book::open_dir(&dir, keys, fa::Entropy::production())?;
+    admit_whole_book_read(&parent, capability, &[], "reading the parent book")?;
+    Ok(parent)
+}
+
+/// Resolve the explicit chain at its historical anchors, then compose it from
+/// the primary book outwards. Directory order is immediate ancestor first.
+/// Every source is admitted under current whole-book Read authority before
+/// its anchor is observed, and every native certificate is replayed before a
+/// source can leave this function. No source certificate is published here.
+fn replay_parent_chain(
+    files: &crate::cli::Files,
+    bound_or_daemon: bool,
+    capability: &fa_policy::Capability,
+    layer_id: fa_model::Id128,
+    parent: Book,
+    certificate: fa::ReportCertificate,
+    ancestor_dirs: &[&str],
+) -> Result<fa::consolidation::ReplayedParentTrialBalance, Fail> {
+    // Decode only the requested civil cutoff here. These bytes grant no
+    // authority and are not accepted as output: native replay below validates
+    // this certificate and each ancestor before returning the complete source.
+    let selected = fa_registers::TrialBalance::decode(&certificate.output).map_err(|error| {
+        usage(
+            format!("parent trial-balance output cannot be decoded: {error}"),
+            RECON_BRIDGE_EXAMPLE,
+        )
+    })?;
+    let through = selected
+        .effective_through
+        .filter(|_| !selected.activity)
+        .ok_or_else(|| {
+            usage(
+                "the parent certificate must select cumulative stock through a civil date",
+                RECON_BRIDGE_EXAMPLE,
+            )
+        })?;
+    let mut seen = std::collections::BTreeSet::from([layer_id]);
+    let mut layers: Vec<(Book, fa::ReportCertificate)> = Vec::new();
+    let mut directories = ancestor_dirs.iter();
+    let mut current = parent;
+    let mut current_certificate = certificate;
+    loop {
+        if !seen.insert(current.context().book_id) {
+            return Err(usage(
+                "an adjustment-layer parent chain cannot repeat a book",
+                "supply each immediate ancestor once, ending at a primary book",
+            ));
+        }
+        match current.book_kind_at(Some(current_certificate.known_at), capability)?? {
+            fa::BookKind::Primary => {
+                if directories.next().is_some() {
+                    return Err(usage(
+                        "--ancestor-book includes an unused source after the primary book",
+                        "list only the immediate ancestors in order, ending at the primary book",
+                    ));
+                }
+                let mut source =
+                    current.replay_parent_trial_balance(capability, &current_certificate)??;
+                while let Some((layer, local_certificate)) = layers.pop() {
+                    source = layer.replay_layered_parent_trial_balance(
+                        capability,
+                        &local_certificate,
+                        &source,
+                    )??;
+                }
+                return Ok(source);
+            }
+            fa::BookKind::AdjustmentLayer {
+                parent_book_id,
+                parent_known_at,
+            } => {
+                if seen.contains(&parent_book_id) {
+                    return Err(usage(
+                        "the recorded adjustment-layer anchors contain a cycle",
+                        "use an acyclic parent chain whose ancestors end at a primary book",
+                    ));
+                }
+                let Some(directory) = directories.next() else {
+                    return Err(usage(
+                        format!(
+                            "parent book {} is an adjustment layer; its inherited stock requires ancestor {} at sequence {parent_known_at}",
+                            current.context().book_id.to_hex(),
+                            parent_book_id.to_hex(),
+                        ),
+                        "append --ancestor-book <dir> for each immediate ancestor, ending at the primary book",
+                    ));
+                };
+                let mut ancestor = open_parent_book(files, bound_or_daemon, directory, capability)?;
+                if ancestor.context().book_id != parent_book_id {
+                    return Err(usage(
+                        format!(
+                            "--ancestor-book `{directory}` has book id {}, but the historical anchor requires {}",
+                            ancestor.context().book_id.to_hex(),
+                            parent_book_id.to_hex(),
+                        ),
+                        "order --ancestor-book values from the immediate parent's parent through to the primary book",
+                    ));
+                }
+                let at = fgdb_types::CommitSeq(parent_known_at);
+                ancestor.prepare_report_history(capability.holder(), capability, Some(at))??;
+                let ancestor_certificate = ancestor
+                    .certify_trial_balance(fa::TrialBalanceSelection::AsOf(through), Some(at))??
+                    .certificate;
+                layers.push((current, current_certificate));
+                current = ancestor;
+                current_certificate = ancestor_certificate;
+            }
+        }
+    }
 }
 
 fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
@@ -515,7 +640,14 @@ fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ));
     }
     let bound_or_daemon = ctx.authority().is_some() || ctx.routed_through_daemon();
-    let capability = ctx.capability(args, &["schema_change"])?;
+    let capability = ctx.capability(
+        args,
+        if args.flag("--parent-book").is_some() {
+            &["schema_change", "read"]
+        } else {
+            &["schema_change"]
+        },
+    )?;
     let mut book = ctx.books.open_admitted(args, |book| {
         fa_policy::require(
             &capability,
@@ -524,7 +656,14 @@ fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )
         .and_then(|()| fa_policy::scope(&capability, book.context().book_id))
         .and_then(|()| fa_policy::admit_direct_write(&capability))
-        .and_then(|()| fa_policy::reach(&capability, &fa_policy::Reach::whole_book(true), None))
+        .and_then(|()| {
+            fa_policy::reach_class(
+                &capability,
+                &fa_policy::Reach::whole_book(true),
+                None,
+                fa_model::EntryClass::SCHEMA_CONTROL,
+            )
+        })
         .map_err(|d| Fail::Refusal(fa_journal::policy::refusal(&d)))?;
         book.admit_current(&capability)??;
         Ok(())
@@ -533,14 +672,18 @@ fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let has_cert = args.flag("--parent-certificate").is_some();
     let has_book = args.flag("--parent-book").is_some();
     let has_id = args.flag("--parent-book-id").is_some();
-    if usize::from(has_cert) + usize::from(has_book) + usize::from(has_id) != 1 {
+    if has_cert && !has_book {
+        return Err(unverified_parent_certificate());
+    }
+    if has_book == has_id {
         return Err(usage(
-            "pass exactly one of --parent-certificate, --parent-book, or --parent-book-id",
+            "pass exactly one of --parent-book or --parent-book-id; --parent-certificate additionally requires --parent-book",
             RECON_ANCHOR_EXAMPLE,
         ));
     }
 
-    let (parent_book_id, parent_known_at) =
+    let (parent_book_id, parent_known_at) = if let Some(parent_dir) = args.flag("--parent-book") {
+        let mut parent = open_parent_book(&ctx.files, bound_or_daemon, parent_dir, &capability)?;
         if let Some(cert_raw) = args.flag("--parent-certificate") {
             if args.flag("--parent-known-at").is_some() {
                 return Err(usage(
@@ -548,28 +691,34 @@ fn recon_anchor(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     RECON_ANCHOR_EXAMPLE,
                 ));
             }
-            let (cert, _) = read_parent_certificate(&ctx.files, cert_raw)?;
-            (cert.book_id, cert.known_at)
-        } else if let Some(parent_dir) = args.flag("--parent-book") {
-            let parent = open_parent_book(&ctx.files, bound_or_daemon, parent_dir)?;
+            let certificate = read_parent_certificate(&ctx.files, cert_raw)?;
+            parent.prepare_report_history(
+                capability.holder(),
+                &capability,
+                Some(certificate.known_at),
+            )??;
+            let source = parent.replay_parent_trial_balance(&capability, &certificate)??;
+            (source.book_id(), source.known_at())
+        } else {
             let head = parent.head()?;
             let seq = match args.flag("--parent-known-at") {
                 Some(raw) => parse_parent_known_at(raw, head)?,
                 None => head,
             };
             (parent.context().book_id, seq)
-        } else {
-            let id_raw = args.require("--parent-book-id", "<32-hex>")?;
-            let seq_raw = args.require("--parent-known-at", "<seq>")?;
-            let id = parse_id128_hex(id_raw, "--parent-book-id")?;
-            let seq = seq_raw.parse::<u64>().map_err(|_| {
-                usage(
-                    format!("--parent-known-at `{seq_raw}` must be a positive integer sequence"),
-                    RECON_ANCHOR_EXAMPLE,
-                )
-            })?;
-            (id, fgdb_types::CommitSeq(seq))
-        };
+        }
+    } else {
+        let id_raw = args.require("--parent-book-id", "<32-hex>")?;
+        let seq_raw = args.require("--parent-known-at", "<seq>")?;
+        let id = parse_id128_hex(id_raw, "--parent-book-id")?;
+        let seq = seq_raw.parse::<u64>().map_err(|_| {
+            usage(
+                format!("--parent-known-at `{seq_raw}` must be a positive integer sequence"),
+                RECON_ANCHOR_EXAMPLE,
+            )
+        })?;
+        (id, fgdb_types::CommitSeq(seq))
+    };
 
     let anchored = book.anchor_adjustment_layer(&capability, parent_book_id, parent_known_at)??;
     ctx.out.at_book(&book)?;
@@ -715,18 +864,9 @@ fn recon_book_to_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             RECON_BRIDGE_EXAMPLE,
         ));
     }
-    let has_cert = args.flag("--parent-certificate").is_some();
-    let has_parent_book = args.flag("--parent-book").is_some();
-    if has_cert == has_parent_book {
-        return Err(usage(
-            "pass exactly one of --parent-certificate <hex|file> or --parent-book <dir>",
-            RECON_BRIDGE_EXAMPLE,
-        ));
-    }
-
     let bound_or_daemon = ctx.authority().is_some() || ctx.routed_through_daemon();
     let capability = ctx.capability(args, &["read", "reconcile"])?;
-    let book = ctx.books.open_admitted(args, |book| {
+    let mut book = ctx.books.open_admitted(args, |book| {
         admit_whole_book_read(
             book,
             &capability,
@@ -734,57 +874,78 @@ fn recon_book_to_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "reconciling a book-to-book bridge",
         )
     })?;
-    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
-
-    let (parent_book_id, parent_known_at, parent_tb) =
-        if let Some(cert_raw) = args.flag("--parent-certificate") {
-            if args.flag("--parent-known-at").is_some() {
-                return Err(usage(
-                    "--parent-certificate already binds parent_known_at; omit --parent-known-at",
-                    RECON_BRIDGE_EXAMPLE,
-                ));
-            }
-            let (cert, tb) = read_parent_certificate(&ctx.files, cert_raw)?;
-            (cert.book_id, cert.known_at, tb)
+    let Some(parent_dir) = args.flag("--parent-book") else {
+        return Err(if args.flag("--parent-certificate").is_some() {
+            unverified_parent_certificate()
         } else {
-            let parent_dir = args.require("--parent-book", "<dir>")?;
-            let parent = open_parent_book(&ctx.files, bound_or_daemon, parent_dir)?;
-            let head = parent.head()?;
-            let parent_seq = match args.flag("--parent-known-at") {
-                Some(raw) => parse_parent_known_at(raw, head)?,
-                None => head,
-            };
-            let tb = if let Some(ref p) = period {
-                // Collect cumulative periods through `p` in the parent book's calendar.
-                let mut parent_periods: Vec<_> = parent
-                    .periods()?
-                    .into_iter()
-                    .map(|r| (r.start, r.code))
-                    .collect();
-                parent_periods.sort();
-                let Some(pos) = parent_periods.iter().position(|(_, code)| code == p) else {
-                    return Err(usage(
-                        format!("period `{p}` does not exist in parent book"),
-                        RECON_BRIDGE_EXAMPLE,
-                    ));
-                };
-                let through_codes: Vec<String> = parent_periods[..=pos]
-                    .iter()
-                    .map(|(_, code)| code.clone())
-                    .collect();
-                parent.trial_balance_at(&through_codes, Some(parent_seq))?
-            } else {
-                let day = as_of.expect("checked mutual exclusion");
-                parent.balance_as_of(day, Some(parent_seq))?
-            };
-            (parent.context().book_id, parent_seq, tb)
+            usage("--parent-book <dir> is required", RECON_BRIDGE_EXAMPLE)
+        });
+    };
+    let (known_at, _) = known_at_flag(args, &book, &ctx.out)?;
+    book.prepare_report_history(capability.holder(), &capability, known_at)??;
+    let through = if let Some(code) = period.as_deref() {
+        let row = book
+            .read_scope(capability.holder(), &capability)??
+            .period_at(code, known_at)??
+            .ok_or_else(|| {
+                usage(
+                    format!("period `{code}` does not exist in the layer at the selected known-at"),
+                    RECON_BRIDGE_EXAMPLE,
+                )
+            })?;
+        fa_time::DateDay(
+            row.end
+                .0
+                .checked_sub(1)
+                .ok_or_else(|| Fail::Internal("adjustment-layer period end underflow".into()))?,
+        )
+    } else {
+        as_of.expect("checked mutual exclusion")
+    };
+    let mut parent = open_parent_book(&ctx.files, bound_or_daemon, parent_dir, &capability)?;
+    let certificate = if let Some(cert_raw) = args.flag("--parent-certificate") {
+        if args.flag("--parent-known-at").is_some() {
+            return Err(usage(
+                "--parent-certificate already binds parent_known_at; omit --parent-known-at",
+                RECON_BRIDGE_EXAMPLE,
+            ));
+        }
+        let certificate = read_parent_certificate(&ctx.files, cert_raw)?;
+        parent.prepare_report_history(
+            capability.holder(),
+            &capability,
+            Some(certificate.known_at),
+        )??;
+        certificate
+    } else {
+        let head = parent.head()?;
+        let parent_seq = match args.flag("--parent-known-at") {
+            Some(raw) => parse_parent_known_at(raw, head)?,
+            None => head,
         };
-
-    let recon = book.reconcile_book_to_book(
+        parent.prepare_report_history(capability.holder(), &capability, Some(parent_seq))??;
+        // A layer owns its calendar. Parent period names and boundaries can
+        // differ, so carry the selected layer's historical civil cutoff through
+        // the whole source chain instead of matching current period codes.
+        let selection = fa::TrialBalanceSelection::AsOf(through);
+        // This read-only certificate is an internal replay input. It is
+        // neither published nor exported under the caller's Read authority.
+        parent
+            .certify_trial_balance(selection, Some(parent_seq))??
+            .certificate
+    };
+    let source = replay_parent_chain(
+        &ctx.files,
+        bound_or_daemon,
         &capability,
-        parent_book_id,
-        parent_known_at,
-        &parent_tb,
+        book.context().book_id,
+        parent,
+        certificate,
+        &args.flag_all("--ancestor-book"),
+    )?;
+    let recon = book.reconcile_book_to_book_from_parent(
+        &capability,
+        &source,
         period.as_deref(),
         as_of,
         known_at,
@@ -870,6 +1031,22 @@ fn recon_book_to_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("period", recon.period.as_deref().map_or(Json::Null, s)),
             ("effective_through", s(recon.effective_through.render())),
             ("bridge_digest", s(hex(&recon.bridge_digest.0))),
+            ("parent_source_digest", s(hex(&source.source_digest()))),
+            (
+                "parent_ancestry",
+                Json::Arr(
+                    source
+                        .ancestry()
+                        .iter()
+                        .map(|(id, at)| {
+                            obj(vec![
+                                ("book_id", s(id.to_hex())),
+                                ("known_at", Json::Int(i128::from(at.0))),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
             ("bytes", s(hex(&bridge_bytes))),
             ("rows", Json::Arr(rows_json)),
         ],

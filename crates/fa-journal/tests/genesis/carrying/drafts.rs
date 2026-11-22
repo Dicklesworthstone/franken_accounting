@@ -4,6 +4,9 @@
 use super::*;
 use fgdb::WriteBatch;
 
+#[path = "drafts/dependent.rs"]
+mod dependent;
+
 fn quoted_original(f: &mut Fixture, law: FxLawId, key: &[u8]) -> EntryPayload {
     let (as_of, purpose) = match law {
         FxLawId::SpotClose => (f.h.day(), FxRatePurpose::SpotClose),

@@ -3,9 +3,12 @@
 //! The first read selects canonical Entry payloads independently of derived
 //! membership edges. A resident read authenticates that prefix's Chronicle
 //! marker, consumes a complete contiguous suffix, and changes only new items
-//! and application targets. Reversals, migration visibility changes, changed
-//! source rows and unfamiliar native operations use the literal fold again.
-//! No persisted applied mirror or register supplies an amount.
+//! and application targets. In-scope reversals, migration visibility changes,
+//! changed source rows and unfamiliar native operations use the literal fold.
+//! A civil-date cutoff is part of the memo's identity. Later-effective entries
+//! never alter that snapshot, and a cutoff that splits a settlement or reversal
+//! retains the literal reader's refusal. No persisted applied mirror or
+//! register supplies an amount.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,11 +16,12 @@ use asupersync::fs::Vfs;
 use fa_journal::genesis::BookContext;
 use fa_model::symbols::label;
 use fa_model::{ControlPayload, Entry, EntryClass, EntryOrigin, Id128};
-use fa_time::FiscalCalendar;
+use fa_time::{DateDay, FiscalCalendar};
 use fgdb::{Database, VertexRow};
 use fgdb_delta_types::{DeltaRow, ElementId};
 use fgdb_types::{CommitSeq, MarkerRef, QueryCx, VId};
 
+use super::history::{OpenItemSnapshot, validate_effective};
 use super::{
     Application, OpenItem, OpenItemsReport, account_at, carries_open_items, fold_open_items,
 };
@@ -44,9 +48,10 @@ pub struct OpenItemReadWork {
 }
 
 /// An owned, disposable fold, never an externally supplied balance authority.
-/// Historical requests do not evict a newer resident coordinate. Missing
-/// retained history, a different database prefix, or an unsupported change
-/// disables reuse; the existing literal reader decides the answer or error.
+/// Older known-at requests at the same effective cutoff do not evict a newer
+/// resident coordinate. A changed cutoff replaces this single bounded memo.
+/// Missing retained history, a different database prefix, or an unsupported
+/// change disables reuse; the literal reader decides the answer or error.
 #[derive(Debug, Default)]
 pub struct OpenItemMemo {
     prefix: Option<Prefix>,
@@ -61,6 +66,7 @@ type Record = (VId, Entry, CommitSeq);
 struct Prefix {
     book: Id128,
     calendar: FiscalCalendar,
+    effective_through: Option<DateDay>,
     at: CommitSeq,
     marker: Option<MarkerRef>,
     items: BTreeMap<ItemKey, OpenItem>,
@@ -77,6 +83,15 @@ impl OpenItemMemo {
         self.prefix.as_ref().map(|prefix| prefix.at)
     }
 
+    /// Inclusive effective cutoff of the retained fold. `None` also denotes
+    /// an uninitialized memo; [`Self::known_at`] distinguishes those states.
+    #[must_use]
+    pub fn effective_through(&self) -> Option<DateDay> {
+        self.prefix
+            .as_ref()
+            .and_then(|prefix| prefix.effective_through)
+    }
+
     /// Work of the latest read, including an unsuccessful suffix attempt
     /// before a literal fallback. Neither a hit nor a fallback writes the book.
     #[must_use]
@@ -90,10 +105,15 @@ impl OpenItemMemo {
         cx: &QueryCx,
         book: &BookContext,
         account: Option<VId>,
+        effective_through: Option<DateDay>,
         at: CommitSeq,
     ) -> Result<Vec<OpenItem>, RegisterError> {
         let extension = match &self.prefix {
-            Some(prefix) if prefix.book == book.book_id && prefix.calendar == book.calendar => {
+            Some(prefix)
+                if prefix.book == book.book_id
+                    && prefix.calendar == book.calendar
+                    && prefix.effective_through == effective_through =>
+            {
                 extend(db, cx, book, prefix, at, &mut self.work)
             }
             _ => None,
@@ -124,8 +144,48 @@ impl OpenItemMemo {
             .work
             .entries_decoded
             .saturating_add(counted.entries_decoded);
-        let entries = entries?;
+        let mut entries = entries?;
         report_checkpoint(Some(cx))?;
+        if let Some(through) = effective_through {
+            match validate_effective(&entries, None, through) {
+                Ok(()) => {}
+                Err(_) if account.is_some() => {
+                    // A split link on another account cannot broaden this
+                    // reader's refusal. Preserve the literal account-scoped
+                    // validation, but do not install an incomplete memo.
+                    validate_effective(&entries, account, through)?;
+                    entries.retain(|(_, entry, _)| entry.proposal.effective_date <= through);
+                    self.work.literal_folds = self.work.literal_folds.saturating_add(1);
+                    let selected = fold_open_items(&entries, account)?;
+                    report_checkpoint(Some(cx))?;
+                    self.work.returned_items = selected.len();
+                    return Ok(selected);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // The literal reader historically tolerates an application to a
+        // missing target. Do not reuse that malformed prefix: a later entry
+        // with the named identity would otherwise acquire an old application
+        // that is absent from this memo. Honest kernel histories are closed.
+        // Judge closure before selecting effective time: a non-Reverses
+        // lineage link may legitimately name a later-effective source.
+        // Its immutable identity must still exist in the recorded history.
+        let identities: BTreeSet<_> = entries.iter().map(|(vid, _, _)| *vid).collect();
+        let closed = entries.iter().all(|(_, entry, _)| {
+            entry.proposal.legs.iter().all(|leg| {
+                leg.settles
+                    .iter()
+                    .all(|settlement| identities.contains(&settlement.target.vid))
+            }) && entry
+                .proposal
+                .supersession
+                .iter()
+                .all(|supersession| identities.contains(&supersession.target.vid))
+        });
+        if let Some(through) = effective_through {
+            entries.retain(|(_, entry, _)| entry.proposal.effective_date <= through);
+        }
         self.work.literal_folds = self.work.literal_folds.saturating_add(1);
         let items = match fold_open_items(&entries, None) {
             Ok(items) => items,
@@ -141,25 +201,10 @@ impl OpenItemMemo {
             }
             Err(error) => return Err(error),
         };
-        // The literal reader historically tolerates an application to a
-        // missing target. Do not reuse that malformed prefix: a later entry
-        // with the named identity would otherwise acquire an old application
-        // that is absent from this memo. Honest kernel histories are closed.
-        let identities: BTreeSet<_> = entries.iter().map(|(vid, _, _)| *vid).collect();
-        let closed = entries.iter().all(|(_, entry, _)| {
-            entry.proposal.legs.iter().all(|leg| {
-                leg.settles
-                    .iter()
-                    .all(|settlement| identities.contains(&settlement.target.vid))
-            }) && entry
-                .proposal
-                .supersession
-                .iter()
-                .all(|supersession| identities.contains(&supersession.target.vid))
-        });
         let fresh = Prefix {
             book: book.book_id,
             calendar: book.calendar.clone(),
+            effective_through,
             at,
             marker: closed
                 .then(|| retained_marker(db, at, &mut self.work))
@@ -176,7 +221,10 @@ impl OpenItemMemo {
         report_checkpoint(Some(cx))?;
         let result = select(&fresh, cx, account, &mut self.work)?;
         if !self.prefix.as_ref().is_some_and(|previous| {
-            previous.book == book.book_id && previous.calendar == book.calendar && previous.at > at
+            previous.book == book.book_id
+                && previous.calendar == book.calendar
+                && previous.effective_through == effective_through
+                && previous.at > at
         }) {
             self.prefix = Some(fresh);
         }
@@ -229,7 +277,36 @@ pub fn open_items_carried<V: Vfs + Clone>(
         memo.work.vertex_reads = memo.work.vertex_reads.saturating_add(1);
         account_at(db, account, at)?;
     }
-    memo.read(db, cx, book, account, at)
+    memo.read(db, cx, book, account, None, at)
+}
+
+/// The historical open-item fold at both time coordinates, with a reusable
+/// native prefix. A changed cutoff rebuilds from canonical payloads. Forward
+/// known-at reads at the same cutoff consume only the authenticated suffix;
+/// split links and unfamiliar effects retain the literal selector's verdict.
+/// Like [`super::history::open_items_as_of`], an unknown account selects no
+/// items rather than introducing a different account-metadata requirement.
+/// The caller must authorize the complete observation before reading the memo.
+pub fn open_items_as_of_carried<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    account: Option<VId>,
+    effective_through: DateDay,
+    known_at: Option<CommitSeq>,
+    memo: &mut OpenItemMemo,
+) -> Result<OpenItemSnapshot, RegisterError> {
+    report_checkpoint(Some(cx))?;
+    memo.work = OpenItemReadWork::default();
+    let at = resolve_known_at(db, known_at)?;
+    let items = memo.read(db, cx, book, account, Some(effective_through), at)?;
+    Ok(OpenItemSnapshot {
+        book_id: book.book_id,
+        known_at: at,
+        effective_through,
+        account,
+        items,
+    })
 }
 
 /// Open items and display metadata from the same resolved native coordinate.
@@ -396,13 +473,21 @@ fn extend<V: Vfs + Clone>(
         }
         work.entries_decoded = work.entries_decoded.saturating_add(1);
         let entry = entry_from_row(db, &row, book, at).ok()??;
-        if entry.proposal.class == EntryClass::REVERSAL
-            || matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
+        if matches!(entry.proposal.origin, EntryOrigin::Migration { .. })
             || matches!(
                 entry.proposal.control,
                 Some(ControlPayload::MigrationControl { .. })
             )
         {
+            return None;
+        }
+        if prefix
+            .effective_through
+            .is_some_and(|through| entry.proposal.effective_date > through)
+        {
+            continue;
+        }
+        if entry.proposal.class == EntryClass::REVERSAL {
             return None;
         }
         appended.push((vid, entry, row.created_at));

@@ -3249,7 +3249,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             "prepare a SettlementCarryingBasis application from its retained foreign open item and Settlement Rate document",
         )));
     }
-    if let Err(refusal) = crate::carrying::validate_post(db, ctx, book, proposal, txn.basis())? {
+    if let Err(refusal) = crate::carrying::validate_staged_post(
+        db,
+        ctx,
+        book,
+        proposal,
+        &txn,
+        carrying_batch.is_some_and(crate::batch::IndependentCarryingBatch::admits_fresh_sources),
+    )? {
         txn.abort();
         if admission.admits_confined_draft_sources(&req.capability)
             && crate::carrying::is_source_bound(proposal)
@@ -5590,7 +5597,7 @@ pub(crate) fn checked_entry<V: asupersync::fs::Vfs + Clone>(
 /// (an entry an earlier member of the same batch staged, plan §5.8) is read
 /// from the transaction's staged effects. A committed entry's legs never
 /// add a witness, so a single post records exactly the witnesses it did.
-fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
+pub(crate) fn checked_entry_staged<V: asupersync::fs::Vfs + Clone>(
     txn: &WriteTxn,
     db: &Database<V>,
     row: &VertexRow,

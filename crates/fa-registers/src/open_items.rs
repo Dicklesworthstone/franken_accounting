@@ -14,7 +14,10 @@ pub mod history;
 pub mod resident;
 pub mod settlement;
 
-pub use resident::{OpenItemMemo, OpenItemReadWork, open_items_carried, open_items_report_carried};
+pub use resident::{
+    OpenItemMemo, OpenItemReadWork, open_items_as_of_carried, open_items_carried,
+    open_items_report_carried,
+};
 pub use settlement::{SettlementAllocation, SettlementPlan, SettlementRequest, plan_settlement};
 
 use std::collections::{BTreeMap, BTreeSet};
