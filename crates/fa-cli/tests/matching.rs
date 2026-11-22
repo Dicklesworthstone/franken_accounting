@@ -321,6 +321,128 @@ fn three_way_matching_requires_launch_reconcile_before_book_observation() {
 }
 
 #[test]
+fn complete_purchase_matching_exposes_omitted_items_and_replays_exact_inventory() {
+    let f = Fixture::new();
+    let before = head(&f.book);
+    let mut args = f.args(&f.invoice);
+    args.truncate(args.len() - 2);
+    args.push("--all-items");
+    let complete = ok(&f.book, &args);
+    assert_eq!(text(&complete, "event"), "three_way_document_match");
+    let result = data(&complete);
+    assert_eq!(text(result, "verdict"), "exceptions");
+    assert_eq!(result.get("matched"), Some(&Json::Bool(false)));
+    assert_eq!(result.get("advisory"), Some(&Json::Bool(true)));
+    assert_eq!(result.get("confirmed"), Some(&Json::Bool(false)));
+    assert_eq!(result.get("item_count"), Some(&Json::Int(2)));
+    assert_eq!(result.get("matched_count"), Some(&Json::Int(1)));
+    assert_eq!(result.get("exception_count"), Some(&Json::Int(1)));
+    assert_eq!(result.get("missing_source_count"), Some(&Json::Int(1)));
+    let Json::Arr(items) = result.get("items").unwrap() else {
+        panic!("item union");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        text(items[0].get("item_code").unwrap(), "untrusted_content"),
+        "SKU-1"
+    );
+    assert_eq!(text(&items[0], "verdict"), "matched");
+    assert_eq!(
+        text(items[1].get("item_code").unwrap(), "untrusted_content"),
+        "SKU-2"
+    );
+    assert_eq!(text(&items[1], "verdict"), "missing_sources");
+    assert_eq!(
+        items[1].get("missing_sources"),
+        Some(&Json::Arr(vec![Json::Str("Invoice".into())]))
+    );
+    assert_eq!(items[1].get("invoice_line"), Some(&Json::Null));
+    assert_eq!(items[1].get("quantity_billed"), Some(&Json::Null));
+    assert_eq!(items[1].get("decision_card"), Some(&Json::Null));
+    assert_eq!(text(&items[1], "quantity_ordered"), "2");
+    assert_eq!(text(&items[1], "quantity_received"), "2");
+    assert_eq!(
+        result.get("invoice_source").unwrap().get("line_count"),
+        Some(&Json::Int(1))
+    );
+    assert_eq!(head(&f.book), before);
+
+    let extra = f.source("whole-extra.csv", "Invoice", &format!(
+        "purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency\n{},\"Vendor, Inc\",SKU-1,4,2.50,10.00,USD\n{},\"Vendor, Inc\",UNORDERED,1,999.00,999.00,USD\n", f.po, f.po
+    ));
+    let Json::Arr(replay) = result.get("replay_argv").unwrap() else {
+        panic!("replay argv");
+    };
+    let replay: Vec<_> = replay
+        .iter()
+        .skip(1)
+        .map(|v| v.as_str().unwrap())
+        .filter(|arg| *arg != "--json")
+        .collect();
+    assert_eq!(data(&ok(&f.book, &replay)), result);
+    let mut changed = f.args(&extra);
+    changed.truncate(changed.len() - 2);
+    changed.push("--all-items");
+    let report = ok(&f.book, &changed);
+    assert_eq!(data(&report).get("item_count"), Some(&Json::Int(3)));
+    assert_eq!(
+        data(&report).get("missing_source_count"),
+        Some(&Json::Int(2))
+    );
+    let Json::Arr(items) = data(&report).get("items").unwrap() else {
+        panic!("items");
+    };
+    let extra = &items[2];
+    assert_eq!(
+        text(extra.get("item_code").unwrap(), "untrusted_content"),
+        "UNORDERED"
+    );
+    assert_eq!(extra.get("purchase_order_line"), Some(&Json::Null));
+    assert_eq!(extra.get("receiving_report_line"), Some(&Json::Null));
+    assert_eq!(text(extra, "invoice_total"), "999.00 USD");
+    assert_ne!(
+        text(data(&report), "result_digest"),
+        text(result, "result_digest")
+    );
+    changed.extend([
+        "--as-known-at",
+        "HEAD",
+        "--expect-digest",
+        text(result, "result_digest"),
+    ]);
+    assert_eq!(run(&f.book, &changed).0, 2);
+}
+
+#[test]
+fn complete_purchase_matching_requires_exact_selection_and_current_launch_authority() {
+    let f = Fixture::new();
+    let mut both = f.args(&f.invoice);
+    both.push("--all-items");
+    assert_eq!(run(&f.book, &both).0, 2);
+    let mut neither = f.args(&f.invoice);
+    neither.truncate(neither.len() - 2);
+    assert_eq!(run(&f.book, &neither).0, 2);
+    let absent = f.dir.join("no-document-match-book");
+    let authority = LaunchAuthority::new(
+        absent.clone(),
+        None,
+        "whole-purchase-observer",
+        LaunchProfile::Preparer,
+        &["read"],
+    )
+    .unwrap();
+    let mut args = neither;
+    args.extend(["--all-items", "--json"]);
+    let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let (status, output) = fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(status, 7, "{output:?}");
+    assert!(
+        !absent.exists(),
+        "authority refusal must precede book observation"
+    );
+}
+
+#[test]
 fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
     static NEXT_CHAIN: AtomicU64 = AtomicU64::new(0);
     let dir = loop {

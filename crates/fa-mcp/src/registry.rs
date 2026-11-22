@@ -3526,12 +3526,7 @@ mod tests {
             .tool_by_wire("fa_match_three_way")
             .expect("three-way matching");
         let schema = matching.input_schema(&mcp, reg);
-        for field in [
-            "purchase_order",
-            "receiving_report",
-            "invoice_document",
-            "item",
-        ] {
+        for field in ["purchase_order", "receiving_report", "invoice_document"] {
             assert!(
                 schema["required"]
                     .as_array()
@@ -3572,6 +3567,33 @@ mod tests {
                 "{field}"
             );
         }
+    }
+
+    #[test]
+    fn complete_three_way_matching_forwards_the_all_items_switch_without_a_selected_item() {
+        let (mcp, reg) = embedded();
+        let matching = mcp.tool_by_wire("fa_match_three_way").unwrap();
+        let arguments = json!({
+            "purchase_order": format!("D:{}", "ab".repeat(32)),
+            "receiving_report": format!("D:{}", "bc".repeat(32)),
+            "invoice_document": format!("D:{}", "cd".repeat(32)),
+            "all_items": true,
+            "as_known_at": "17",
+            "expect_digest": "ef".repeat(32),
+        });
+        let invocation = matching.invocation(&mcp, reg, &arguments).unwrap();
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(parsed.positional, vec!["match", "three-way"]);
+        assert!(parsed.switch("--all-items"));
+        assert_eq!(parsed.flag("--item"), None);
+        assert_eq!(parsed.flag("--as-known-at"), Some("17"));
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("match", &parsed)
+                .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+            Some(vec!["read", "reconcile"]),
+        );
+        assert!(invocation.stdin.is_none());
     }
 
     #[test]

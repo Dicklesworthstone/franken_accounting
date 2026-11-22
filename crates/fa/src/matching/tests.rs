@@ -1,5 +1,7 @@
 use super::*;
 
+mod documents;
+
 use std::path::Path;
 
 use asupersync::runtime::{Runtime, RuntimeBuilder};

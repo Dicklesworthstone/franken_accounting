@@ -31,6 +31,12 @@ use crate::{AsyncBook, BookError, Outcome};
 
 pub use fa_formats::matching::THREE_WAY_PROFILE;
 
+mod documents;
+pub use documents::{
+    THREE_WAY_DOCUMENT_PROFILE, ThreeWayDocumentMatchItem, ThreeWayDocumentMatchReport,
+    ThreeWayDocumentMatchRequest, ThreeWayDocumentSource,
+};
+
 const RESULT_DOMAIN: &[u8] = b"fa:three-way-match-report:v1";
 
 /// Source identities are handles printed by ordinary Document intake. The

@@ -931,14 +931,22 @@ example = "fa bank import statement.xml --bank-format camt053 --account 1000 --b
 
 [[verb]]
 name = "match"
-summary = "Compare a retained purchase order, receiving report and vendor invoice exactly, with source provenance and digest-bound historical replay."
+summary = "Compare one item or the complete item inventory of a retained purchase order, receiving report and vendor invoice, with source provenance and digest-bound historical replay."
 writes = false
 subcommands = ["three-way"]
 flags = ["--purchase-order", "--receiving-report", "--invoice-document", "--item", "--as-known-at", "--expect-digest"]
-switches = []
-events = ["three_way_match"]
+switches = ["--all-items"]
+events = ["three_way_match", "three_way_document_match"]
 exits = [0, 2, 3, 4, 5, 7, 8]
-usage = ["match three-way --purchase-order D:<oid> --receiving-report D:<oid> --invoice-document D:<oid> --item <exact-item-code> [--as-known-at HEAD|<seq>] [--expect-digest <retained-result-digest>]", "Retain each original source with fa document add <file> --kind PurchaseOrder|ReceivingReport|Invoice --mime text/csv. The fa_three_way_csv_v1 profile has exact headers: purchase order vendor,item_code,quantity,unit_price,currency; receiving report purchase_order_oid,item_code,quantity_received; invoice purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency. purchase_order_oid is the retained purchase-order document's OID. Values are source assertions; uploading them does not establish their economic truth or a reviewed evidence grade.", "Each source contains at most one row per exact item_code. Quantities are nonnegative whole counts; prices and totals are exact nonnegative decimals in a registered currency. Fractional quantities, repeated item identifiers, malformed rows, unknown columns, missing references and differing PO/vendor/item identities refuse. Every source row is validated, including rows not selected by --item. The v1 profile is bounded by the registered document and import-row limits.", "The exact comparison reports the first quantity variance, then price variance, then invoice extension mismatch; all selected quantities, prices and totals remain visible. A numerical variance is an advisory result (exit 0), not a command failure. This command posts no entry, reconciliation decision or payment approval.", "Current whole-book read and reconcile authority is required before protected source access. Historical matching still obeys current authority and disclosure policy. All three retained sources must be visible at the selected known-at prefix, and their full bytes and native custody are verified. Source grades and uploaders are reported without promotion to an attested fact.", "Retain result_digest and replay_argv from the result. Repeat replay_argv on the same book to recompute the selected lines at their original numeric known-at; the expected digest must match. HEAD is refused with --expect-digest. This is native retained-source replay, not an offline certificate or proof that a payment should be made."]
+usage = [
+    "match three-way --purchase-order D:<oid> --receiving-report D:<oid> --invoice-document D:<oid> (--item <exact-item-code> | --all-items) [--as-known-at HEAD|<seq>] [--expect-digest <retained-result-digest>]",
+    "Retain each original source with fa document add <file> --kind PurchaseOrder|ReceivingReport|Invoice --mime text/csv. The fa_three_way_csv_v1 profile has exact headers: purchase order vendor,item_code,quantity,unit_price,currency; receiving report purchase_order_oid,item_code,quantity_received; invoice purchase_order_oid,vendor,item_code,quantity_billed,unit_price_billed,total_billed,currency. purchase_order_oid is the retained purchase-order document's OID. Values are source assertions; uploading them does not establish their economic truth or a reviewed evidence grade.",
+    "Each source contains at most one row per exact item_code. Quantities are nonnegative whole counts; prices and totals are exact nonnegative decimals in a registered currency. Fractional quantities, repeated item identifiers, malformed rows, unknown columns, missing references and differing PO/vendor/item identities refuse. Every source row is validated, including rows not selected by --item. The v1 profile is bounded by the registered document and import-row limits.",
+    "--all-items compares the complete union of item codes under fa_three_way_documents_v1. Every source record appears once in the result with its actual ordinal. An item missing from the purchase order, receipt or invoice is an explicit missing_sources exception, with absent fields null. It is never dropped or treated as a zero-quantity line. One exact vendor must appear across every PO and invoice row, and every receipt/invoice row must name the selected PO, including unmatched items. Each source remains bounded by MAX_IMPORT_DOCUMENTS rows; the complete union is at most three times that bound and is never truncated. This compares one PO, one receipt and one invoice, without aggregating separate deliveries or invoices.",
+    "For a complete item, the exact comparison reports the first quantity variance, then price variance, then invoice extension mismatch; all quantities, prices and totals remain visible. --all-items is matched only when every union item is complete and matches. exception_count counts all nonmatched items; missing_source_count counts items missing at least one source. A missing line or numerical variance is an advisory result (exit 0), not a command failure. This command posts no entry, reconciliation decision or payment approval.",
+    "Current whole-book read and reconcile authority is required before protected source access. Historical matching still obeys current authority and disclosure policy. All three retained sources must be visible at the selected known-at prefix, and their full bytes and native custody are verified. Source grades and uploaders are reported without promotion to an attested fact.",
+    "Retain result_digest and replay_argv from the result. Repeat replay_argv on the same book to recompute the selected lines or complete inventory at their original numeric known-at; the expected digest must match. HEAD is refused with --expect-digest. Complete-document digests bind every source count, item, ordinal, missing source and comparison. This is native retained-source replay, not an offline certificate or proof that a payment should be made.",
+]
 example = "fa match three-way --purchase-order D:<po-oid> --receiving-report D:<receipt-oid> --invoice-document D:<invoice-oid> --item SKU-1 --book ./books/myco --json"
 
 [[verb]]
@@ -1572,6 +1580,22 @@ fields = ["profile:string", "known_at:seq", "verdict:string", "matched:bool", "a
 name = "three_way_source"
 doc = "One authenticated retained purchase document. kind_id and grade_id are durable evidence-policy tags; grade reports the original intake provenance and is never upgraded by matching. line_ordinal identifies the selected data row under the named parser profile."
 fields = ["oid:hex", "doc_commit:hex", "kind_id:int", "grade_id:int", "grade:string", "uploader:hex", "recorded_at:seq", "line_ordinal:int"]
+
+[[event]]
+name = "three_way_document_match"
+book = true
+doc = "Complete item-union comparison of three authenticated retained CSV documents at one recorded prefix. Every source row appears in exactly one sorted item; missing source lines remain explicit nulls and exceptions. matched requires every item to be complete and numerically matched. Counts and all source attribution, item values, ordinals, absence and decision cards enter the result digest. missing_source_count counts items missing at least one document line. The comparison remains advisory, grants no approval and posts no accounting fact. Native replay recomputes the whole result at its original prefix under current source-disclosure authority."
+fields = ["profile:string", "source_profile:string", "known_at:seq", "verdict:string", "matched:bool", "advisory:bool", "confirmed:bool", "vendor:untrusted_text", "item_count:int", "matched_count:int", "exception_count:int", "missing_source_count:int", "purchase_order_source:three_way_document_source", "receiving_report_source:three_way_document_source", "invoice_source:three_way_document_source", "items:[three_way_document_item]", "result_digest:hex", "replay_argv:[string]"]
+
+[[shape]]
+name = "three_way_document_source"
+doc = "One complete authenticated retained purchase source with its parsed data-record count and original intake attribution. The source grade remains unchanged by matching."
+fields = ["oid:hex", "doc_commit:hex", "kind_id:int", "grade_id:int", "grade:string", "uploader:hex", "recorded_at:seq", "line_count:int"]
+
+[[shape]]
+name = "three_way_document_item"
+doc = "One exact item from the complete union of PO, receipt and invoice identifiers. Present sources retain their one-based data-record ordinals and exact asserted amounts. missing_sources names absent source roles; their ordinals and values are null, with no fabricated zero or decision card. A complete item carries the ordinary deterministic quantity/price/extension comparison and its source-bound decision card."
+fields = ["item_code:untrusted_text", "verdict:string", "matched:bool", "missing_sources:[string]", "purchase_order_line:int?", "receiving_report_line:int?", "invoice_line:int?", "quantity_ordered:string?", "quantity_received:string?", "quantity_billed:string?", "po_unit_price:amount?", "invoice_unit_price:amount?", "invoice_total:amount?", "invoice_expected_total:amount?", "decision_card:hex?", "decision_card_digest:hex?"]
 
 [[event]]
 name = "bank_matches_proposed"
@@ -5000,9 +5024,9 @@ verb = "match"
 subcommands = ["three-way"]
 positionals = []
 flags = ["--purchase-order", "--receiving-report", "--invoice-document", "--item", "--as-known-at", "--expect-digest"]
-switches = []
-required = ["--purchase-order", "--receiving-report", "--invoice-document", "--item"]
-dont = ["Pass the D:oid values of retained PurchaseOrder, ReceivingReport and Invoice documents using the strict fa_three_way_csv_v1 text/csv profile documented by fa help match. Host paths and caller-supplied monetary assertions are not inputs to this tool. Every source row is validated; exact vendor, purchase-order and item identities must agree.", "The launch capability must already hold whole-book read and reconcile. Current source-disclosure rules apply even to historical replay; per-call grants cannot expand authority.", "Treat matched as an exact advisory comparison of retained assertions, never a payment approval or a certified fact about goods received. The result reports original source grades without upgrading them. Retain result_digest and repeat the original numeric as_known_at with expect_digest for native replay on the same book."]
+switches = ["--all-items"]
+required = ["--purchase-order", "--receiving-report", "--invoice-document"]
+dont = ["Pass the D:oid values of retained PurchaseOrder, ReceivingReport and Invoice documents using the strict fa_three_way_csv_v1 text/csv profile documented by fa help match. Choose exactly one of item and all_items:true. Complete-document mode reports every missing or extra item across the union; it requires one vendor and the exact PO reference on every line. Host paths and caller-supplied monetary assertions are not inputs to this tool.", "The launch capability must already hold whole-book read and reconcile. Current source-disclosure rules apply even to historical replay; per-call grants cannot expand authority.", "Treat matched as an exact advisory comparison of retained assertions, never a payment approval or a certified fact about goods received. The result reports original source grades without upgrading them. Retain result_digest and repeat the original numeric as_known_at with expect_digest for native replay on the same book."]
 mistakes = ["Passing an Entry ID, a host CSV filename or a different PO reference instead of the retained document OID.", "Combining expect_digest with HEAD, silently aggregating repeated item codes, or treating a quantity variance (exit 0) as a transport error."]
 
 [[mcp.tool]]
