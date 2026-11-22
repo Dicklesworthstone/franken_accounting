@@ -948,6 +948,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// under current whole-book Read authority. The resulting opaque source
     /// binds the native book, prefix, rows and complete unit definitions.
     /// Decoding an externally supplied certificate alone cannot create one.
+    /// The selected prefix must be a primary book: a native certificate for
+    /// an adjustment layer contains only that layer's own journal, so using it
+    /// as another layer's parent would silently omit inherited stock.
     pub fn replay_parent_trial_balance(
         &self,
         cx: &PurposeContexts,
@@ -975,6 +978,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 )));
             }
             crate::certificate::context_at(db, book, at)?;
+            if matches!(
+                book_kind_at_db(db, book, at)?,
+                BookKind::AdjustmentLayer { .. }
+            ) {
+                return Ok(Err(refusal_book_to_book(
+                    "an adjustment-layer parent cannot supply complete stock through its own native trial-balance certificate: inherited parent balances would be omitted",
+                    "use a primary parent book at the selected prefix; recursively authenticated parent stock for nested adjustment layers is not supported",
+                )));
+            }
             Ok(Ok(ReplayedParentTrialBalance {
                 book_id: book.book_id,
                 known_at: at,

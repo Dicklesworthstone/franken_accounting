@@ -603,6 +603,137 @@ fn native_parent_bridge_reads_the_selected_historical_layer_chart() {
 }
 
 #[test]
+fn native_parent_replay_refuses_nested_layers_instead_of_omitting_inherited_stock() {
+    let mut f = BridgeFixture::new();
+    let mut adjustment = f.layer.proposal(
+        day(2026, 1, 15),
+        b"nested-parent-adjustment",
+        EntryClass::ORIGINAL,
+        f.layer.legs(f.layer.usd, ("6000", "1000"), 100),
+    );
+    f.layer
+        .book
+        .attach_book_to_book_tag(
+            &mut adjustment,
+            BookToBookReasonCode::M1TemporaryDepreciation,
+            RULE,
+        )
+        .unwrap();
+    f.layer.commit(adjustment);
+    let primary = replayed_parent(&f.parent, Some(f.parent_at));
+    let bridge = reconcile_replayed_parent(&f.layer, &primary, None).unwrap();
+    assert_eq!(
+        (
+            expense(&bridge).parent_net,
+            expense(&bridge).adjustments_net,
+            expense(&bridge).layered_net,
+        ),
+        (1_000, 100, 1_100)
+    );
+    let own_only = f
+        .layer
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)), None)
+        .unwrap()
+        .unwrap();
+    let expense = own_only
+        .report
+        .rows
+        .iter()
+        .find(|row| row.code == "6000")
+        .unwrap();
+    assert_eq!((expense.debits, expense.credits), (100, 0));
+    let heads = (f.parent.book.head().unwrap(), f.layer.book.head().unwrap());
+    let refused = f
+        .layer
+        .book
+        .replay_parent_trial_balance(
+            &Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+            &own_only.certificate,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        refused.message.contains("adjustment-layer parent"),
+        "{refused}"
+    );
+    assert!(
+        refused.message.contains("inherited parent balances"),
+        "{refused}"
+    );
+    assert_eq!(
+        (f.parent.book.head().unwrap(), f.layer.book.head().unwrap()),
+        heads
+    );
+}
+
+#[test]
+fn native_parent_replay_checks_historical_book_kind_after_current_read_admission() {
+    let ancestor = Fixture::new(0xd2);
+    let ancestor = replayed_parent(&ancestor, None);
+    let mut parent = Fixture::new(0xd3);
+    parent.transfer(
+        day(2026, 1, 5),
+        b"before-layer-activation",
+        parent.usd,
+        ("6000", "1000"),
+        500,
+    );
+    let before = parent
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)), None)
+        .unwrap()
+        .unwrap();
+    let activation = anchor_replayed_parent(&mut parent, &ancestor);
+    let after = parent
+        .book
+        .certify_trial_balance(
+            fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)),
+            Some(activation),
+        )
+        .unwrap()
+        .unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read"]).unwrap();
+    let historical = parent
+        .book
+        .replay_parent_trial_balance(&read, &before.certificate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.known_at(), before.certificate.known_at);
+    assert!(historical.known_at() < activation);
+    assert!(
+        parent
+            .book
+            .replay_parent_trial_balance(&read, &after.certificate)
+            .unwrap()
+            .unwrap_err()
+            .message
+            .contains("adjustment-layer parent")
+    );
+    for denied in [
+        Capability::embedded(PRINCIPAL, &["reconcile"]).unwrap(),
+        read.clone().for_accounts(&["6000"]).unwrap(),
+        read.for_books(&[ancestor.book_id()]).unwrap(),
+    ] {
+        let before_denial = parent
+            .book
+            .replay_parent_trial_balance(&denied, &before.certificate)
+            .unwrap()
+            .unwrap_err();
+        let after_denial = parent
+            .book
+            .replay_parent_trial_balance(&denied, &after.certificate)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            before_denial, after_denial,
+            "authority precedes book-kind observation"
+        );
+    }
+    assert_eq!(parent.book.head().unwrap(), activation);
+}
+
+#[test]
 fn native_parent_replay_rejects_a_valid_certificate_from_a_different_same_id_history() {
     let f = BridgeFixture::new();
     let through = day(2026, 1, 31);
