@@ -94,6 +94,7 @@ pub(super) fn decode_record(bytes: &[u8]) -> Result<batch::DecodedPlanRecord, Ke
         kind: Kind::PlanCorrection,
         discriminator: members[0].0.proposal().idempotency_key.clone(),
         members,
+        automatic_event: None,
     })
 }
 
@@ -234,10 +235,11 @@ pub(super) fn stage<V: asupersync::fs::Vfs + Clone>(
     capabilities: &[Capability],
     batch: &PostBatch,
     admission: Admission,
-    correction: bool,
+    view: &DraftView,
 ) -> Outcome<StagedDraft> {
-    if !correction {
-        return match stage_batch(db, ctx, book, capabilities, batch, admission)? {
+    if !is_correction(view) {
+        let groups = batch::automatic_groups(db, book, view)?;
+        return match stage_draft_batch(db, ctx, book, capabilities, batch, admission, &groups)? {
             Err(refusal) => Ok(Err(refusal)),
             Ok(BatchStage::Recorded(_)) => Err(KernelError::Corrupt(
                 "an open draft already has its promotion outcome".into(),
@@ -251,6 +253,17 @@ pub(super) fn stage<V: asupersync::fs::Vfs + Clone>(
             })),
         };
     }
+    stage_pair(db, ctx, book, capabilities, batch, admission)
+}
+
+fn stage_pair<V: asupersync::fs::Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+) -> Outcome<StagedDraft> {
     if !matches!(
         admission,
         Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
@@ -386,14 +399,13 @@ async fn preview_pair<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = crate::scratch::ensure_history(db, ctx).await? {
         return Ok(Err(refusal));
     }
-    let staged = match stage(
+    let staged = match stage_pair(
         db,
         ctx,
         book,
         &capabilities,
         &batch,
         planning_admission(book, &view.body.name),
-        true,
     )? {
         Ok(staged) => staged,
         Err(refusal) => return Ok(Err(refusal)),

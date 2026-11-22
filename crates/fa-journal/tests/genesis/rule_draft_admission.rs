@@ -109,10 +109,10 @@ fn decoded_explicit_rule_draft_profile_cannot_post_plan_or_confirm_on_trunk() {
 }
 
 #[test]
-fn automatic_rule_selection_cannot_be_flattened_into_a_draft_record() {
+fn automatic_rule_group_refuses_unrecorded_sources_without_appending() {
     let mut h = harness();
     let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
-    h.open_draft(capability.clone(), "automatic-is-not-explicit")
+    h.open_draft(capability.clone(), "unrecorded-automatic-sources")
         .unwrap();
     let batch = fa_intents::PostBatch::automatic_rules(
         VId(92),
@@ -130,7 +130,7 @@ fn automatic_rule_selection_cannot_be_flattened_into_a_draft_record() {
             &mut h.db,
             &ctx,
             &h.book,
-            "automatic-is-not-explicit",
+            "unrecorded-automatic-sources",
             batch,
             request,
         ))
@@ -138,14 +138,11 @@ fn automatic_rule_selection_cannot_be_flattened_into_a_draft_record() {
         .unwrap_err();
     assert_eq!(
         (refusal.code, refusal.exit),
-        (refusal::code::STRUCTURE, refusal::exit::USAGE),
+        (refusal::code::CANON_RULE, refusal::exit::REFUSAL),
         "{refusal}"
     );
-    assert!(
-        refusal.to_string().contains("automatic rule selection"),
-        "{refusal}"
-    );
+    assert!(refusal.to_string().contains("batch member 0"), "{refusal}");
     assert_eq!(h.db.frontier().unwrap(), head);
     assert_eq!(h.db.vertices().unwrap(), vertices);
-    assert!(h.draft("automatic-is-not-explicit").intents.is_empty());
+    assert!(h.draft("unrecorded-automatic-sources").intents.is_empty());
 }

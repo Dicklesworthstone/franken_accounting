@@ -1798,19 +1798,7 @@ fn verify_automatic_selection<V: Vfs + Clone>(
         Ok(selected) => selected,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let complete = selected.versions.len() == batch.members().len()
-        && selected
-            .versions
-            .iter()
-            .zip(batch.members())
-            .all(|(version, member)| {
-                matches!(
-                    &member.proposal().origin,
-                    fa_model::EntryOrigin::Rule { rule_version_oid, event_ref, .. }
-                        if rule_version_oid.0 == version.rule.ir_digest() && *event_ref == event
-                )
-            });
-    if !complete {
+    if !automatic_selection_matches(batch, &selected.versions) {
         return Ok(Err(Refusal::new(
             code::CANON_RULE,
             exit::REFUSAL,
@@ -1823,6 +1811,26 @@ fn verify_automatic_selection<V: Vfs + Clone>(
         )));
     }
     Ok(Ok(()))
+}
+
+fn automatic_selection_matches(
+    batch: &PostBatch,
+    versions: &[crate::rule::RuleVersionRow],
+) -> bool {
+    let Some(event) = batch.automatic_event() else {
+        return false;
+    };
+    versions.len() == batch.members().len()
+        && versions
+            .iter()
+            .zip(batch.members())
+            .all(|(version, member)| {
+                matches!(
+                    &member.proposal().origin,
+                    fa_model::EntryOrigin::Rule { rule_version_oid, event_ref, .. }
+                        if rule_version_oid.0 == version.rule.ir_digest() && *event_ref == event
+                )
+            })
 }
 
 /// Authorize every member's request under `admission` before any
@@ -2005,6 +2013,128 @@ pub(crate) fn stage_batch<V: Vfs + Clone>(
     admission: Admission,
 ) -> Outcome<BatchStage> {
     stage_batch_with(db, ctx, book, capabilities, batch, admission, None)
+}
+
+/// Execute a native draft while retaining every automatic group's original
+/// complete-selection claim. These private proofs come from V6 Plan records
+/// or the incoming atomic Plan request, never from portable batch plans.
+pub(crate) fn stage_draft_batch<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    capabilities: &[Capability],
+    batch: &PostBatch,
+    admission: Admission,
+    groups: &[crate::draft::AutomaticDraftGroup],
+) -> Outcome<BatchStage> {
+    if !matches!(
+        admission,
+        Admission::PlanDraft(_) | Admission::Promote(_) | Admission::ScratchDraft(_)
+    ) || batch.automatic_event().is_some()
+    {
+        return Err(KernelError::Corrupt(
+            "automatic draft groups require their private draft execution protocol".into(),
+        ));
+    }
+    let mut through = 0;
+    for group in groups {
+        if group.first() < through || !group.binds(batch, capabilities) {
+            return Err(KernelError::Corrupt(
+                "an automatic draft group lost its exact ordered members or original planner"
+                    .into(),
+            ));
+        }
+        through = group.first() + group.batch().members().len();
+    }
+    let confined = groups
+        .iter()
+        .any(|group| admission.admits_confined_draft_sources(group.capability()));
+    let prepared = stage_batch(db, ctx, book, capabilities, batch, admission).map_err(|error| {
+        if confined && matches!(&error, KernelError::Corrupt(_)) {
+            KernelError::Corrupt(
+                "automatic draft replay failed native source integrity validation".into(),
+            )
+        } else {
+            error
+        }
+    })?;
+    let mut staged = match prepared {
+        Err(refusal) => {
+            let member = refusal
+                .location()
+                .iter()
+                .find_map(|(key, value)| match (*key, value) {
+                    ("member", crate::refusal::Locus::Index(index)) => usize::try_from(*index).ok(),
+                    _ => None,
+                });
+            // Per-member Canon reproduction precedes the complete-catalog
+            // comparison below. Its ordinary diagnostics can name source
+            // declarations, which a confined automatic grant does not expose.
+            if refusal.code == code::CANON_RULE
+                && let Some(group) = groups.iter().find(|group| {
+                    admission.admits_confined_draft_sources(group.capability())
+                        && member.is_none_or(|index| {
+                            (group.first()..group.first() + group.batch().members().len())
+                                .contains(&index)
+                        })
+                })
+            {
+                return Ok(Err(Refusal::new(
+                    refusal.code,
+                    refusal.exit,
+                    "an automatic draft member no longer reproduces its admitted rule derivation; nothing was recorded",
+                    "plan §10.3 / §15.2 (confined derivation discloses only admitted effects)",
+                    "ask an authorized reviewer to verify the event and active rules, then prepare the complete current selection in a new draft",
+                )
+                .at("member", member.unwrap_or(group.first()))));
+            }
+            return Ok(Err(refusal));
+        }
+        Ok(BatchStage::Recorded(recorded)) => return Ok(Ok(BatchStage::Recorded(recorded))),
+        Ok(BatchStage::Staged(staged)) => staged,
+    };
+    // Ordinary native preparation above admitted and independently reproduced
+    // every member. Now prove each complete catalog against that same basis,
+    // after all retained planners passed authorization-before-observation.
+    for group in groups {
+        let Some(event) = group.batch().automatic_event() else {
+            staged.txn.abort();
+            return Err(KernelError::Corrupt(
+                "a private automatic draft proof lost its event".into(),
+            ));
+        };
+        let versions = match crate::rule::automatic_rules_for_draft_replay(
+            db,
+            book,
+            group.capability(),
+            event,
+            staged.txn.basis(),
+            admission,
+        )? {
+            Ok(versions) => versions,
+            Err(refusal) => {
+                staged.txn.abort();
+                return Ok(Err(refusal.at("member", group.first())));
+            }
+        };
+        if !automatic_selection_matches(group.batch(), &versions) {
+            staged.txn.abort();
+            return Ok(Err(Refusal::new(
+                code::CANON_RULE,
+                exit::REFUSAL,
+                "an automatic draft group does not contain the complete activated selection in rule-name order; nothing was recorded",
+                "plan §5.8 / §10.2 / §15.2 (retained complete automatic event derivation)",
+                "prepare the complete current selection in a new draft; do not omit, reorder or substitute members of a retained automatic group",
+            )
+            .at("member", group.first())));
+        }
+    }
+    // A newly activated matching name has no member point witness. The
+    // complete catalog is an aggregate input, so any concurrent publication
+    // invalidates this staged promotion exactly as for a native automatic
+    // batch. Flattening execution never drops that commit-time guard.
+    staged.aggregate |= !groups.is_empty();
+    Ok(Ok(BatchStage::Staged(staged)))
 }
 
 /// [`stage_batch`] with the owner's carried history: every member shares its

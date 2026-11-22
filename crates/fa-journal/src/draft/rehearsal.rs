@@ -689,15 +689,8 @@ async fn apply_reviewed_draft(
         book.book_id,
         &view.body.name,
     )));
-    let staged = match correction::stage(
-        target,
-        cx,
-        book,
-        &capabilities,
-        &batch,
-        admission,
-        correction::is_correction(view),
-    )? {
+    let staged = match correction::stage(target, cx, book, &capabilities, &batch, admission, view)?
+    {
         Ok(staged) => staged,
         Err(refusal) => return Ok(Err(refusal)),
     };
