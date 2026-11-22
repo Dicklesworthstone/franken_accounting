@@ -549,3 +549,109 @@ fn a_moved_next_bates_projection_is_found_by_the_view() {
     let err = read_production(&h.db, &h.book, "M-1").unwrap_err();
     assert!(err.to_string().contains("not contiguous"), "{err}");
 }
+
+#[test]
+fn production_retry_binds_metadata_and_preserves_the_original_bates_receipt() {
+    let mut h = Harness::new();
+    let (a, b) = (h.document("first volume"), h.document("later volume"));
+    let counsel = counsel();
+    h.open(&counsel, profile("M-retry", "RETRY", 20), "open")
+        .unwrap();
+    let documents = vec![doc(a, Some(3), Some(1))];
+    let first = h
+        .produce(&counsel, "M-retry", documents.clone(), "volume-one")
+        .unwrap();
+    assert_eq!(first.next_bates, 23);
+
+    h.produce(
+        &counsel,
+        "M-retry",
+        vec![doc(b, Some(4), None)],
+        "volume-two",
+    )
+    .unwrap();
+    let head = h.head();
+
+    // A late retry replays the first receipt, even after another volume has
+    // advanced the matter's current next_bates to 27.
+    let retry = h
+        .produce(&counsel, "M-retry", documents.clone(), "volume-one")
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.record, first.record);
+    assert_eq!(retry.ranges, first.ranges);
+    assert_eq!(retry.next_bates, first.next_bates);
+    assert_eq!(h.head(), head);
+    assert_eq!(
+        read_production(&h.db, &h.book, "M-retry")
+            .unwrap()
+            .unwrap()
+            .next_bates,
+        27
+    );
+
+    // Both fields belong to the canonical semantic request. The same
+    // documents and key must not hide a changed date or description.
+    for changed_date in [false, true] {
+        let mut changed = request(&counsel, "volume-one");
+        if changed_date {
+            changed.effective_date = DateDay::from_ymd(2026, 3, 10).unwrap();
+        } else {
+            changed.description = Erasable::seal(
+                &"a different production record".to_string(),
+                None,
+                &SealKey([55; 32]),
+                [3; 32],
+                [4; 24],
+            );
+        }
+        let cx = h.cx();
+        let refused = h
+            .runtime
+            .block_on(produce(
+                &mut h.db,
+                &cx,
+                &h.book,
+                "M-retry",
+                documents.clone(),
+                changed,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refused.code, refused.exit),
+            (code::IDEMPOTENCY_CONFLICT, 6),
+            "{refused}"
+        );
+        assert_eq!(h.head(), head);
+    }
+
+    // Fresh encryption of identical plaintext is still the same semantic
+    // request; canonical ciphertext randomness is not a new production.
+    let mut resealed = request(&counsel, "volume-one");
+    resealed.description = Erasable::seal(
+        &"production record".to_string(),
+        None,
+        &SealKey([55; 32]),
+        [5; 32],
+        [6; 24],
+    );
+    let cx = h.cx();
+    let retry = h
+        .runtime
+        .block_on(produce(
+            &mut h.db,
+            &cx,
+            &h.book,
+            "M-retry",
+            documents,
+            resealed,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.record, first.record);
+    assert_eq!(retry.ranges, first.ranges);
+    assert_eq!(retry.next_bates, first.next_bates);
+    assert_eq!(h.head(), head);
+}

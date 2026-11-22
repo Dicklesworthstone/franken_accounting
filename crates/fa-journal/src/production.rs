@@ -27,6 +27,11 @@
 //! prepares neither (plan §14.4). Productions in one matter race on
 //! `next_bates`: the first committer wins and the other retries for the next
 //! numbers. A production that would assign nothing new writes nothing.
+//!
+//! Open and Produce reserve their registered record keys in the shared
+//! IntentOutcome namespace atomically with their native effects. Exact retries
+//! authenticate the original control and claim and replay the receipt at its
+//! publication sequence, including its original next Bates number.
 
 use fa_model::limits::MAX_PROOF_REFS;
 use fa_model::symbols::{label, property, relation};
@@ -518,6 +523,87 @@ fn record_key(kind: Kind, profile: VId, key: &[u8]) -> Vec<u8> {
     .to_vec()
 }
 
+/// The exact native production-control shapes that reserve a successful-intent
+/// key. Historical controls keep their original entry identity and remain
+/// readable without publishing a replacement claim.
+pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
+    let proposal = &entry.proposal;
+    if proposal.class != EntryClass::PRODUCTION_CONTROL
+        || proposal.branch_id != Id128::TRUNK
+        || proposal.document_date.is_some()
+        || proposal.effective_period.is_some()
+        || !proposal.unit_totals.is_empty()
+        || proposal.base_totals.is_some()
+        || proposal.session_ref.is_some()
+        || !proposal.tags.is_empty()
+        || proposal.idempotency_key.len() != 32
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || !proposal.legs.is_empty()
+        || !proposal.evidence.is_empty()
+        || !proposal.supersession.is_empty()
+        || proposal.pending.is_some()
+        || !proposal.external_ids.is_empty()
+        || vid
+            != entry_vid(
+                proposal.book_id,
+                &proposal.principal_ref.0.to_le_bytes(),
+                &proposal.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: ControlKind::PRODUCTION_TRANSITION,
+        spec_body_digest,
+    } = &proposal.origin
+    else {
+        return false;
+    };
+    let Some(ControlPayload::LifecycleTransition {
+        object_ref,
+        from,
+        to,
+        proof_refs,
+        reason_code: 0,
+    }) = &proposal.control
+    else {
+        return false;
+    };
+    let open = ProductionState::Open.tag();
+    match (*from, *to, proposal.extensions.as_slice()) {
+        (0, t, [(fa_model::entry::PRODUCTION_PROFILE_EXTENSION, body)]) if t == open => {
+            let Ok(profile) = ProductionProfile::decode(body) else {
+                return false;
+            };
+            profile.book_id == proposal.book_id
+                && profile.vid() == *object_ref
+                && profile.digest().is_ok_and(|digest| digest == *spec_body_digest)
+                && proof_refs
+                    == &profile
+                        .protective_order
+                        .iter()
+                        .map(|oid| TypedRef::Object(*oid))
+                        .collect::<Vec<_>>()
+        }
+        (f, t, [(fa_model::entry::PRODUCTION_BATES_EXTENSION, body)])
+            if f == open && t == open =>
+        {
+            let Ok(record) = BatesRecord::decode(body) else {
+                return false;
+            };
+            production_profile_vid(proposal.book_id, &record.matter) == *object_ref
+                && proof_refs
+                    == &record
+                        .ranges
+                        .iter()
+                        .map(|range| TypedRef::Object(range.document))
+                        .collect::<Vec<_>>()
+        }
+        _ => false,
+    }
+}
+
 fn record_proposal(
     book: &BookContext,
     profile: &ProductionProfile,
@@ -662,7 +748,8 @@ fn fcw(detail: &str) -> Refusal {
 
 /// The identical record's sequence, or the conflict (plan §4.9: exact bytes,
 /// else a seal-aware semantic comparison under the book key).
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
@@ -673,6 +760,9 @@ fn recorded_or_conflict(
         return Ok(Err(conflict_with(row)));
     }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(conflict_with(row)));
+    }
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
     }
@@ -777,10 +867,28 @@ pub async fn open_production<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match crate::outcome::witness_control_record(
+        &mut txn,
+        db,
+        ctx,
+        book,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+        EntryClass::PRODUCTION_CONTROL,
+    )
+    .await?
+    {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| ProductionOpened {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ProductionOpened {
                 profile: vid,
                 control_entry: evid,
                 recorded_at,
@@ -833,6 +941,7 @@ pub async fn open_production<V: asupersync::fs::Vfs + Clone>(
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(vid, vec![label::PRODUCTION_PROFILE], props);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     txn.write(db, in_case)?;
@@ -850,7 +959,7 @@ pub async fn open_production<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
             Some(row) => Ok(
-                recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| ProductionOpened {
+                recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ProductionOpened {
                     profile: vid,
                     control_entry: evid,
                     recorded_at,
@@ -968,6 +1077,24 @@ pub async fn produce<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match crate::outcome::witness_control_record(
+        &mut txn,
+        db,
+        ctx,
+        book,
+        req.capability.holder(),
+        &key,
+        evid,
+        EntryClass::PRODUCTION_CONTROL,
+    )
+    .await?
+    {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
     let Some(row) = txn.vertex(db, vid)? else {
         txn.abort();
         return Ok(Err(unknown(matter)));
@@ -987,9 +1114,9 @@ pub async fn produce<V: asupersync::fs::Vfs + Clone>(
             vid.0
         )));
     }
-    if let Some(stored) = txn.vertex(db, evid)? {
+    if let Some(stored) = recorded {
         txn.abort();
-        return recorded_production(db, book, &profile, &stored, &digest, &documents);
+        return recorded_production(db, book, &profile, &stored, &documents, &req);
     }
     // Property-granular point reads: a concurrent production that moves
     // `next_bates` first makes this transaction a first-committer conflict.
@@ -1111,6 +1238,7 @@ pub async fn produce<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
     batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
     for (range_vid, range) in &assigned {
         let mut props = vec![
@@ -1157,7 +1285,7 @@ pub async fn produce<V: asupersync::fs::Vfs + Clone>(
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(evid)? {
-            Some(stored) => recorded_production(db, book, &profile, &stored, &digest, &documents),
+            Some(stored) => recorded_production(db, book, &profile, &stored, &documents, &req),
             // A concurrent production assigned one of these documents first.
             None => Ok(Err(fcw(
                 "a document was produced in the matter concurrently",
@@ -1175,8 +1303,8 @@ fn recorded_production<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     profile: &ProductionProfile,
     stored: &VertexRow,
-    digest: &[u8; 32],
     documents: &[ProducedDocument],
+    req: &ProductionRequest,
 ) -> Outcome<Produced> {
     if !crate::entry_storage::has_class_mirror(stored, EntryClass::PRODUCTION_CONTROL) {
         return Ok(Err(conflict_with(stored)));
@@ -1186,13 +1314,37 @@ fn recorded_production<V: asupersync::fs::Vfs + Clone>(
     let Some(record) = bates_record(&entry)? else {
         return Ok(Err(conflict_with(stored)));
     };
-    if &record.request_digest != digest || record.matter != profile.matter {
+    if record.request_digest != request_digest(&profile.matter, documents)?
+        || record.matter != profile.matter
+    {
         return Ok(Err(conflict_with(stored)));
+    }
+    // The document list alone is not the semantic request. Bind the original
+    // assigned ranges to the caller's date, description and principal too.
+    // Replanning here would allocate from today's next_bates and change an
+    // otherwise identical retry after another production.
+    let proposal = record_proposal(
+        book,
+        profile,
+        Kind::Produce,
+        req,
+        record
+            .ranges
+            .iter()
+            .map(|range| TypedRef::Object(range.document))
+            .collect(),
+        (
+            fa_model::entry::PRODUCTION_BATES_EXTENSION,
+            record.canonical_bytes()?,
+        ),
+    )?;
+    if let Err(refusal) = recorded_or_conflict(db, book, stored, &proposal)? {
+        return Ok(Err(refusal));
     }
     let mut ranges = Vec::with_capacity(documents.len());
     for d in documents {
         let range_vid = bates_range_vid(book.book_id, &profile.matter, &d.document);
-        let Some(row) = db.vertex(range_vid)? else {
+        let Some(row) = db.vertex_at(range_vid, recorded_at)? else {
             return Err(KernelError::Corrupt(format!(
                 "Produce record {:032x} has no Bates range for document {}",
                 stored.vid.0,
@@ -1210,7 +1362,7 @@ fn recorded_production<V: asupersync::fs::Vfs + Clone>(
         });
     }
     let next = next_of(
-        db.vertex(profile.vid())?
+        db.vertex_at(profile.vid(), recorded_at)?
             .as_ref()
             .and_then(|row| prop(row, property::NEXT_BATES)),
         profile.vid(),
@@ -1460,6 +1612,12 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         let recorded_at = src.created_at;
         if entry.proposal.class != EntryClass::PRODUCTION_CONTROL {
             continue;
+        }
+        if !crate::outcome::verify_control_recorded(db, &src, &entry)? {
+            return Err(KernelError::Corrupt(format!(
+                "production record {:032x} or its intent outcome is not its original publication",
+                e.src.0
+            )));
         }
         let Some(ControlPayload::LifecycleTransition {
             object_ref,

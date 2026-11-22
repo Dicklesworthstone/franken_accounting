@@ -17,6 +17,8 @@
 //! key atomically; their original pre-claim entries remain retry anchors.
 //! Statement issuance reserves its registered record key and authenticates
 //! the original approval transcript alongside its immutable issuance body.
+//! Production lifecycle records reserve their registered keys alongside
+//! their Bates assignments; retries and views authenticate the original claims.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -39,6 +41,7 @@ use fa_model::{
     intent_outcome_vid,
 };
 use fgdb::{Database, VertexRow, WriteBatch, WriteTxn, WriteTxnError};
+use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, QueryCx, VId};
 
 use crate::genesis::BookContext;
@@ -268,6 +271,66 @@ pub fn witness_named_key<V: Vfs + Clone>(
         return Ok(Err(key_conflict()));
     }
     Ok(Ok(true))
+}
+
+/// Resolve a dedicated normal-key control only after its authority has been
+/// admitted. A key collision with another class is refused from metadata,
+/// before observing that entry's payload. Fresh writes also respect the
+/// authenticated legacy-key coverage.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn witness_control_record<V: Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    principal: VId,
+    key: &[u8],
+    expected_entry: VId,
+    class: EntryClass,
+) -> Outcome<Option<VertexRow>> {
+    if let Err(refusal) = witness_named_key(
+        txn,
+        db,
+        book.book_id,
+        principal,
+        key,
+        expected_entry,
+    )? {
+        return Ok(Err(refusal));
+    }
+    if let Some(is_entry) = txn.vertex_has_label(db, expected_entry, label::ENTRY)? {
+        if !is_entry
+            || txn.vertex_property(db, expected_entry, property::CLASS)?
+                != Some(CanonicalScalar::Int(i64::from(class.0)))
+        {
+            return Ok(Err(key_conflict()));
+        }
+        let row = txn.vertex(db, expected_entry)?.ok_or_else(|| {
+            KernelError::Corrupt("a control entry vanished during its point read".into())
+        })?;
+        return Ok(Ok(Some(row)));
+    }
+    let outcome = intent_outcome_vid(book.book_id, &principal.0.to_le_bytes(), key);
+    match require_unused_legacy_key(txn, db, book, outcome) {
+        // Normal genesis coverage is authenticated from its durable snapshot,
+        // even after checkpoint open. Only recovered legacy coverage needs
+        // its retained source marker. Load that exact missing suffix once,
+        // after admission, instead of replaying every book from genesis.
+        Err(KernelError::Read(fgdb::ReadError::DeltaCursorRetired { asked, .. })) => {
+            if let Err(error) = db.ensure_delta_window(&ctx.commit(), asked).await {
+                return Ok(Err(Refusal::new(
+                    code::REPLAY_UNSUPPORTED,
+                    exit::FOUNDATION,
+                    format!("the recovered intent-key coverage history is not readable: {error:?}"),
+                    "plan §5.9 (fresh keys require authenticated recovered coverage)",
+                    "restore the book's retained commit history, then retry the same intent",
+                )));
+            }
+            require_unused_legacy_key(txn, db, book, outcome)
+                .map(|result| result.map(|()| None))
+        }
+        result => result.map(|result| result.map(|()| None)),
+    }
 }
 
 /// A fresh target-derived writer also respects a pre-protocol normal-key
@@ -738,7 +801,8 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || is_statement_activation(entry)
         || is_cash_flow_policy_activation(entry)
         || is_rule_activation(entry)
-        || crate::issuance::is_issuance_control(entry, vid))
+        || crate::issuance::is_issuance_control(entry, vid)
+        || crate::production::is_lifecycle_control(entry, vid))
         && vid
             == fa_model::entry_vid(
                 proposal.book_id,

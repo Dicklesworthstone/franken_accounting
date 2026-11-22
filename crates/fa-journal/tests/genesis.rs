@@ -77,6 +77,8 @@ mod period_outcome_keys;
 mod policy_outcome_keys;
 #[path = "genesis/prior_period_adjustment.rs"]
 mod prior_period_adjustment_tests;
+#[path = "genesis/production_outcome_keys.rs"]
+mod production_outcome_keys;
 #[path = "genesis/proportional.rs"]
 mod proportional_tests;
 #[path = "genesis/rea_outcome_keys.rs"]
