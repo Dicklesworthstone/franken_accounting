@@ -355,6 +355,253 @@ impl BridgeFixture {
     }
 }
 
+fn open_bridge_account(
+    fixture: &mut Fixture,
+    code: &str,
+    name: &str,
+    account_type: AccountType,
+    unit_policy: UnitPolicy,
+) {
+    let mut spec = account(code, name, account_type);
+    spec.unit_policy = unit_policy;
+    fixture
+        .book
+        .open_account(
+            &spec,
+            day(2025, 12, 1),
+            None,
+            PRINCIPAL,
+            day(2025, 12, 1),
+            code.as_bytes(),
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+}
+
+fn replayed_parent(
+    parent: &Fixture,
+    known_at: Option<CommitSeq>,
+) -> fa::consolidation::ReplayedParentTrialBalance {
+    let certified = parent
+        .book
+        .certify_trial_balance(fa::TrialBalanceSelection::AsOf(day(2026, 1, 31)), known_at)
+        .unwrap()
+        .unwrap();
+    parent
+        .book
+        .replay_parent_trial_balance(
+            &Capability::embedded(PRINCIPAL, &["read"]).unwrap(),
+            &certified.certificate,
+        )
+        .unwrap()
+        .unwrap()
+}
+
+fn anchor_replayed_parent(
+    layer: &mut Fixture,
+    parent: &fa::consolidation::ReplayedParentTrialBalance,
+) -> CommitSeq {
+    layer
+        .book
+        .anchor_adjustment_layer(
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+            parent.book_id(),
+            parent.known_at(),
+        )
+        .unwrap()
+        .unwrap()
+        .recorded_at
+}
+
+fn reconcile_replayed_parent(
+    layer: &Fixture,
+    parent: &fa::consolidation::ReplayedParentTrialBalance,
+    known_at: Option<CommitSeq>,
+) -> Result<fa::consolidation::BookToBookReconciliation, fa_journal::Refusal> {
+    layer
+        .book
+        .reconcile_book_to_book_from_parent(
+            &Capability::embedded(PRINCIPAL, &["read", "reconcile"]).unwrap(),
+            parent,
+            None,
+            Some(day(2026, 1, 31)),
+            known_at,
+        )
+        .unwrap()
+}
+
+#[test]
+fn native_parent_bridge_refuses_same_code_with_a_different_account_type() {
+    let mut parent = Fixture::new(0xc6);
+    open_bridge_account(
+        &mut parent,
+        "7000",
+        "Parent prepaid asset",
+        AccountType::ASSET,
+        UnitPolicy::AnyCurrency,
+    );
+    parent.transfer(
+        day(2026, 1, 5),
+        b"parent-prepaid",
+        parent.usd,
+        ("7000", "1000"),
+        5_000,
+    );
+    let parent = replayed_parent(&parent, None);
+    let mut layer = Fixture::new(0xc7);
+    open_bridge_account(
+        &mut layer,
+        "7000",
+        "Unrelated revenue",
+        AccountType::REVENUE,
+        UnitPolicy::AnyCurrency,
+    );
+    anchor_replayed_parent(&mut layer, &parent);
+    let head = layer.book.head().unwrap();
+    let refusal = reconcile_replayed_parent(&layer, &parent, None).unwrap_err();
+    assert!(refusal.message.contains("7000"), "{refusal}");
+    assert!(refusal.message.contains("Asset"), "{refusal}");
+    assert!(refusal.message.contains("Revenue"), "{refusal}");
+    assert_eq!(
+        layer.book.head().unwrap(),
+        head,
+        "a refusal publishes nothing"
+    );
+}
+
+#[test]
+fn native_parent_bridge_respects_account_units_without_requiring_identical_charts() {
+    // JPY is foreign to these USD-functional books. BTC is a quantity unit
+    // carried by balanced memo accounts, so AnyCurrency must not admit it.
+    for (seed, code, kind, is_currency) in [
+        (0xc8, "JPY", AccountType::ASSET, true),
+        (0xcd, "BTC", AccountType::MEMO, false),
+    ] {
+        let mut parent = Fixture::new(seed);
+        let unit = parent.book.context().units.lookup(code).unwrap();
+        for account_code in ["7000", "7001"] {
+            open_bridge_account(
+                &mut parent,
+                account_code,
+                "Parent account name",
+                kind,
+                UnitPolicy::Single(unit),
+            );
+        }
+        open_bridge_account(
+            &mut parent,
+            "7100",
+            "Unused parent asset",
+            AccountType::ASSET,
+            UnitPolicy::AnyCurrency,
+        );
+        parent.transfer(
+            day(2026, 1, 5),
+            b"inherited-native-unit",
+            unit,
+            ("7000", "7001"),
+            5_000,
+        );
+        let parent_at = parent.book.head().unwrap();
+        parent.transfer(
+            day(2026, 1, 6),
+            b"later-parent-balance",
+            unit,
+            ("7000", "7001"),
+            250,
+        );
+        let parent_head = parent.book.head().unwrap();
+        let source = replayed_parent(&parent, Some(parent_at));
+        assert!(source.known_at() < parent_head);
+        for (i, (policy, accepted)) in [
+            (UnitPolicy::Single(parent.usd), false),
+            (UnitPolicy::Single(unit), true),
+            (UnitPolicy::AnyCurrency, is_currency),
+            (UnitPolicy::AnyUnit, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut layer = Fixture::new(seed + 1 + u8::try_from(i).unwrap());
+            for account_code in ["7000", "7001"] {
+                open_bridge_account(
+                    &mut layer,
+                    account_code,
+                    "Different layer account name",
+                    kind,
+                    policy,
+                );
+            }
+            // Compatibility is required for inherited balances, not unrelated
+            // unused declarations or an exact byte-for-byte chart identity.
+            let layer_usd = layer.usd;
+            open_bridge_account(
+                &mut layer,
+                "7100",
+                "Unused layer revenue",
+                AccountType::REVENUE,
+                UnitPolicy::Single(layer_usd),
+            );
+            let layer_at = anchor_replayed_parent(&mut layer, &source);
+            let result = reconcile_replayed_parent(&layer, &source, None);
+            if accepted {
+                let result = result.unwrap();
+                let row = result
+                    .bridge
+                    .rows
+                    .iter()
+                    .find(|row| row.account_code == "7000")
+                    .unwrap();
+                assert_eq!(row.unit_id, unit.0);
+                assert_eq!(
+                    (row.parent_net, row.adjustments_net, row.layered_net),
+                    (5_000, 0, 5_000)
+                );
+                assert!(row.explanations.is_empty());
+                assert_eq!(result.bridge.parent_known_at, parent_at.0);
+            } else {
+                let refusal = result.unwrap_err();
+                assert!(refusal.message.contains("unit policy"), "{refusal}");
+                assert!(refusal.message.contains(code), "{refusal}");
+            }
+            assert_eq!(layer.book.head().unwrap(), layer_at);
+            assert_eq!(parent.book.head().unwrap(), parent_head);
+        }
+    }
+}
+
+#[test]
+fn native_parent_bridge_reads_the_selected_historical_layer_chart() {
+    let mut f = BridgeFixture::new();
+    let source = replayed_parent(&f.parent, Some(f.parent_at));
+    let layer_at = f.layer.book.head().unwrap();
+    let original = reconcile_replayed_parent(&f.layer, &source, Some(layer_at)).unwrap();
+    // This account has only inherited balances, so its own native chart may
+    // be promoted. A current bridge still cannot put those balances on a
+    // summary, and a historical bridge must retain the earlier posting leaf.
+    f.layer
+        .book
+        .promote_to_summary(
+            "6000",
+            day(2026, 1, 31),
+            PRINCIPAL,
+            day(2026, 1, 31),
+            b"promote-layer-expense",
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    let head = f.layer.book.head().unwrap();
+    let refused = reconcile_replayed_parent(&f.layer, &source, None).unwrap_err();
+    assert!(refused.message.contains("summary account"), "{refused}");
+    assert_eq!(
+        reconcile_replayed_parent(&f.layer, &source, Some(layer_at)).unwrap(),
+        original
+    );
+    assert_eq!(f.layer.book.head().unwrap(), head);
+}
+
 #[test]
 fn native_parent_replay_rejects_a_valid_certificate_from_a_different_same_id_history() {
     let f = BridgeFixture::new();

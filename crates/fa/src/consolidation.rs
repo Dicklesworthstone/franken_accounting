@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_journal::KernelError;
-use fa_journal::genesis::BookContext;
+use fa_journal::genesis::{BookContext, UnitPolicy};
 use fa_journal::refusal::{Refusal, exit};
 use fa_journal::rows::{AccountRow, PeriodRow, bytes};
 use fa_model::symbols::{label, property};
@@ -987,6 +987,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Reconcile a parent source already replayed against its actual native
     /// book. Every unit used by either book must have the same complete
     /// definition in both registries before their mantissas are combined.
+    /// Same-code accounts must preserve the parent's account type and admit
+    /// its units; an implicit code match is not a chart reclassification.
     #[allow(clippy::too_many_arguments)]
     pub fn reconcile_book_to_book_from_parent(
         &self,
@@ -1248,7 +1250,7 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
 
     let layered_kind = book_kind_at_db(db, book, at)?;
     let mut chart = Vec::new();
-    let mut code_to_vid: BTreeMap<String, u128> = BTreeMap::new();
+    let mut accounts_by_code: BTreeMap<String, AccountRow> = BTreeMap::new();
     let mut vid_to_meta: BTreeMap<u128, (String, String)> = BTreeMap::new();
     for row in db.vertices_at(at).map_err(KernelError::from)? {
         if !row.labels.contains(&label::ACCOUNT) {
@@ -1261,15 +1263,15 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
             .into());
         }
         let account = AccountRow::decode(&row)?;
-        code_to_vid.insert(account.code.clone(), account.vid.0);
         vid_to_meta.insert(account.vid.0, (account.code.clone(), account.name.clone()));
         chart.push(Account {
             id: account.vid.0,
-            code: account.code,
-            name: account.name,
+            code: account.code.clone(),
+            name: account.name.clone(),
             account_type: account.account_type,
             is_leaf: account.is_leaf,
         });
+        accounts_by_code.insert(account.code.clone(), account);
     }
     chart.sort_by(|a, b| a.code.cmp(&b.code).then(a.id.cmp(&b.id)));
 
@@ -1285,7 +1287,7 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
         if row.debits == 0 && row.credits == 0 {
             continue;
         }
-        let Some(&layered_acct_id) = code_to_vid.get(&row.code) else {
+        let Some(layered_account) = accounts_by_code.get(&row.code) else {
             return Ok(Err(refusal_book_to_book(
                 format!(
                     "parent book carries non-zero balance on account `{}`, which is absent from the adjustment-layer book's chart",
@@ -1297,7 +1299,23 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
                 ),
             )));
         };
-        if !units_set.contains(&row.unit_id) {
+        // The current bridge has no declared chart-mapping law. A shared code
+        // therefore preserves classification, rather than silently presenting
+        // a parent's asset as income without a reason-coded reclassification.
+        if layered_account.account_type != row.account_type.0 {
+            return Ok(Err(refusal_book_to_book(
+                format!(
+                    "parent account `{}` has type {}, but its same-code adjustment-layer account has type {}",
+                    row.code,
+                    row.account_type.name().unwrap_or("unregistered"),
+                    fa_model::AccountType(layered_account.account_type)
+                        .name()
+                        .unwrap_or("unregistered"),
+                ),
+                "use a layer chart with matching account types; record basis reclassifications as reason-coded adjustment entries instead of reusing a code for a different type",
+            )));
+        }
+        let Some(unit) = book.units.get(UnitId(row.unit_id)) else {
             return Ok(Err(refusal_book_to_book(
                 format!(
                     "parent trial balance references unit id {} absent from the adjustment-layer book",
@@ -1305,9 +1323,27 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
                 ),
                 "ensure the adjustment-layer book declares every unit used by its parent book",
             )));
+        };
+        // Apply the same Single / AnyCurrency / AnyUnit admission as native
+        // postings. Inherited balances cannot bypass the layer's account law.
+        let admits_unit = match layered_account.unit_policy {
+            UnitPolicy::Single(allowed) => allowed.0 == row.unit_id,
+            UnitPolicy::AnyCurrency => {
+                matches!(unit.kind, fa_money::UnitKind::Currency { .. })
+            }
+            UnitPolicy::AnyUnit => true,
+        };
+        if !admits_unit {
+            return Ok(Err(refusal_book_to_book(
+                format!(
+                    "parent account `{}` carries {}, which the same-code adjustment-layer account's unit policy does not admit",
+                    row.code, unit.code,
+                ),
+                "use a layer chart whose matching accounts admit every inherited native unit; a bridge does not convert foreign currency or quantity balances into the layer's functional currency",
+            )));
         }
         let slot = parent_cells
-            .entry((layered_acct_id, row.unit_id))
+            .entry((layered_account.vid.0, row.unit_id))
             .or_default();
         slot.0 = slot
             .0
