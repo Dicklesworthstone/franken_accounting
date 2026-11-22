@@ -622,6 +622,32 @@ fn derive_selected(
     let digest = digest_arg(selected_rule, DERIVE)?;
     let who = ctx.principal(args);
     let cap = ctx.capability(args, &["read", "post"])?;
+    if let Some(name) = derivation_draft(args)?
+        && cap.branch().is_some()
+    {
+        // A confined preparer receives only its admitted posting effects.
+        // Resolve the explicit event address without listing the REA graph,
+        // and leave rule metadata and source-based diagnostics in the factory.
+        let mut book = ctx.books.open_admitted(args, |book| {
+            book.admit_draft_sources(&cap, name)??;
+            Ok(())
+        })?;
+        let target = target.strip_prefix("EV:").unwrap_or(target);
+        let event = if target.len() == 32 && target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            parse_vid(target, "event")?
+        } else {
+            fa_model::event_vid(book.context().book_id, target)
+        };
+        let given = supplied_inputs(&args.flag_all("--input"), &book.context().units)?;
+        let key = args.flag("--key").map(str::as_bytes);
+        let intent = match kind {
+            Some(kind) => {
+                book.prepare_rule_intent_in_draft(&cap, name, kind, &digest, event, &given, key)??
+            }
+            None => book.prepare_rule_entry_in_draft(&cap, name, &digest, event, &given, key)??,
+        };
+        return plan_intent_into_draft(&ctx.out, &mut book, cap, name, intent);
+    }
     let mut selected = None;
     let mut book = ctx.books.open_admitted(args, |book| {
         let scope = book.read_scope(who, &cap)??;
@@ -875,6 +901,33 @@ fn show(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 }
 
 /// Parse `--input <name>=<value>` against the rule's declared inputs.
+/// Parse only caller-supplied values for a source-only draft. The native
+/// factory checks the selected rule's declarations without exposing them.
+fn supplied_inputs(given: &[&str], units: &fa_money::UnitRegistry) -> Result<Inputs, Fail> {
+    let mut out = Inputs::new();
+    for &raw in given {
+        let Some((name, value)) = raw.split_once('=') else {
+            return Err(usage(
+                format!("--input `{raw}` is not <name>=<value>"),
+                "--input as_of=2026-03-31 or --input fee=\"10.00 USD\"",
+            ));
+        };
+        let parsed = match DateDay::parse(value) {
+            Ok(date) => InputValue::Date(date),
+            Err(_) => InputValue::Amount(Amount::parse(value, units).map_err(|error| {
+                usage(
+                    format!(
+                        "--input {name}: `{value}` is neither a date nor an exact amount: {error}"
+                    ),
+                    "supply YYYY-MM-DD or an exact amount with its unit, such as \"10.00 USD\"",
+                )
+            })?),
+        };
+        out.set(name, parsed);
+    }
+    Ok(out)
+}
+
 fn inputs(
     rule: &CompiledRule,
     given: &[&str],

@@ -1228,6 +1228,43 @@ impl Book {
         ))
     }
 
+    /// Derive only the admitted effects of one named rule and event for an
+    /// owned open draft. The capability must hold Post and explicitly name
+    /// that draft's branch; no general Read authority is granted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_rule_entry_in_draft(
+        &self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: Option<&[u8]>,
+    ) -> Outcome<fa_intents::PostIntent> {
+        with_store!(&self.store, core => core.prepare_rule_entry_in_draft(
+            &self.purposes(), capability, name, ir_digest, event, inputs, idempotency_key,
+        ))
+    }
+
+    /// Prepare a selected Adjusting rule for Accrue or Defer in the same
+    /// confined source boundary. A missing key uses the ordinary derivation
+    /// identity; only the completed, admitted RuleDerived intent is returned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_rule_intent_in_draft(
+        &self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        kind: crate::rule::RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &crate::rule::Inputs,
+        idempotency_key: Option<&[u8]>,
+    ) -> Outcome<fa_intents::PostIntent> {
+        with_store!(&self.store, core => core.prepare_rule_intent_in_draft(
+            &self.purposes(), capability, name, kind, ir_digest, event, inputs, idempotency_key,
+        ))
+    }
+
     /// Prepare every active matching rule as one complete atomic batch.
     /// A required input or empty matching set refuses before publication.
     /// Native plan/post rechecks selection, authority and every derivation.

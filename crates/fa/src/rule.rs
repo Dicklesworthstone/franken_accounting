@@ -87,6 +87,31 @@ pub fn default_derivation_key(
     )))
 }
 
+/// A named-source factory cannot reveal private rule declarations, event
+/// values, or evaluated amounts through a failed derivation's diagnostics.
+fn draft_derivation_refusal() -> Refusal {
+    Refusal::new(
+        CANON_RULE,
+        fa_journal::refusal::exit::REFUSAL,
+        "the selected rule and event cannot produce an admitted draft entry with these inputs",
+        "plan §10.3 / §15.2; fa-txgy.7 (named-source derivation discloses only admitted posting effects)",
+        "ask an authorized reviewer to verify the selected rule, event, activation and inputs",
+    )
+}
+
+fn draft_source_corrupt() -> fa_journal::KernelError {
+    fa_journal::KernelError::Corrupt(
+        "the selected rule or event source failed integrity validation".into(),
+    )
+}
+
+fn redact_draft_source_error(error: fa_journal::KernelError) -> fa_journal::KernelError {
+    match error {
+        fa_journal::KernelError::Corrupt(_) => draft_source_corrupt(),
+        other => other,
+    }
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     /// Admit `capability` to change rules before anything is observed.
     pub fn admit_rule_change(
@@ -223,6 +248,187 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(fa_journal::policy::refusal(&denial)));
         }
         self.prepare_rule_entry_for(cx, capability, Some(kind), ir_digest, event, inputs, key)
+    }
+
+    /// Derive one explicitly named rule and event for the capability holder's
+    /// own open draft. An explicit branch caveat and Post authority replace
+    /// general Read only inside this factory. It returns admitted effects,
+    /// never a rule source, event payload, catalog or reusable read authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_rule_entry_in_draft(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: Option<&[u8]>,
+    ) -> Outcome<fa_intents::PostIntent> {
+        self.prepare_rule_entry_for_draft(cx, capability, name, None, ir_digest, event, inputs, key)
+    }
+
+    /// Prepare an Accrue or Defer in the same confined source boundary.
+    /// The selected rule must produce Adjusting entries. Omitting `key` uses
+    /// the ordinary selected-rule semantic key, computed without disclosing
+    /// the rule's declaration or its encoded input schema to the caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_rule_intent_in_draft(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        kind: RuleIntentKind,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: Option<&[u8]>,
+    ) -> Outcome<fa_intents::PostIntent> {
+        self.prepare_rule_entry_for_draft(
+            cx,
+            capability,
+            name,
+            Some(kind),
+            ir_digest,
+            event,
+            inputs,
+            key,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_rule_entry_for_draft(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        kind: Option<RuleIntentKind>,
+        ir_digest: &[u8; 32],
+        event: VId,
+        inputs: &Inputs,
+        key: Option<&[u8]>,
+    ) -> Outcome<fa_intents::PostIntent> {
+        let admission = match self.query(cx, |db, book| {
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if key.is_some_and(|key| {
+            key.is_empty() || key.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
+        }) {
+            return Ok(Err(Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::refusal::exit::USAGE,
+                "a selected-rule draft key must contain 1 to 64 bytes",
+                "plan §4.9 (bounded semantic idempotency keys)",
+                "omit the key to use the selected derivation's stable identity, or supply 1 to 64 bytes",
+            )));
+        }
+        // Description text is returned inside the intent, so do not copy
+        // private rule names, event codes or descriptions into this field.
+        let description = self.seal_text(cx, "Selected rule derivation for draft review")?;
+        self.query(cx, |db, book| {
+            use fa_model::symbols::{label, property};
+
+            let at = match admission.recheck(db, book)? {
+                Ok(at) => at,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let Some(version) = fa_journal::rule::rule_version_at(db, book, ir_digest, at)
+                .map_err(redact_draft_source_error)?
+            else {
+                return Ok(Err(draft_derivation_refusal()));
+            };
+            let rule = &version.rule;
+            if let Some(kind) = kind
+                && kind.validate_rule(rule).is_err()
+            {
+                return Ok(Err(draft_derivation_refusal()));
+            }
+            // `read_event` reconstructs the complete REA population. Only
+            // this one named materialized Event belongs to the source grant.
+            let Some(row) = db
+                .vertex_at(event, at)
+                .map_err(fa_journal::KernelError::from)?
+            else {
+                return Ok(Err(draft_derivation_refusal()));
+            };
+            if !row.labels.contains(&label::EVENT) {
+                return Ok(Err(draft_derivation_refusal()));
+            }
+            let bytes = fa_journal::rows::bytes(&row, property::FA_PAYLOAD, "event payload")
+                .map_err(redact_draft_source_error)?;
+            let source = fa_model::EventSpec::decode(&bytes).map_err(|_| draft_source_corrupt())?;
+            let digest = source.event_digest().map_err(|_| draft_source_corrupt())?;
+            if fa_model::event_vid(book.book_id, &source.code) != event
+                || fa_journal::rows::bytes(&row, property::BOOK_ID, "event book")
+                    .map_err(redact_draft_source_error)?
+                    != book.book_id.0
+                || fa_journal::rows::bytes(&row, property::FA_DIGEST, "event digest")
+                    .map_err(redact_draft_source_error)?
+                    != digest
+            {
+                return Err(draft_source_corrupt().into());
+            }
+            let (inputs_bytes, derivation) = match encode_inputs(rule, inputs)
+                .and_then(|bytes| Ok((bytes, evaluate(rule, &source, inputs)?)))
+            {
+                Ok(derived) => derived,
+                Err(_) => return Ok(Err(draft_derivation_refusal())),
+            };
+            let Some(binding_row) = db
+                .vertex_at(fa_model::rule_name_vid(book.book_id, rule.name()), at)
+                .map_err(fa_journal::KernelError::from)?
+            else {
+                return Ok(Err(draft_derivation_refusal()));
+            };
+            let Some(binding) =
+                RuleNameRow::decode(&binding_row).map_err(redact_draft_source_error)?
+            else {
+                return Err(draft_source_corrupt().into());
+            };
+            if binding.name != rule.name() {
+                return Err(draft_source_corrupt().into());
+            }
+            if binding.bindings.in_force(derivation.effective) != Some(*ir_digest) {
+                return Ok(Err(draft_derivation_refusal()));
+            }
+            let default_key;
+            let key = match key {
+                Some(key) => key,
+                None => {
+                    default_key = match default_derivation_key(rule, event, inputs) {
+                        Ok(key) => key,
+                        Err(_) => return Ok(Err(draft_derivation_refusal())),
+                    };
+                    default_key.as_bytes()
+                }
+            };
+            let proposal = match rule_derived_proposal(
+                book,
+                &RuleDerivation {
+                    rule,
+                    event,
+                    inputs: &inputs_bytes,
+                    derivation: &derivation,
+                    evidence: &source.evidence,
+                },
+                capability.holder(),
+                key,
+                description,
+            ) {
+                Ok(proposal) => proposal,
+                Err(_) => return Ok(Err(draft_derivation_refusal())),
+            };
+            if let Err(refusal) = admission.admit_derived_proposal(db, book, &proposal)? {
+                return Ok(Err(refusal));
+            }
+            Ok(fa_intents::PostIntent::rule_derived(proposal, Vec::new())
+                .map_err(|_| draft_derivation_refusal()))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -2388,6 +2388,62 @@ mod tests {
     }
 
     #[test]
+    fn selected_rule_draft_tools_admit_post_only_preparation_but_keep_direct_reads() {
+        let (mcp, reg) = embedded();
+        let authority = fa_cli::authority::LaunchAuthority::new(
+            std::path::PathBuf::from("unopened-rule-draft-book"),
+            None,
+            "confined-rule-preparer",
+            fa_cli::authority::LaunchProfile::Agent,
+            &["post"],
+        )
+        .unwrap();
+        for (wire, verb) in [
+            ("fa_rules_derive", "rule"),
+            ("fa_adjust_accrue", "accrue"),
+            ("fa_adjust_defer", "defer"),
+        ] {
+            let tool = mcp.tool_by_wire(wire).unwrap();
+            let invocation = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"rule": "12".repeat(32), "event": "EV-1", "draft": "review"}),
+                )
+                .unwrap();
+            let parsed =
+                fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            // The source factory subsequently requires a real issued
+            // capability confined to the owned draft before any source read.
+            assert_eq!(
+                fa_cli::cli::bound_command_ops(verb, &parsed)
+                    .unwrap()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                ["post"]
+            );
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, verb, &parsed, &authority).is_ok(),
+                "{wire}"
+            );
+            let direct = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({"rule": "12".repeat(32), "event": "EV-1"}),
+                )
+                .unwrap();
+            let direct =
+                fa_cli::args::parse(&direct.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert!(
+                fa_cli::cli::bound_command_admissible(reg, verb, &direct, &authority).is_err(),
+                "{wire} must retain its direct read requirement"
+            );
+        }
+    }
+
+    #[test]
     fn posting_tools_plan_inline_and_commit_exact_artifacts_under_launch_authority() {
         let (mcp, reg) = embedded();
         for wire in [

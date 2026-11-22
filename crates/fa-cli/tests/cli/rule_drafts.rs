@@ -25,10 +25,14 @@ fn open(book: &Path) -> fa::Book {
 }
 
 fn activate(book: &Path, dir: &Path, version: u32, from: &str) -> String {
+    activate_source(book, dir, version, from, SOURCE)
+}
+
+fn activate_source(book: &Path, dir: &Path, version: u32, from: &str, source: &str) -> String {
     let source = write(
         dir,
         &format!("draft-v{version}.rule"),
-        &SOURCE.replace(" v1 ", &format!(" v{version} ")),
+        &source.replace(" v1 ", &format!(" v{version} ")),
     );
     let digest = text(
         &doc(&ok(book, &["rule", "propose", &source, "--json"])),
@@ -103,6 +107,236 @@ fn fixture(name: &str) -> std::io::Result<(PathBuf, PathBuf, String)> {
     );
     let digest = activate(&book, &dir, 1, "2026-03-01");
     Ok((book, dir, digest))
+}
+
+fn post_only_authority(
+    book_path: &Path,
+    holder: &str,
+    draft: Option<&str>,
+) -> fa_cli::authority::LaunchAuthority {
+    use fa_model::{draft_branch, principal_vid};
+    use fa_policy::{Capability, CapabilityToken, Op, Profile, possession_digest};
+
+    let mut book = open(book_path);
+    let issuer = Capability::embedded(
+        principal_vid("rule-draft-issuer"),
+        &["issue_capability", "post"],
+    )
+    .unwrap();
+    let secret = [0x7d; 32];
+    let mut cap = Capability::new(
+        principal_vid(holder),
+        Profile::Agent,
+        &[Op::Post],
+        issuer.holder(),
+    )
+    .unwrap()
+    .for_books(&[book.context().book_id])
+    .unwrap()
+    .holder_bound(possession_digest(&secret));
+    if let Some(name) = draft {
+        cap = cap
+            .on_branch(draft_branch(book.context().book_id, name))
+            .unwrap();
+    }
+    book.issue_capability(
+        issuer,
+        cap.clone(),
+        fa_time::DateDay::parse("2026-03-12").unwrap(),
+        format!("issue-{holder}").as_bytes(),
+        "Prepare only admitted selected-rule effects",
+    )
+    .unwrap()
+    .unwrap();
+    let token = CapabilityToken::new(holder, cap, secret).unwrap();
+    fa_cli::authority::LaunchAuthority::from_token(book_path.to_path_buf(), None, &token).unwrap()
+}
+
+fn bound_rule(
+    authority: &fa_cli::authority::LaunchAuthority,
+    args: &[&str],
+) -> (u8, fa_cli::cli::Captured) {
+    let argv = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let result =
+        fa_cli::entry::fa_with_authority(&argv, fa_cli::cli::Files::default(), authority, true);
+    check_robot_output(args, i32::from(result.0), &result.1.stdout);
+    result
+}
+
+#[test]
+fn post_only_selected_rule_drafts_parse_inputs_retry_aliases_and_promote_exact_effects()
+-> std::io::Result<()> {
+    let (book, dir, _) = fixture("canon-source-only-draft")?;
+    let source = r#"rule private_rule_metadata v1 for event Sale produces Adjusting {
+      inputs { as_of: date, fee: amount("USD") }
+      authority {
+        debit "1000" upto "40.00 USD"
+        credit "6000" upto "40.00 USD"
+      }
+      debit "1000" fee
+      credit "6000" fee
+      effective as_of
+    }"#;
+    let digest = activate_source(&book, &dir, 1, "2026-03-01", source);
+    let authority = post_only_authority(&book, "source-rule-agent", Some("source-review"));
+    let (code, out) = bound_rule(&authority, &["draft", "new", "source-review", "--json"]);
+    assert_eq!(code, 0, "{out:?}");
+    let event = format!(
+        "EV:{:032x}",
+        fa_model::event_vid(open(&book).context().book_id, "EV-DRAFT").0
+    );
+    let mut first = None;
+    for prefix in [&["rule", "derive"][..], &["accrue"][..], &["defer"][..]] {
+        let mut args = prefix.to_vec();
+        args.extend([
+            "--rule",
+            &digest,
+            "--event",
+            &event,
+            "--draft",
+            "source-review",
+            "--input",
+            "as_of=2026-03-13",
+            "--input",
+            "fee=12.50 USD",
+            "--json",
+        ]);
+        let (code, out) = bound_rule(&authority, &args);
+        assert_eq!(code, 0, "{args:?}: {out:?}");
+        assert!(!out.stdout.contains("private_rule_metadata"), "{out:?}");
+        let receipt = doc(&out.stdout);
+        if let Some(ref original) = first {
+            assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(true)));
+            assert_eq!(
+                text(&receipt, "control_entry"),
+                text(original, "control_entry")
+            );
+            assert_eq!(int(&receipt, "recorded_at"), int(original, "recorded_at"));
+        } else {
+            assert_eq!(receipt.get("already_recorded"), Some(&Json::Bool(false)));
+            first = Some(receipt);
+        }
+    }
+    let draft = open(&book).draft("source-review").unwrap().unwrap();
+    assert_eq!(draft.intents.len(), 1);
+    let member = &draft.intents[0];
+    assert_eq!(
+        member.intent.proposal().effective_date,
+        fa_time::DateDay::parse("2026-03-13").unwrap()
+    );
+    assert_eq!(member.intent.proposal().legs.len(), 2);
+    assert!(
+        member
+            .intent
+            .proposal()
+            .legs
+            .iter()
+            .all(|leg| leg.amount.mantissa == 1250)
+    );
+    let reviewed = member.resolved_entry.clone().unwrap();
+    let entry =
+        fgdb_types::VId(u128::from_str_radix(text(first.as_ref().unwrap(), "entry"), 16).unwrap());
+    assert!(open(&book).read_entry(entry).unwrap().is_none());
+
+    for args in [
+        vec!["rule", "show", &digest, "--json"],
+        vec!["event", "list", "--json"],
+        vec!["trial-balance", "--json"],
+        vec![
+            "rule", "derive", "--rule", &digest, "--event", &event, "--json",
+        ],
+    ] {
+        let (code, out) = bound_rule(&authority, &args);
+        assert_eq!(code, 7, "{args:?}: {out:?}");
+        assert_eq!(
+            field(&out.stdout, "refusal_id"),
+            Some("FA-REF-011"),
+            "{out:?}"
+        );
+    }
+    assert_eq!(open(&book).draft("source-review").unwrap().unwrap(), draft);
+    ok(
+        &book,
+        &[
+            "draft",
+            "promote",
+            "source-review",
+            "--as",
+            "controller",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(open(&book).read_entry(entry).unwrap().unwrap().0, reviewed);
+    Ok(())
+}
+
+#[test]
+fn selected_rule_source_preparation_requires_the_exact_owned_draft_before_sources()
+-> std::io::Result<()> {
+    let (book, _, digest) = fixture("canon-source-boundary")?;
+    let authority = post_only_authority(&book, "confined-rule-agent", Some("owned"));
+    let (code, out) = bound_rule(&authority, &["draft", "new", "owned", "--json"]);
+    assert_eq!(code, 0, "{out:?}");
+    let missing = "ff".repeat(32);
+    for prefix in [&["rule", "derive"][..], &["accrue"][..], &["defer"][..]] {
+        let mut args = prefix.to_vec();
+        args.extend([
+            "--rule", &missing, "--event", "MISSING", "--draft", "other", "--json",
+        ]);
+        let (code, out) = bound_rule(&authority, &args);
+        assert_eq!(code, 7, "{args:?}: {out:?}");
+        assert_eq!(
+            field(&out.stdout, "refusal_id"),
+            Some("FA-REF-011"),
+            "{out:?}"
+        );
+    }
+    assert!(
+        open(&book)
+            .draft("owned")
+            .unwrap()
+            .unwrap()
+            .intents
+            .is_empty()
+    );
+    assert!(open(&book).draft("other").unwrap().is_none());
+
+    let unconfined = post_only_authority(&book, "unconfined-rule-agent", None);
+    let (code, out) = bound_rule(&unconfined, &["draft", "new", "unconfined", "--json"]);
+    assert_eq!(code, 0, "{out:?}");
+    let (code, out) = bound_rule(
+        &unconfined,
+        &[
+            "rule",
+            "derive",
+            "--rule",
+            &digest,
+            "--event",
+            "EV-DRAFT",
+            "--draft",
+            "unconfined",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 7, "{out:?}");
+    assert_eq!(
+        field(&out.stdout, "refusal_id"),
+        Some("FA-REF-011"),
+        "{out:?}"
+    );
+    assert!(
+        open(&book)
+            .draft("unconfined")
+            .unwrap()
+            .unwrap()
+            .intents
+            .is_empty()
+    );
+    Ok(())
 }
 
 #[test]
