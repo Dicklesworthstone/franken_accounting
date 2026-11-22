@@ -3,7 +3,7 @@
 //! The declaration is immutable. A task's receipt is staged in the native
 //! promotion/period transaction, so recovery can never observe a completed
 //! task without its effect, or an effect acknowledged by this run without its
-//! receipt. Read-only year-end checks atomically retain their authenticated
+//! receipt. Read-only accounting checks atomically retain their authenticated
 //! source basis with task completion; a terminal transition rechecks that basis.
 //! A refusal leaves the task ready for a later admissible attempt.
 
@@ -31,6 +31,10 @@ use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{PeriodRow, bytes, edge_id, prop, scalar_bytes, scalar_text};
 use crate::{BookContext, policy};
 
+mod bank_checkpoint;
+use bank_checkpoint::bank_reconciliation_checkpoint_at;
+pub use bank_checkpoint::{BankReconciliationCheckpoint, verify_bank_reconciliation_checkpoint};
+
 pub const MAX_TASKS: usize = fa_model::limits::MAX_CLOSE_RUN_TASKS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +54,9 @@ pub enum CloseTaskAction {
     PeriodTransition(PeriodTransition),
     VerifyYearEndClose {
         fiscal_year: i32,
+    },
+    VerifyBankReconciliation {
+        manifest_oid: Oid,
     },
     /// Future task kinds are explicitly refused, never marked complete.
     Unsupported(String),
@@ -305,6 +312,100 @@ fn entries_digest(entries: &[EntryRef]) -> Result<[u8; 32], KernelError> {
     ))
 }
 
+fn admit_bank_checkpoints<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    body: &CloseRunBody,
+    known_at: Option<CommitSeq>,
+) -> Outcome<()> {
+    if body.tasks.iter().any(|task| {
+        matches!(
+            task.action,
+            CloseTaskBodyAction::VerifyBankReconciliation { .. }
+        )
+    }) {
+        crate::bank::admit_bank_match_history(db, book, capability, known_at)
+            .map(|result| result.map(|_| ()))
+    } else {
+        Ok(Ok(()))
+    }
+}
+
+/// Read only the declared graph and task-state mirrors under the caller's
+/// already-admitted whole-book read. Pending bank work must admit Reconcile
+/// before hydration or receipt replay can touch its sources. This preflight
+/// grants no completion: `read_view` still authenticates every mirror and
+/// original receipt. Historical status and exact completed retries keep their
+/// original Read/Close admission rather than resurrecting past bank authority.
+fn admit_pending_bank_task<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+    task_id: Option<&str>,
+    known_at: Option<CommitSeq>,
+) -> Outcome<()> {
+    let Some(row) = db.vertex(close_run_vid(book.book_id, name))? else {
+        return Ok(Ok(()));
+    };
+    let body = CloseRunBody::decode(&bytes(&row, property::FA_PAYLOAD, "CloseRun payload")?)
+        .map_err(|error| corrupt(error.to_string()))?;
+    // An explicit prefix requests a new historical source evaluation, as
+    // distinct from observing a completed task's already-authenticated receipt.
+    if known_at.is_some() {
+        return admit_bank_checkpoints(db, book, capability, &body, known_at);
+    }
+    for task in &body.tasks {
+        let selected = match task_id {
+            Some(id) => {
+                task.id == id
+                    && matches!(
+                        task.action,
+                        CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                            | CloseTaskBodyAction::PeriodTransition { .. }
+                    )
+            }
+            None => matches!(
+                task.action,
+                CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::PeriodTransition { .. }
+            ),
+        };
+        if selected {
+            let state = db.vertex(close_task_vid(book.book_id, name, &task.id))?;
+            if state.as_ref().and_then(|row| prop(row, property::STATE))
+                != Some(&CanonicalScalar::Int(1))
+            {
+                return admit_bank_checkpoints(db, book, capability, &body, known_at);
+            }
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// Admit a pending task's bank sources before a facade hydrates native
+/// history. A selected task requires the normal Close authority; an entire
+/// rehearsal requires Read. Pending bank verification or its terminal task
+/// additionally requires current whole-book Reconcile. This is only an
+/// admission preflight: execution still authenticates the graph, receipts,
+/// source checkpoint and authority at publication. Completed retries retain
+/// their historical observation semantics. An explicit prefix selects a new
+/// historical source evaluation and requires Reconcile for a bank graph.
+pub fn admit_close_run_bank_sources<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    name: &str,
+    task_id: Option<&str>,
+    known_at: Option<CommitSeq>,
+) -> Outcome<()> {
+    if let Err(refusal) = admit(db, book, capability, task_id.map(|_| "CompleteTask"))? {
+        return Ok(Err(refusal));
+    }
+    admit_pending_bank_task(db, book, capability, name, task_id, known_at)
+}
+
 fn target(transition: PeriodTransition) -> Result<u8, Refusal> {
     match transition {
         PeriodTransition::SoftClose => Ok(2),
@@ -364,6 +465,11 @@ fn definition_body(
                 }
                 CloseTaskBodyAction::VerifyYearEndClose {
                     fiscal_year: *fiscal_year,
+                }
+            }
+            CloseTaskAction::VerifyBankReconciliation { manifest_oid } => {
+                CloseTaskBodyAction::VerifyBankReconciliation {
+                    manifest_oid: *manifest_oid,
                 }
             }
             CloseTaskAction::PromoteDraft {
@@ -818,6 +924,9 @@ pub async fn create_close_run<V: Vfs + Clone>(
         Ok(body) => body,
         Err(refusal) => return Ok(Err(refusal)),
     };
+    if let Err(refusal) = admit_bank_checkpoints(db, book, capability, &body, None)? {
+        return Ok(Err(refusal));
+    }
     let run = close_run_vid(book.book_id, &body.name);
     let opening = proposal(
         book,
@@ -1154,20 +1263,26 @@ fn read_view<V: Vfs + Clone>(
                 .ok_or_else(|| corrupt("completion target is absent"))?;
             let (effect, checkpoint, review) = match (&task.action, proof_refs.as_slice()) {
                 (
-                    CloseTaskBodyAction::VerifyYearEndClose { .. },
+                    CloseTaskBodyAction::VerifyYearEndClose { .. }
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
                     [TypedRef::Vertex(effect), TypedRef::Object(basis)],
                 ) => (*effect, Some(basis.0), None),
                 (
-                    CloseTaskBodyAction::VerifyYearEndClose { .. },
+                    CloseTaskBodyAction::VerifyYearEndClose { .. }
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
                     [
                         TypedRef::Vertex(effect),
                         TypedRef::Object(basis),
                         TypedRef::Object(review),
                     ],
                 ) => (*effect, Some(basis.0), Some(review.0)),
-                (CloseTaskBodyAction::VerifyYearEndClose { .. }, _) => {
+                (
+                    CloseTaskBodyAction::VerifyYearEndClose { .. }
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
+                    _,
+                ) => {
                     return Err(corrupt(
-                        "a year-end verification must retain its closing entry and complete source basis",
+                        "an accounting verification must retain its native effect and complete source basis",
                     ));
                 }
                 (_, [TypedRef::Vertex(effect)]) => (*effect, None, None),
@@ -1438,9 +1553,9 @@ fn read_view<V: Vfs + Clone>(
                     .checked_sub(1)
                     .ok_or_else(|| corrupt("terminal receipt has no source prefix"))?,
             );
-            check_year_end_checkpoints(db, cx, book, &view, at)?.map_err(|refusal| {
+            check_accounting_checkpoints(db, cx, book, &view, at)?.map_err(|refusal| {
                 corrupt(format!(
-                    "retained terminal transition used a stale year-end checkpoint: {}",
+                    "retained terminal transition used a stale accounting checkpoint: {}",
                     refusal.message,
                 ))
             })?;
@@ -1480,6 +1595,26 @@ fn verify_effect<V: Vfs + Clone>(
         {
             return Err(corrupt(
                 "verification receipt does not reproduce its original closing entry and source basis",
+            ));
+        }
+        return Ok(());
+    }
+    if let CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } = task.action {
+        let at = CommitSeq(
+            seq.0
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("verification receipt has no source prefix"))?,
+        );
+        let verified = bank_reconciliation_checkpoint_at(db, cx, book, manifest_oid, period, at)?
+            .map_err(|refusal| {
+            corrupt(format!(
+                "retained bank reconciliation verification: {}",
+                refusal.message
+            ))
+        })?;
+        if Some(*verified.source_digest()) != checkpoint || verified.attestation().vid != effect {
+            return Err(corrupt(
+                "verification receipt does not reproduce its original bank attestation and source basis",
             ));
         }
         return Ok(());
@@ -1571,9 +1706,10 @@ fn verify_effect<V: Vfs + Clone>(
                 ));
             }
         }
-        CloseTaskBodyAction::VerifyYearEndClose { .. } => {
+        CloseTaskBodyAction::VerifyYearEndClose { .. }
+        | CloseTaskBodyAction::VerifyBankReconciliation { .. } => {
             return Err(corrupt(
-                "year-end verification escaped its native source check",
+                "accounting verification escaped its native source check",
             ));
         }
     }
@@ -1584,14 +1720,14 @@ fn stale_checkpoint(task: &str) -> Refusal {
     Refusal::new(
         code::PLAN_INVALIDATED,
         exit::CONFLICT,
-        format!("close task `{task}` verified an earlier fiscal-year source; the terminal transition cannot use that stale completion"),
+        format!("close task `{task}` verified an earlier accounting source; the terminal transition cannot use that stale completion"),
         "plan §7.5 (verify the exact current close before the terminal transition)",
-        "inspect `fa verify close FY<year>`, post a reviewed reclose if needed, then start a new close run with a fresh year-end verification task before its terminal transition",
+        "inspect the task's native year-end close or bank reconciliation, resolve drift, then start a new close run with a fresh verification before its terminal transition",
     )
     .at("task", task)
 }
 
-fn check_year_end_checkpoints<V: Vfs + Clone>(
+fn check_accounting_checkpoints<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &PurposeContexts,
     book: &BookContext,
@@ -1599,9 +1735,13 @@ fn check_year_end_checkpoints<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<()> {
     for body in &view.body.tasks {
-        let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action else {
+        if !matches!(
+            body.action,
+            CloseTaskBodyAction::VerifyYearEndClose { .. }
+                | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+        ) {
             continue;
-        };
+        }
         let Some(receipt) = view
             .tasks
             .iter()
@@ -1623,21 +1763,36 @@ fn check_year_end_checkpoints<V: Vfs + Clone>(
         let Some(TypedRef::Object(basis)) = proof_refs.get(1) else {
             return Err(corrupt("verified close receipt has no source digest"));
         };
-        let current =
-            match crate::closing::year_end_close_checkpoint_at(db, cx, book, fiscal_year, at)? {
-                Ok(current) => current,
-                Err(_) => return Ok(Err(stale_checkpoint(&body.id))),
-            };
-        if current.source_digest() != &basis.0
-            || current.latest_close().entry_ref.vid != receipt.effect
-        {
+        let current = match &body.action {
+            CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
+                crate::closing::year_end_close_checkpoint_at(db, cx, book, *fiscal_year, at)?
+                    .map(TaskVerification::YearEnd)
+            }
+            CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
+                bank_reconciliation_checkpoint_at(
+                    db,
+                    cx,
+                    book,
+                    *manifest_oid,
+                    &view.body.period,
+                    at,
+                )?
+                .map(TaskVerification::Bank)
+            }
+            _ => unreachable!("only native verification tasks select a checkpoint"),
+        };
+        let current = match current {
+            Ok(current) => current,
+            Err(_) => return Ok(Err(stale_checkpoint(&body.id))),
+        };
+        if current.source_digest() != &basis.0 || current.effect() != receipt.effect {
             return Ok(Err(stale_checkpoint(&body.id)));
         }
     }
     Ok(Ok(()))
 }
 
-/// Rehearsal admission for completed year-end checks whose terminal task is
+/// Rehearsal admission for completed accounting checks whose terminal task is
 /// still pending at the selected prefix. Completed runs remain historical
 /// facts; later activity never rewrites their successful original completion.
 pub fn verify_close_run_checkpoints<V: Vfs + Clone>(
@@ -1649,6 +1804,9 @@ pub fn verify_close_run_checkpoints<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Outcome<()> {
     if let Err(refusal) = admit(db, book, capability, None)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = admit_pending_bank_task(db, book, capability, name, None, Some(at))? {
         return Ok(Err(refusal));
     }
     let Some(view) = read_view(db, cx, book, name)? else {
@@ -1669,7 +1827,10 @@ pub fn verify_close_run_checkpoints<V: Vfs + Clone>(
                 .is_none_or(|receipt| receipt.recorded_at > at)
     });
     if pending_terminal {
-        check_year_end_checkpoints(db, cx, book, &view, at)
+        if let Err(refusal) = admit_bank_checkpoints(db, book, capability, &view.body, Some(at))? {
+            return Ok(Err(refusal));
+        }
+        check_accounting_checkpoints(db, cx, book, &view, at)
     } else {
         Ok(Ok(()))
     }
@@ -1776,6 +1937,10 @@ pub fn plan_close_task_transition<V: Vfs + Clone>(
     if let Err(refusal) = admit(db, book, capability, Some("CompleteTask"))? {
         return Ok(Err(refusal));
     }
+    if let Err(refusal) = admit_pending_bank_task(db, book, capability, name, Some(task_id), None)?
+    {
+        return Ok(Err(refusal));
+    }
     let Some(view) = read_view(db, cx, book, name)? else {
         return Ok(Err(invalid("the close run does not exist")));
     };
@@ -1791,7 +1956,10 @@ pub fn plan_close_task_transition<V: Vfs + Clone>(
             "only the final period task takes a transition plan",
         )));
     };
-    if let Err(refusal) = check_year_end_checkpoints(db, cx, book, &view, db.frontier()?)? {
+    if let Err(refusal) = admit_bank_checkpoints(db, book, capability, &view.body, None)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = check_accounting_checkpoints(db, cx, book, &view, db.frontier()?)? {
         return Ok(Err(refusal));
     }
     crate::period::plan_transition(
@@ -1806,6 +1974,34 @@ pub fn plan_close_task_transition<V: Vfs + Clone>(
     )
 }
 
+enum TaskVerification {
+    YearEnd(crate::closing::YearEndCloseCheckpoint),
+    Bank(BankReconciliationCheckpoint),
+}
+
+impl TaskVerification {
+    fn source_digest(&self) -> &[u8; 32] {
+        match self {
+            Self::YearEnd(checkpoint) => checkpoint.source_digest(),
+            Self::Bank(checkpoint) => checkpoint.source_digest(),
+        }
+    }
+
+    fn known_at(&self) -> CommitSeq {
+        match self {
+            Self::YearEnd(checkpoint) => checkpoint.known_at(),
+            Self::Bank(checkpoint) => checkpoint.known_at(),
+        }
+    }
+
+    fn effect(&self) -> VId {
+        match self {
+            Self::YearEnd(checkpoint) => checkpoint.latest_close().entry_ref.vid,
+            Self::Bank(checkpoint) => checkpoint.attestation().vid,
+        }
+    }
+}
+
 /// An unforgeable in-crate attachment carried into the native transaction.
 /// All close state and authority are re-witnessed before any receipt is staged.
 pub(crate) struct TaskCompletion {
@@ -1814,7 +2010,7 @@ pub(crate) struct TaskCompletion {
     capability: Capability,
     description: Erasable<String>,
     review: Option<CloseTaskReview>,
-    verification: Option<crate::closing::YearEndCloseCheckpoint>,
+    verification: Option<TaskVerification>,
 }
 
 impl TaskCompletion {
@@ -1855,44 +2051,72 @@ impl TaskCompletion {
         }
         if matches!(body.action, CloseTaskBodyAction::PeriodTransition { .. }) {
             // The native transition has been staged but remains unpublished.
-            // Bind its receipt to the still-current authenticated fiscal-year
+            // Bind its receipt to the still-current authenticated accounting
             // basis, under this same owned transaction and writer lease.
             for task in &self.view.body.tasks {
-                if matches!(task.action, CloseTaskBodyAction::VerifyYearEndClose { .. })
-                    && let Some(receipt) = self
-                        .view
-                        .tasks
-                        .iter()
-                        .find(|state| state.id == task.id)
-                        .and_then(|state| state.completion.as_ref())
+                if matches!(
+                    task.action,
+                    CloseTaskBodyAction::VerifyYearEndClose { .. }
+                        | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                ) && let Some(receipt) = self
+                    .view
+                    .tasks
+                    .iter()
+                    .find(|state| state.id == task.id)
+                    .and_then(|state| state.completion.as_ref())
                 {
                     txn.vertex(db, receipt.record)?;
                     txn.vertex(db, receipt.effect)?;
                 }
             }
             if let Err(refusal) =
-                check_year_end_checkpoints(db, cx, book, &self.view, db.frontier()?)?
+                admit_bank_checkpoints(db, book, &self.capability, &self.view.body, None)?
+            {
+                return Ok(Err(refusal));
+            }
+            if let Err(refusal) =
+                check_accounting_checkpoints(db, cx, book, &self.view, db.frontier()?)?
             {
                 return Ok(Err(refusal));
             }
         }
-        if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action {
-            let Some(verification) = &self.verification else {
-                return Err(corrupt(
-                    "year-end completion has no authenticated source basis",
-                ));
-            };
-            if verification.fiscal_year() != fiscal_year
-                || verification.known_at() != db.frontier()?
-                || verification.latest_close().entry_ref.vid != effect
-            {
-                return Ok(Err(stale_checkpoint(&body.id)));
+        match (&body.action, &self.verification) {
+            (
+                CloseTaskBodyAction::VerifyYearEndClose { fiscal_year },
+                Some(TaskVerification::YearEnd(verification)),
+            ) => {
+                if verification.fiscal_year() != *fiscal_year
+                    || verification.known_at() != db.frontier()?
+                    || verification.latest_close().entry_ref.vid != effect
+                {
+                    return Ok(Err(stale_checkpoint(&body.id)));
+                }
+                txn.vertex(db, effect)?;
             }
-            txn.vertex(db, effect)?;
-        } else if self.verification.is_some() {
-            return Err(corrupt(
-                "a non-verification task carries a year-end source basis",
-            ));
+            (
+                CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid },
+                Some(TaskVerification::Bank(verification)),
+            ) => {
+                if verification.manifest_oid() != *manifest_oid
+                    || verification.period() != self.view.body.period
+                    || verification.known_at() != db.frontier()?
+                    || verification.attestation().vid != effect
+                {
+                    return Ok(Err(stale_checkpoint(&body.id)));
+                }
+                txn.vertex(db, effect)?;
+                txn.vertex(db, period_vid(&book.calendar.id, &self.view.body.period))?;
+            }
+            (
+                CloseTaskBodyAction::PromoteDraft { .. }
+                | CloseTaskBodyAction::PeriodTransition { .. },
+                None,
+            ) => {}
+            _ => {
+                return Err(corrupt(
+                    "the verification task and its authenticated source basis differ",
+                ));
+            }
         }
         if let CloseTaskBodyAction::PromoteDraft {
             certificate_digest,
@@ -1982,7 +2206,7 @@ impl TaskCompletion {
             let Some(ControlPayload::LifecycleTransition { proof_refs, .. }) =
                 &mut task_record.control
             else {
-                return Err(corrupt("year-end completion has no lifecycle payload"));
+                return Err(corrupt("verification completion has no lifecycle payload"));
             };
             proof_refs.push(TypedRef::Object(Oid(*verification.source_digest())));
         }
@@ -2076,6 +2300,11 @@ pub async fn execute_close_task<V: Vfs + Clone>(
     if let Err(refusal) = admit(db, book, &request.capability, Some("CompleteTask"))? {
         return Ok(Err(refusal));
     }
+    if let Err(refusal) =
+        admit_pending_bank_task(db, book, &request.capability, name, Some(task_id), None)?
+    {
+        return Ok(Err(refusal));
+    }
     if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
         return Ok(Err(refusal));
     }
@@ -2109,11 +2338,14 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             })));
         }
     }
-    if matches!(body.action, CloseTaskBodyAction::VerifyYearEndClose { .. })
-        && (request.transition_plan.is_some() || !request.approvals.is_empty())
+    if matches!(
+        body.action,
+        CloseTaskBodyAction::VerifyYearEndClose { .. }
+            | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+    ) && (request.transition_plan.is_some() || !request.approvals.is_empty())
     {
         return Ok(Err(invalid(
-            "year-end verification tasks take no transition plan or approval references",
+            "verification tasks take no transition plan or approval references",
         )));
     }
     if let CloseTaskBodyAction::PeriodTransition { to } = &body.action {
@@ -2161,20 +2393,43 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             already_recorded: true,
         }));
     }
-    let verification = if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = body.action
+    if matches!(
+        body.action,
+        CloseTaskBodyAction::VerifyBankReconciliation { .. }
+            | CloseTaskBodyAction::PeriodTransition { .. }
+    ) && let Err(refusal) =
+        admit_bank_checkpoints(db, book, &request.capability, &view.body, None)?
     {
-        match crate::closing::year_end_close_checkpoint_at(
-            db,
-            cx,
-            book,
-            fiscal_year,
-            db.frontier()?,
-        )? {
-            Ok(verified) => Some(verified),
-            Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+        return Ok(Err(refusal));
+    }
+    let verification = match &body.action {
+        CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
+            match crate::closing::year_end_close_checkpoint_at(
+                db,
+                cx,
+                book,
+                *fiscal_year,
+                db.frontier()?,
+            )? {
+                Ok(verified) => Some(TaskVerification::YearEnd(verified)),
+                Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+            }
         }
-    } else {
-        None
+        CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
+            match verify_bank_reconciliation_checkpoint(
+                db,
+                cx,
+                book,
+                &request.capability,
+                *manifest_oid,
+                &view.body.period,
+                None,
+            )? {
+                Ok(verified) => Some(TaskVerification::Bank(verified)),
+                Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+            }
+        }
+        _ => None,
     };
     let completion = TaskCompletion {
         view: view.clone(),
@@ -2233,11 +2488,12 @@ pub async fn execute_close_task<V: Vfs + Clone>(
                 return Ok(Err(refusal));
             }
         }
-        CloseTaskBodyAction::VerifyYearEndClose { .. } => {
+        CloseTaskBodyAction::VerifyYearEndClose { .. }
+        | CloseTaskBodyAction::VerifyBankReconciliation { .. } => {
             let verification = completion
                 .verification
                 .as_ref()
-                .ok_or_else(|| corrupt("year-end completion lost its authenticated basis"))?;
+                .ok_or_else(|| corrupt("verification completion lost its authenticated basis"))?;
             let mut txn = db.begin(&cx.txn())?;
             let mut tracker = TemplateByteTracker::default();
             if let Err(refusal) = completion.stage(
@@ -2246,7 +2502,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
                 db,
                 cx,
                 book,
-                (verification.latest_close().entry_ref.vid, None),
+                (verification.effect(), None),
             )? {
                 txn.abort();
                 return Ok(Err(refusal));

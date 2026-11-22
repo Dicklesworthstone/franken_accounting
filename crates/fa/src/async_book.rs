@@ -1561,6 +1561,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Admit a selected task or combined close from declaration/state metadata
+    /// before any native history is hydrated. Historical status and exact
+    /// completed receipts do not acquire fresh bank-verification requirements.
+    pub(crate) fn admit_close_run_bank_sources(
+        &self,
+        cx: &PurposeContexts,
+        name: &str,
+        task: Option<&str>,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::admit_close_run_bank_sources(
+                db, book, capability, name, task, known_at,
+            )?)
+        })
+    }
+
     async fn prepare_close_history(
         &mut self,
         cx: &PurposeContexts,
@@ -1691,6 +1709,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         tasks: Vec<crate::ReviewedCloseTask>,
         description: &str,
     ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if tasks.iter().any(|task| {
+            matches!(
+                task.action,
+                crate::ReviewedCloseAction::VerifyBankReconciliation { .. }
+            )
+        }) && let Err(denial) = fa_policy::require(
+            &capability,
+            fa_policy::Op::Reconcile,
+            "declaring a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1708,6 +1738,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             let action = match task.action {
                 crate::ReviewedCloseAction::VerifyYearEndClose { fiscal_year } => {
                     fa_journal::CloseTaskAction::VerifyYearEndClose { fiscal_year }
+                }
+                crate::ReviewedCloseAction::VerifyBankReconciliation { manifest_oid } => {
+                    fa_journal::CloseTaskAction::VerifyBankReconciliation { manifest_oid }
                 }
                 crate::ReviewedCloseAction::PeriodTransition(transition) => {
                     fa_journal::CloseTaskAction::PeriodTransition(transition)
@@ -1754,6 +1787,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         description: &str,
     ) -> Outcome<fa_journal::close_run::CloseRunView> {
+        if definition.tasks.iter().any(|task| {
+            matches!(
+                task.action,
+                fa_journal::CloseTaskAction::VerifyBankReconciliation { .. }
+            )
+        }) && let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "declaring a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1822,6 +1867,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         capability: &fa_journal::Capability,
         at: CommitSeq,
     ) -> Outcome<()> {
+        if let Err(refusal) = self.admit_close_run_bank_sources(cx, name, None, None, capability)? {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
             return Ok(Err(refusal));
         }
@@ -1829,6 +1877,43 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(fa_journal::close_run::verify_close_run_checkpoints(
                 db, cx, book, name, capability, at,
             )?)
+        })
+    }
+
+    /// Authenticate a retained bank reconciliation at the selected prefix.
+    /// Current whole-book Read and Reconcile precede history hydration. The
+    /// statement must end with the close period and its cash and match claims
+    /// must still hold; this read does not create or refresh an attestation.
+    pub async fn verify_bank_reconciliation_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        manifest_oid: fa_model::Oid,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankReconciliationCheckpoint> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "verifying a bank reconciliation close checkpoint",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(
+                fa_journal::close_run::verify_bank_reconciliation_checkpoint(
+                    db,
+                    cx,
+                    book,
+                    capability,
+                    manifest_oid,
+                    period,
+                    known_at,
+                )?,
+            )
         })
     }
 
@@ -1844,6 +1929,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         key: &[u8],
         description: &str,
     ) -> Outcome<fa_journal::TransitionPlan> {
+        if let Err(refusal) =
+            self.admit_close_run_bank_sources(cx, name, Some(task), None, capability)?
+        {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, capability, true).await? {
             return Ok(Err(refusal));
         }
@@ -1902,6 +1992,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         approvals: Vec<fa_model::ApprovalRef>,
         review: Option<fa_journal::close_run::CloseTaskReview>,
     ) -> Outcome<fa_journal::close_run::CloseTaskRecorded> {
+        if let Err(refusal) =
+            self.admit_close_run_bank_sources(cx, name, Some(task), None, &capability)?
+        {
+            return Ok(Err(refusal));
+        }
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
         }

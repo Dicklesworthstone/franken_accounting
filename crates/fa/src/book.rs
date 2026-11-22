@@ -1930,6 +1930,18 @@ impl Book {
         with_store!(&mut self.store, core => self.runtime.block_on(core.close_run_status(&purposes, name, capability)))
     }
 
+    pub(crate) fn admit_close_run_bank_sources(
+        &self,
+        name: &str,
+        task: Option<&str>,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.admit_close_run_bank_sources(
+            &self.purposes(), name, task, known_at, capability,
+        ))
+    }
+
     pub(crate) fn verify_close_run_checkpoints_at(
         &mut self,
         name: &str,
@@ -1939,6 +1951,23 @@ impl Book {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(
             core.verify_close_run_checkpoints_at(&purposes, name, capability, at)))
+    }
+
+    /// Verify a statement's current or historical reconciliation for a close
+    /// period under current whole-book Read and Reconcile authority. This
+    /// exposes the immutable basis without recording a task or attestation.
+    pub fn verify_bank_reconciliation_checkpoint(
+        &mut self,
+        manifest_oid: fa_model::Oid,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankReconciliationCheckpoint> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+        core.verify_bank_reconciliation_checkpoint(
+            &purposes, manifest_oid, period, known_at, capability,
+        )))
     }
 
     /// Prepare the exact period-transition proposal for a ready close task.

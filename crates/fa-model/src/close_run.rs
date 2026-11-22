@@ -9,7 +9,7 @@ use fgdb_types::{CommitSeq, VId};
 use crate::canon::Reason;
 use crate::ids::{Id128, domain_digest};
 use crate::limits::{MAX_CLOSE_RUN_BYTES, MAX_CLOSE_RUN_TASKS, MAX_CLOSE_RUN_TEXT_BYTES};
-use crate::{DecodeError, EncodeError, Reader, Writer};
+use crate::{DecodeError, EncodeError, Oid, Reader, Writer};
 
 pub const CLOSE_RUN_VERSION: u16 = 1;
 pub const CLOSE_RUN_DIGEST_DOMAIN: &[u8] = b"fa:close-run:v1";
@@ -52,6 +52,9 @@ pub enum CloseTaskBodyAction {
     /// Reproduce the fiscal year's latest intrinsic close and require that
     /// no native or functional nominal balance remains at execution time.
     VerifyYearEndClose { fiscal_year: i32 },
+    /// Reproduce the exact statement's native reconciliation through this
+    /// close period's final day, with no cash-contribution or match drift.
+    VerifyBankReconciliation { manifest_oid: Oid },
 }
 
 fn invalid(what: &'static str) -> DecodeError {
@@ -111,6 +114,7 @@ impl CloseTaskBody {
             }
             CloseTaskBodyAction::PeriodTransition { .. } => {}
             CloseTaskBodyAction::VerifyYearEndClose { .. } => {}
+            CloseTaskBodyAction::VerifyBankReconciliation { .. } => {}
         }
         Ok(())
     }
@@ -147,6 +151,9 @@ impl CloseTaskBody {
             }
             CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
                 w.u8(2).i32(*fiscal_year);
+            }
+            CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
+                w.u8(3).fixed(&manifest_oid.0);
             }
         }
     }
@@ -194,6 +201,9 @@ impl CloseTaskBody {
             },
             2 => CloseTaskBodyAction::VerifyYearEndClose {
                 fiscal_year: r.i32("close_task.fiscal_year")?,
+            },
+            3 => CloseTaskBodyAction::VerifyBankReconciliation {
+                manifest_oid: Oid(r.fixed("close_task.bank_manifest_oid")?),
             },
             _ => return Err(r.invalid("close_task.action")),
         };
@@ -275,7 +285,21 @@ impl CloseRunBody {
         if checkpoints.len() > 1 {
             return Err(invalid("close_run.duplicate_year_end_verification"));
         }
-        if let Some(checkpoint) = checkpoints.first() {
+        let mut bank_manifests = std::collections::BTreeSet::new();
+        for task in &self.tasks {
+            if let CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } = task.action
+                && !bank_manifests.insert(manifest_oid.0)
+            {
+                return Err(invalid("close_run.duplicate_bank_verification"));
+            }
+        }
+        for checkpoint in self.tasks.iter().filter(|task| {
+            matches!(
+                task.action,
+                CloseTaskBodyAction::VerifyYearEndClose { .. }
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+            )
+        }) {
             let ancestors = ancestors_of(checkpoint)?;
             if self.tasks.iter().enumerate().any(|(index, task)| {
                 matches!(task.action, CloseTaskBodyAction::PromoteDraft { .. }) && !ancestors[index]
@@ -497,5 +521,65 @@ mod tests {
         transitive.validate().unwrap();
         transitive.tasks[2].depends_on.clear();
         assert!(transitive.validate().is_err());
+    }
+
+    #[test]
+    fn bank_verification_binds_manifest_and_follows_all_monetary_tasks() {
+        let mut graph = body();
+        graph.tasks.push(CloseTaskBody {
+            id: "verify-bank".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::VerifyBankReconciliation {
+                manifest_oid: Oid([21; 32]),
+            },
+        });
+        graph.tasks[1].depends_on = vec!["verify-bank".into()];
+        graph.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&graph.canonical_bytes().unwrap()).unwrap(),
+            graph
+        );
+        let task = &graph.tasks[2];
+        let bytes = task.canonical_bytes().unwrap();
+        assert_eq!(bytes[bytes.len() - 33], 3, "additive v1 action tag");
+        assert_eq!(&bytes[bytes.len() - 32..], &[21; 32]);
+        for end in 0..bytes.len() {
+            assert!(CloseTaskBody::decode(&bytes[..end]).is_err());
+        }
+        let mut changed = graph.clone();
+        changed.tasks[2].action = CloseTaskBodyAction::VerifyBankReconciliation {
+            manifest_oid: Oid([22; 32]),
+        };
+        assert_ne!(graph.digest().unwrap(), changed.digest().unwrap());
+
+        let mut premature = graph.clone();
+        premature.tasks[2].depends_on.clear();
+        assert!(premature.validate().is_err());
+        assert!(CloseRunBody::decode(&premature.canonical_bytes().unwrap()).is_err());
+        let mut premature_terminal = graph.clone();
+        premature_terminal.tasks[1].depends_on = vec!["accrue".into()];
+        assert!(premature_terminal.validate().is_err());
+
+        // Distinct bank instruments can be checked independently after all
+        // monetary work; neither bank check has to depend on the other.
+        graph.tasks.push(CloseTaskBody {
+            id: "verify-second-bank".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::VerifyBankReconciliation {
+                manifest_oid: Oid([23; 32]),
+            },
+        });
+        graph.tasks[1].depends_on.push("verify-second-bank".into());
+        graph.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&graph.canonical_bytes().unwrap()).unwrap(),
+            graph
+        );
+        graph.tasks[3].action = graph.tasks[2].action.clone();
+        assert_eq!(
+            graph.validate().unwrap_err().what,
+            "close_run.duplicate_bank_verification"
+        );
+        assert!(CloseRunBody::decode(&graph.canonical_bytes().unwrap()).is_err());
     }
 }

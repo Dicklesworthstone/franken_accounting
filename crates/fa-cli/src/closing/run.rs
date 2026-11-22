@@ -67,7 +67,11 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
         if let Some((key, _)) = fields.iter().find(|(key, _)| {
             !matches!(
                 key.as_str(),
-                "id" | "depends_on" | "certificate" | "transition" | "verify_year_end_close"
+                "id" | "depends_on"
+                    | "certificate"
+                    | "transition"
+                    | "verify_year_end_close"
+                    | "verify_bank_reconciliation"
             )
         }) {
             return Err(usage(
@@ -105,13 +109,14 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
             row.get("certificate"),
             row.get("transition"),
             row.get("verify_year_end_close"),
+            row.get("verify_bank_reconciliation"),
         ) {
-            (Some(_), None, None) => {
+            (Some(_), None, None, None) => {
                 let certificate = string("certificate")?;
                 let digest = certificate.strip_prefix("C:").unwrap_or(certificate);
                 ReviewedCloseAction::DraftCertificate(parse_digest(digest, "certificate")?)
             }
-            (None, Some(_), None) => {
+            (None, Some(_), None, None) => {
                 ReviewedCloseAction::PeriodTransition(match string("transition")? {
                     "soft-close" => PeriodTransition::SoftClose,
                     "close" => PeriodTransition::Close,
@@ -124,7 +129,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     }
                 })
             }
-            (None, None, Some(Json::Int(year))) => ReviewedCloseAction::VerifyYearEndClose {
+            (None, None, Some(Json::Int(year)), None) => ReviewedCloseAction::VerifyYearEndClose {
                 fiscal_year: i32::try_from(*year).map_err(|_| {
                     usage(
                         "verify_year_end_close needs a fiscal year within the i32 range",
@@ -132,15 +137,25 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     )
                 })?,
             },
-            (None, None, Some(_)) => {
+            (None, None, Some(_), None) => {
                 return Err(usage(
                     "verify_year_end_close must be an integer fiscal year",
                     EXAMPLE,
                 ));
             }
+            (None, None, None, Some(_)) => {
+                let manifest = string("verify_bank_reconciliation")?;
+                let digest = manifest.strip_prefix("D:").unwrap_or(manifest);
+                ReviewedCloseAction::VerifyBankReconciliation {
+                    manifest_oid: fa_model::Oid(parse_digest(
+                        digest,
+                        "verify_bank_reconciliation",
+                    )?),
+                }
+            }
             _ => {
                 return Err(usage(
-                    "each close task names exactly one certificate, transition or verify_year_end_close",
+                    "each close task names exactly one certificate, transition, verify_year_end_close or verify_bank_reconciliation",
                     EXAMPLE,
                 ));
             }
@@ -173,7 +188,7 @@ fn view_json(view: &CloseRunView) -> Json {
                 .tasks
                 .iter()
                 .find(|definition| definition.id == task.id);
-            let (kind, draft, certificate, transition, fiscal_year) =
+            let (kind, draft, certificate, transition, fiscal_year, bank_manifest_oid) =
                 match definition.map(|definition| &definition.action) {
                     Some(CloseTaskBodyAction::PromoteDraft {
                         name,
@@ -183,6 +198,7 @@ fn view_json(view: &CloseRunView) -> Json {
                         "promote-draft",
                         s(name),
                         s(format!("C:{}", hex(certificate_digest))),
+                        Json::Null,
                         Json::Null,
                         Json::Null,
                     ),
@@ -197,6 +213,7 @@ fn view_json(view: &CloseRunView) -> Json {
                             _ => "invalid",
                         }),
                         Json::Null,
+                        Json::Null,
                     ),
                     Some(CloseTaskBodyAction::VerifyYearEndClose { fiscal_year }) => (
                         "verify-year-end-close",
@@ -204,8 +221,24 @@ fn view_json(view: &CloseRunView) -> Json {
                         Json::Null,
                         Json::Null,
                         Json::Int(i128::from(*fiscal_year)),
+                        Json::Null,
                     ),
-                    None => ("invalid", Json::Null, Json::Null, Json::Null, Json::Null),
+                    Some(CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid }) => (
+                        "verify-bank-reconciliation",
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        s(hex(&manifest_oid.0)),
+                    ),
+                    None => (
+                        "invalid",
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
                 };
             obj(vec![
                 ("vid", s(format!("{:032x}", task.vid.0))),
@@ -215,6 +248,7 @@ fn view_json(view: &CloseRunView) -> Json {
                 ("certificate", certificate),
                 ("transition", transition),
                 ("fiscal_year", fiscal_year),
+                ("bank_manifest_oid", bank_manifest_oid),
                 (
                     "depends_on",
                     Json::Arr(definition.map_or_else(Vec::new, |definition| {
@@ -655,7 +689,7 @@ pub(super) fn step(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             _ => {
                 return Err(usage(
                     "only a period-transition task takes a native plan",
-                    "use close dry-run --run <name> to rehearse draft and year-end verification tasks",
+                    "use close dry-run --run <name> to rehearse drafts and year-end or bank verification tasks",
                 ));
             }
         };
@@ -804,6 +838,11 @@ mod tests {
             r#"[{"id":"x","transition":"close","certificate":"C:00"}]"#,
             r#"[{"id":"x","transition":"close","depends_on":"y"}]"#,
             r#"[{"id":"x","transition":"close","done":true}]"#,
+            r#"[{"id":"x","verify_bank_reconciliation":"D:00"}]"#,
+            r#"[{"id":"x","verify_bank_reconciliation":42}]"#,
+            r#"[{"id":"x","verify_bank_reconciliation":null}]"#,
+            r#"[{"id":"x","verify_bank_reconciliation":"D:00","transition":"close"}]"#,
+            r#"[{"id":"x","verify_bank_reconciliation":"D:00","verify_year_end_close":2026}]"#,
         ] {
             assert!(task_definition(text).is_err(), "{text}");
         }
@@ -818,5 +857,27 @@ mod tests {
             tasks[0].action,
             ReviewedCloseAction::PeriodTransition(PeriodTransition::Lock)
         );
+    }
+
+    #[test]
+    fn close_bank_task_requires_an_exact_manifest_and_preserves_dependencies() {
+        let digest = "ab".repeat(32);
+        for locator in [digest.clone(), format!("D:{digest}")] {
+            let input = format!(
+                r#"[{{"id":"cash","depends_on":["adjustments"],"verify_bank_reconciliation":"{locator}"}}]"#
+            );
+            let tasks = task_definition(&input).unwrap_or_else(|_| panic!("valid manifest task"));
+            assert_eq!(tasks[0].depends_on, ["adjustments"]);
+            assert_eq!(
+                tasks[0].action,
+                ReviewedCloseAction::VerifyBankReconciliation {
+                    manifest_oid: fa_model::Oid([0xab; 32]),
+                }
+            );
+        }
+        for locator in [format!("C:{digest}"), "ab".repeat(31), "ab".repeat(33)] {
+            let input = format!(r#"[{{"id":"cash","verify_bank_reconciliation":"{locator}"}}]"#);
+            assert!(task_definition(&input).is_err(), "{locator}");
+        }
     }
 }
