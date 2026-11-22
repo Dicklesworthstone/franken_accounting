@@ -1713,6 +1713,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             matches!(
                 task.action,
                 crate::ReviewedCloseAction::VerifyBankReconciliation { .. }
+                    | crate::ReviewedCloseAction::VerifyBankInstrumentCoverage { .. }
             )
         }) && let Err(denial) = fa_policy::require(
             &capability,
@@ -1741,6 +1742,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 crate::ReviewedCloseAction::VerifyBankReconciliation { manifest_oid } => {
                     fa_journal::CloseTaskAction::VerifyBankReconciliation { manifest_oid }
+                }
+                crate::ReviewedCloseAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                    fa_journal::CloseTaskAction::VerifyBankInstrumentCoverage { manifest_oids }
                 }
                 crate::ReviewedCloseAction::PeriodTransition(transition) => {
                     fa_journal::CloseTaskAction::PeriodTransition(transition)
@@ -1791,6 +1795,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             matches!(
                 task.action,
                 fa_journal::CloseTaskAction::VerifyBankReconciliation { .. }
+                    | fa_journal::CloseTaskAction::VerifyBankInstrumentCoverage { .. }
             )
         }) && let Err(denial) = fa_policy::require(
             capability,
@@ -1910,6 +1915,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     book,
                     capability,
                     manifest_oid,
+                    period,
+                    known_at,
+                )?,
+            )
+        })
+    }
+
+    /// Authenticate complete registered-bank coverage at one recorded prefix.
+    /// Current whole-book Read and Reconcile precede source hydration, even
+    /// when the explicitly selected manifest list or native inventory is empty.
+    pub async fn verify_bank_instrument_coverage_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        manifest_oids: &[fa_model::Oid],
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankInstrumentCoverageCheckpoint> {
+        if let Err(denial) = fa_policy::require(
+            capability,
+            fa_policy::Op::Reconcile,
+            "verifying complete registered-bank close coverage",
+        ) {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(
+                fa_journal::close_run::verify_bank_instrument_coverage_checkpoint(
+                    db,
+                    cx,
+                    book,
+                    capability,
+                    manifest_oids,
                     period,
                     known_at,
                 )?,

@@ -186,6 +186,19 @@ pub(crate) fn render(
                         ]),
                         Json::Null,
                     ),
+                    CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                        verified_at,
+                        ..
+                    } => (
+                        "bank-instrument-coverage-verified",
+                        Json::Null,
+                        Json::Null,
+                        Json::Int(i128::from(verified_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
                     CloseTaskRehearsalOutcome::VerifiedBankReconciliation {
                         manifest_oid,
                         verified_at,
@@ -230,6 +243,48 @@ pub(crate) fn render(
                 ("transition", transition),
                 ("verification", verification),
                 ("bank_verification", bank_verification),
+                (
+                    "bank_instrument_coverage",
+                    match &task.outcome {
+                        CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                            verified_at,
+                            inventory_digest,
+                            source_digest,
+                            instruments,
+                        } => obj(vec![
+                            ("verified_at", Json::Int(i128::from(verified_at.0))),
+                            ("inventory_digest", s(hex(inventory_digest))),
+                            ("source_digest", s(hex(source_digest))),
+                            (
+                                "instruments",
+                                Json::Arr(
+                                    instruments
+                                        .iter()
+                                        .map(|item| {
+                                            obj(vec![
+                                                ("instrument", s(format!("{:032x}", item.instrument.0))),
+                                                ("code", s(&item.code)),
+                                                ("account", s(format!("{:032x}", item.account.0))),
+                                                ("unit_id", Json::Int(i128::from(item.unit.0))),
+                                                ("manifest_oid", s(hex(&item.manifest_oid.0))),
+                                                (
+                                                    "attestation",
+                                                    obj(vec![
+                                                        ("vid", s(format!("{:032x}", item.attestation.vid.0))),
+                                                        ("digest", s(hex(&item.attestation.digest))),
+                                                    ]),
+                                                ),
+                                                ("statement_date", s(item.statement_date.render())),
+                                                ("checkpoint_digest", s(hex(&item.checkpoint_digest))),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ]),
+                        _ => Json::Null,
+                    },
+                ),
             ])
         })
         .collect();

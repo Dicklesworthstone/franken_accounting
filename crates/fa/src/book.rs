@@ -2026,6 +2026,23 @@ impl Book {
         )))
     }
 
+    /// Verify complete coverage of all registered bank instruments using the
+    /// explicitly selected native reconciliation manifests. An empty list
+    /// succeeds only for an authenticated empty BankAccount inventory.
+    pub fn verify_bank_instrument_coverage_checkpoint(
+        &mut self,
+        manifest_oids: &[fa_model::Oid],
+        period: &str,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::BankInstrumentCoverageCheckpoint> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+        core.verify_bank_instrument_coverage_checkpoint(
+            &purposes, manifest_oids, period, known_at, capability,
+        )))
+    }
+
     /// Prepare the exact period-transition proposal for a ready close task.
     #[allow(clippy::too_many_arguments)]
     pub fn plan_close_task_transition(

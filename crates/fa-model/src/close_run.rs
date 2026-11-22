@@ -14,6 +14,9 @@ use crate::{DecodeError, EncodeError, Oid, Reader, Writer};
 pub const CLOSE_RUN_VERSION: u16 = 1;
 pub const CLOSE_RUN_DIGEST_DOMAIN: &[u8] = b"fa:close-run:v1";
 pub const CLOSE_TASK_DIGEST_DOMAIN: &[u8] = b"fa:close-task:v1";
+/// Each explicitly selected bank manifest consumes 32 bytes of the existing
+/// close-graph envelope. Headers and other tasks further constrain actual runs.
+pub const MAX_BANK_INSTRUMENT_COVERAGE: usize = MAX_CLOSE_RUN_BYTES / 32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloseRunBody {
@@ -55,6 +58,10 @@ pub enum CloseTaskBodyAction {
     /// Reproduce the exact statement's native reconciliation through this
     /// close period's final day, with no cash-contribution or match drift.
     VerifyBankReconciliation { manifest_oid: Oid },
+    /// Reconcile every registered BankAccount instrument at the selected
+    /// prefix. Manifests are explicit and strictly ascending; an empty list
+    /// can prove only that the authenticated bank-instrument inventory is empty.
+    VerifyBankInstrumentCoverage { manifest_oids: Vec<Oid> },
 }
 
 fn invalid(what: &'static str) -> DecodeError {
@@ -115,6 +122,13 @@ impl CloseTaskBody {
             CloseTaskBodyAction::PeriodTransition { .. } => {}
             CloseTaskBodyAction::VerifyYearEndClose { .. } => {}
             CloseTaskBodyAction::VerifyBankReconciliation { .. } => {}
+            CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                if manifest_oids.len() > MAX_BANK_INSTRUMENT_COVERAGE
+                    || !manifest_oids.windows(2).all(|pair| pair[0].0 < pair[1].0)
+                {
+                    return Err(invalid("close_task.bank_manifest_inventory"));
+                }
+            }
         }
         Ok(())
     }
@@ -154,6 +168,11 @@ impl CloseTaskBody {
             }
             CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
                 w.u8(3).fixed(&manifest_oid.0);
+            }
+            CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                w.u8(4).list(manifest_oids, |w, oid| {
+                    w.fixed(&oid.0);
+                });
             }
         }
     }
@@ -204,6 +223,13 @@ impl CloseTaskBody {
             },
             3 => CloseTaskBodyAction::VerifyBankReconciliation {
                 manifest_oid: Oid(r.fixed("close_task.bank_manifest_oid")?),
+            },
+            4 => CloseTaskBodyAction::VerifyBankInstrumentCoverage {
+                manifest_oids: r.list(
+                    MAX_BANK_INSTRUMENT_COVERAGE,
+                    "close_task.bank_manifest_oids",
+                    |r| Ok(Oid(r.fixed("close_task.bank_manifest_oid")?)),
+                )?,
             },
             _ => return Err(r.invalid("close_task.action")),
         };
@@ -285,6 +311,20 @@ impl CloseRunBody {
         if checkpoints.len() > 1 {
             return Err(invalid("close_run.duplicate_year_end_verification"));
         }
+        if self
+            .tasks
+            .iter()
+            .filter(|task| {
+                matches!(
+                    task.action,
+                    CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                )
+            })
+            .count()
+            > 1
+        {
+            return Err(invalid("close_run.duplicate_bank_instrument_coverage"));
+        }
         let mut bank_manifests = std::collections::BTreeSet::new();
         for task in &self.tasks {
             if let CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } = task.action
@@ -298,6 +338,7 @@ impl CloseRunBody {
                 task.action,
                 CloseTaskBodyAction::VerifyYearEndClose { .. }
                     | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
             )
         }) {
             let ancestors = ancestors_of(checkpoint)?;
@@ -581,5 +622,81 @@ mod tests {
             "close_run.duplicate_bank_verification"
         );
         assert!(CloseRunBody::decode(&graph.canonical_bytes().unwrap()).is_err());
+    }
+
+    #[test]
+    fn bank_inventory_coverage_is_bounded_distinct_and_follows_all_monetary_work() {
+        let mut graph = body();
+        graph.tasks.push(CloseTaskBody {
+            id: "verify-all-banks".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::VerifyBankInstrumentCoverage {
+                manifest_oids: vec![Oid([1; 32]), Oid([2; 32])],
+            },
+        });
+        graph.tasks[1].depends_on = vec!["verify-all-banks".into()];
+        graph.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&graph.canonical_bytes().unwrap()).unwrap(),
+            graph
+        );
+        let task_bytes = graph.tasks[2].canonical_bytes().unwrap();
+        assert_eq!(
+            task_bytes[task_bytes.len() - 69],
+            4,
+            "additive v1 action tag"
+        );
+        for end in 0..task_bytes.len() {
+            assert!(CloseTaskBody::decode(&task_bytes[..end]).is_err());
+        }
+        let full_digest = graph.digest().unwrap();
+        let mut empty = graph.clone();
+        empty.tasks[2].action = CloseTaskBodyAction::VerifyBankInstrumentCoverage {
+            manifest_oids: Vec::new(),
+        };
+        empty.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&empty.canonical_bytes().unwrap()).unwrap(),
+            empty
+        );
+        assert_ne!(empty.digest().unwrap(), full_digest);
+
+        for manifest_oids in [
+            vec![Oid([2; 32]), Oid([1; 32])],
+            vec![Oid([1; 32]), Oid([1; 32])],
+            (0..=MAX_BANK_INSTRUMENT_COVERAGE)
+                .map(|index| {
+                    let mut bytes = [0; 32];
+                    bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                    Oid(bytes)
+                })
+                .collect(),
+        ] {
+            let mut invalid = graph.clone();
+            invalid.tasks[2].action =
+                CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids };
+            assert!(invalid.validate().is_err());
+            assert!(CloseRunBody::decode(&invalid.canonical_bytes().unwrap()).is_err());
+        }
+        let mut premature = graph.clone();
+        premature.tasks[2].depends_on.clear();
+        assert_eq!(
+            premature.validate().unwrap_err().what,
+            "close_run.verification_precedes_monetary_tasks"
+        );
+        let mut early_terminal = graph.clone();
+        early_terminal.tasks[1].depends_on = vec!["accrue".into()];
+        assert!(early_terminal.validate().is_err());
+        let mut repeated = graph.clone();
+        let mut second = repeated.tasks[2].clone();
+        second.id = "verify-all-banks-again".into();
+        repeated.tasks.push(second);
+        repeated.tasks[1]
+            .depends_on
+            .push("verify-all-banks-again".into());
+        assert_eq!(
+            repeated.validate().unwrap_err().what,
+            "close_run.duplicate_bank_instrument_coverage"
+        );
     }
 }

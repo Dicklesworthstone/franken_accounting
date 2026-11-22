@@ -6,6 +6,9 @@ use fa::bank::{
     BankDecisionRef, BankFormat, BankImportRequest, BankReconciliationRequest, BankStatusRequest,
 };
 
+#[path = "bank_checkpoint/coverage.rs"]
+mod coverage;
+
 fn bank_closer() -> Capability {
     cap(CLOSER, &["read", "close", "approve", "reconcile"])
 }

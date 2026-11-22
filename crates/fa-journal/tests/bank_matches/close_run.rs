@@ -12,6 +12,9 @@ use fa_journal::close_run::{
 };
 use fa_journal::period::TransitionPlan;
 
+#[path = "close_run/coverage.rs"]
+mod coverage;
+
 fn closer() -> Capability {
     Capability::embedded(CONFIRMER, &["read", "close", "reconcile"]).unwrap()
 }

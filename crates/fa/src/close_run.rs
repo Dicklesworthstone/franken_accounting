@@ -35,6 +35,10 @@ pub enum ReviewedCloseAction {
     /// through the close period's last day. Cash contributions and match
     /// history must still agree, including changes whose net balance is zero.
     VerifyBankReconciliation { manifest_oid: fa_model::Oid },
+    /// Prove complete coverage of every registered BankAccount instrument.
+    /// The selected native manifests must cover their distinct account/unit
+    /// scopes one-to-one; an empty list proves an authenticated empty inventory.
+    VerifyBankInstrumentCoverage { manifest_oids: Vec<fa_model::Oid> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,6 +191,18 @@ pub(crate) fn same_reviewed_rehearsal(
             // The checkpoint independently binds the original attestation,
             // manifest, period and exact cash/match contribution set. Only
             // unrelated publications may advance this observation prefix.
+            *verified_at = *reviewed_at;
+        }
+        if let (
+            CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage { verified_at, .. },
+            CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
+                verified_at: reviewed_at,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            // Inventory and every exact statement/attestation binding remain
+            // equal. Only an unrelated publication may shift the read prefix.
             *verified_at = *reviewed_at;
         }
     }
@@ -647,7 +663,8 @@ impl Book {
             let (plan, approvals) = match action {
                 CloseTaskBodyAction::PromoteDraft { .. }
                 | CloseTaskBodyAction::VerifyYearEndClose { .. }
-                | CloseTaskBodyAction::VerifyBankReconciliation { .. } => (None, Vec::new()),
+                | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => (None, Vec::new()),
                 CloseTaskBodyAction::PeriodTransition { to } => match transition_input.as_ref() {
                     None => {
                         return Ok(Ok(CloseRunExecution {

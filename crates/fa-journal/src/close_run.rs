@@ -34,6 +34,12 @@ use crate::{BookContext, policy};
 mod bank_checkpoint;
 use bank_checkpoint::bank_reconciliation_checkpoint_at;
 pub use bank_checkpoint::{BankReconciliationCheckpoint, verify_bank_reconciliation_checkpoint};
+mod bank_coverage;
+use bank_coverage::bank_instrument_coverage_checkpoint_at;
+pub use bank_coverage::{
+    BankInstrumentCoverageCheckpoint, BankInstrumentCoverageItem,
+    verify_bank_instrument_coverage_checkpoint,
+};
 
 pub const MAX_TASKS: usize = fa_model::limits::MAX_CLOSE_RUN_TASKS;
 
@@ -57,6 +63,9 @@ pub enum CloseTaskAction {
     },
     VerifyBankReconciliation {
         manifest_oid: Oid,
+    },
+    VerifyBankInstrumentCoverage {
+        manifest_oids: Vec<Oid>,
     },
     /// Future task kinds are explicitly refused, never marked complete.
     Unsupported(String),
@@ -323,6 +332,7 @@ fn admit_bank_checkpoints<V: Vfs + Clone>(
         matches!(
             task.action,
             CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
         )
     }) {
         crate::bank::admit_bank_match_history(db, book, capability, known_at)
@@ -363,12 +373,14 @@ fn admit_pending_bank_task<V: Vfs + Clone>(
                     && matches!(
                         task.action,
                         CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                            | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
                             | CloseTaskBodyAction::PeriodTransition { .. }
                     )
             }
             None => matches!(
                 task.action,
                 CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
                     | CloseTaskBodyAction::PeriodTransition { .. }
             ),
         };
@@ -471,6 +483,11 @@ fn definition_body(
                 CloseTaskBodyAction::VerifyBankReconciliation {
                     manifest_oid: *manifest_oid,
                 }
+            }
+            CloseTaskAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                let mut manifest_oids = manifest_oids.clone();
+                manifest_oids.sort_by_key(|oid| oid.0);
+                CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids }
             }
             CloseTaskAction::PromoteDraft {
                 source,
@@ -1264,12 +1281,14 @@ fn read_view<V: Vfs + Clone>(
             let (effect, checkpoint, review) = match (&task.action, proof_refs.as_slice()) {
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
-                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
                     [TypedRef::Vertex(effect), TypedRef::Object(basis)],
                 ) => (*effect, Some(basis.0), None),
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
-                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
                     [
                         TypedRef::Vertex(effect),
                         TypedRef::Object(basis),
@@ -1278,7 +1297,8 @@ fn read_view<V: Vfs + Clone>(
                 ) => (*effect, Some(basis.0), Some(review.0)),
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
-                    | CloseTaskBodyAction::VerifyBankReconciliation { .. },
+                    | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
                     _,
                 ) => {
                     return Err(corrupt(
@@ -1619,6 +1639,29 @@ fn verify_effect<V: Vfs + Clone>(
         }
         return Ok(());
     }
+    if let CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } = &task.action {
+        let at = CommitSeq(
+            seq.0
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("verification receipt has no source prefix"))?,
+        );
+        let verified =
+            bank_instrument_coverage_checkpoint_at(db, cx, book, manifest_oids, period, at)?
+                .map_err(|refusal| {
+                    corrupt(format!(
+                        "retained bank instrument coverage: {}",
+                        refusal.message
+                    ))
+                })?;
+        // The authentic Book is the native subject of complete inventory,
+        // including an empty inventory. It is not a fabricated Entry effect.
+        if Some(*verified.source_digest()) != checkpoint || effect != crate::rows::book_root() {
+            return Err(corrupt(
+                "coverage receipt does not reproduce its original Book inventory and bank sources",
+            ));
+        }
+        return Ok(());
+    }
     let row = db
         .vertex(effect)?
         .ok_or_else(|| corrupt("task's native effect is absent"))?;
@@ -1707,7 +1750,8 @@ fn verify_effect<V: Vfs + Clone>(
             }
         }
         CloseTaskBodyAction::VerifyYearEndClose { .. }
-        | CloseTaskBodyAction::VerifyBankReconciliation { .. } => {
+        | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => {
             return Err(corrupt(
                 "accounting verification escaped its native source check",
             ));
@@ -1739,6 +1783,7 @@ fn check_accounting_checkpoints<V: Vfs + Clone>(
             body.action,
             CloseTaskBodyAction::VerifyYearEndClose { .. }
                 | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
         ) {
             continue;
         }
@@ -1778,6 +1823,17 @@ fn check_accounting_checkpoints<V: Vfs + Clone>(
                     at,
                 )?
                 .map(TaskVerification::Bank)
+            }
+            CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+                bank_instrument_coverage_checkpoint_at(
+                    db,
+                    cx,
+                    book,
+                    manifest_oids,
+                    &view.body.period,
+                    at,
+                )?
+                .map(TaskVerification::BankCoverage)
             }
             _ => unreachable!("only native verification tasks select a checkpoint"),
         };
@@ -1977,6 +2033,7 @@ pub fn plan_close_task_transition<V: Vfs + Clone>(
 enum TaskVerification {
     YearEnd(crate::closing::YearEndCloseCheckpoint),
     Bank(BankReconciliationCheckpoint),
+    BankCoverage(BankInstrumentCoverageCheckpoint),
 }
 
 impl TaskVerification {
@@ -1984,6 +2041,7 @@ impl TaskVerification {
         match self {
             Self::YearEnd(checkpoint) => checkpoint.source_digest(),
             Self::Bank(checkpoint) => checkpoint.source_digest(),
+            Self::BankCoverage(checkpoint) => checkpoint.source_digest(),
         }
     }
 
@@ -1991,6 +2049,7 @@ impl TaskVerification {
         match self {
             Self::YearEnd(checkpoint) => checkpoint.known_at(),
             Self::Bank(checkpoint) => checkpoint.known_at(),
+            Self::BankCoverage(checkpoint) => checkpoint.known_at(),
         }
     }
 
@@ -1998,6 +2057,7 @@ impl TaskVerification {
         match self {
             Self::YearEnd(checkpoint) => checkpoint.latest_close().entry_ref.vid,
             Self::Bank(checkpoint) => checkpoint.attestation().vid,
+            Self::BankCoverage(_) => crate::rows::book_root(),
         }
     }
 }
@@ -2058,6 +2118,7 @@ impl TaskCompletion {
                     task.action,
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
                         | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+                        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
                 ) && let Some(receipt) = self
                     .view
                     .tasks
@@ -2106,6 +2167,24 @@ impl TaskCompletion {
                 }
                 txn.vertex(db, effect)?;
                 txn.vertex(db, period_vid(&book.calendar.id, &self.view.body.period))?;
+            }
+            (
+                CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids },
+                Some(TaskVerification::BankCoverage(verification)),
+            ) => {
+                if verification.manifest_oids() != manifest_oids
+                    || verification.period() != self.view.body.period
+                    || verification.known_at() != db.frontier()?
+                    || effect != crate::rows::book_root()
+                {
+                    return Ok(Err(stale_checkpoint(&body.id)));
+                }
+                txn.vertex(db, effect)?;
+                txn.vertex(db, period_vid(&book.calendar.id, &self.view.body.period))?;
+                for instrument in verification.instruments() {
+                    txn.vertex(db, instrument.instrument)?;
+                    txn.vertex(db, instrument.attestation.vid)?;
+                }
             }
             (
                 CloseTaskBodyAction::PromoteDraft { .. }
@@ -2342,6 +2421,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         body.action,
         CloseTaskBodyAction::VerifyYearEndClose { .. }
             | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+            | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
     ) && (request.transition_plan.is_some() || !request.approvals.is_empty())
     {
         return Ok(Err(invalid(
@@ -2396,6 +2476,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
     if matches!(
         body.action,
         CloseTaskBodyAction::VerifyBankReconciliation { .. }
+            | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
             | CloseTaskBodyAction::PeriodTransition { .. }
     ) && let Err(refusal) =
         admit_bank_checkpoints(db, book, &request.capability, &view.body, None)?
@@ -2426,6 +2507,20 @@ pub async fn execute_close_task<V: Vfs + Clone>(
                 None,
             )? {
                 Ok(verified) => Some(TaskVerification::Bank(verified)),
+                Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+            }
+        }
+        CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
+            match verify_bank_instrument_coverage_checkpoint(
+                db,
+                cx,
+                book,
+                &request.capability,
+                manifest_oids,
+                &view.body.period,
+                None,
+            )? {
+                Ok(verified) => Some(TaskVerification::BankCoverage(verified)),
                 Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
             }
         }
@@ -2489,7 +2584,8 @@ pub async fn execute_close_task<V: Vfs + Clone>(
             }
         }
         CloseTaskBodyAction::VerifyYearEndClose { .. }
-        | CloseTaskBodyAction::VerifyBankReconciliation { .. } => {
+        | CloseTaskBodyAction::VerifyBankReconciliation { .. }
+        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => {
             let verification = completion
                 .verification
                 .as_ref()

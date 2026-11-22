@@ -129,9 +129,10 @@ pub mod upload;
 mod period_history_tests;
 
 pub use close_rehearsal::{
-    CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT, CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT,
-    CertifiedCloseRunRehearsal, CloseRunRehearsal, CloseRunRehearsalCertificate,
-    CloseTaskRehearsal, CloseTaskRehearsalOutcome, MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
+    BankInstrumentCoverageItem, CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT,
+    CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT, CertifiedCloseRunRehearsal, CloseRunRehearsal,
+    CloseRunRehearsalCertificate, CloseTaskRehearsal, CloseTaskRehearsalOutcome,
+    MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
 };
 pub use close_run::{
     CloseRunExecution, CloseRunStop, CloseRunTransition, ReviewedCloseAction, ReviewedCloseTask,

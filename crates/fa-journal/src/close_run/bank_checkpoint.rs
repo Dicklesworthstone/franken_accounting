@@ -11,7 +11,9 @@ use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
 
 use crate::BookContext;
-use crate::bank::{BankDecisionRef, admit_bank_match_history, reconciliation_states_at};
+use crate::bank::{
+    BankDecisionRef, BankReconciliationState, admit_bank_match_history, reconciliation_states_at,
+};
 use crate::refusal::{Outcome, Refusal, code, exit};
 use crate::rows::PeriodRow;
 
@@ -96,16 +98,12 @@ pub fn verify_bank_reconciliation_checkpoint<V: Vfs + Clone>(
     bank_reconciliation_checkpoint_at(db, cx, book, manifest_oid, period, at)
 }
 
-/// Internal integrity replay uses the receipt's original prefix, without
-/// inventing authority or reviving a historical controller's current grant.
-pub(super) fn bank_reconciliation_checkpoint_at<V: Vfs + Clone>(
+pub(super) fn period_at<V: Vfs + Clone>(
     db: &Database<V>,
-    cx: &PurposeContexts,
     book: &BookContext,
-    manifest_oid: Oid,
     period_code: &str,
     at: CommitSeq,
-) -> Outcome<BankReconciliationCheckpoint> {
+) -> Outcome<PeriodRow> {
     if at.0 == 0 || at > db.frontier()? {
         return Ok(Err(unavailable(
             "the bank verification selects an unavailable recorded prefix",
@@ -152,6 +150,23 @@ pub(super) fn bank_reconciliation_checkpoint_at<V: Vfs + Clone>(
             "bank verification period differs from its canonical birth definition",
         ));
     }
+    Ok(Ok(period))
+}
+
+/// Internal integrity replay uses the receipt's original prefix, without
+/// inventing authority or reviving a historical controller's current grant.
+pub(super) fn bank_reconciliation_checkpoint_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    manifest_oid: Oid,
+    period_code: &str,
+    at: CommitSeq,
+) -> Outcome<BankReconciliationCheckpoint> {
+    let period = match period_at(db, book, period_code, at)? {
+        Ok(period) => period,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
     let statements = match reconciliation_states_at(db, cx, book, Some(manifest_oid), at)? {
         Ok(statements) => statements,
         Err(refusal) => return Ok(Err(refusal)),
@@ -164,6 +179,26 @@ pub(super) fn bank_reconciliation_checkpoint_at<V: Vfs + Clone>(
             "the selected bank import has no native reconciliation at this prefix",
         )));
     };
+    checkpoint_for_state(book, manifest_oid, &period, at, &latest)
+}
+
+/// The supplied state has already passed the native history and cash/match
+/// folds. Portfolio verification shares that fold instead of repeating it
+/// once for every explicitly selected manifest.
+pub(super) fn checkpoint_for_state(
+    book: &BookContext,
+    manifest_oid: Oid,
+    period: &PeriodRow,
+    at: CommitSeq,
+    latest: &BankReconciliationState,
+) -> Outcome<BankReconciliationCheckpoint> {
+    if latest.recorded.claim.manifest_oid != manifest_oid
+        || latest.recorded.claim.manifest.book_id != book.book_id
+    {
+        return Err(super::corrupt(
+            "bank checkpoint selected a different native source",
+        ));
+    }
     let manifest = &latest.recorded.claim.manifest;
     // Native period bounds are exclusive at the end, including fiscal
     // calendars with weeks or non-January starts. Never infer dates from a
@@ -206,7 +241,7 @@ pub(super) fn bank_reconciliation_checkpoint_at<V: Vfs + Clone>(
     );
     Ok(Ok(BankReconciliationCheckpoint {
         manifest_oid,
-        period: period.code,
+        period: period.code.clone(),
         known_at: at,
         attestation,
         statement_date: manifest.statement_date,

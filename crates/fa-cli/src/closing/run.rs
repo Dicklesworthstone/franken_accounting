@@ -72,6 +72,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     | "transition"
                     | "verify_year_end_close"
                     | "verify_bank_reconciliation"
+                    | "verify_bank_instrument_coverage"
             )
         }) {
             return Err(usage(
@@ -110,13 +111,14 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
             row.get("transition"),
             row.get("verify_year_end_close"),
             row.get("verify_bank_reconciliation"),
+            row.get("verify_bank_instrument_coverage"),
         ) {
-            (Some(_), None, None, None) => {
+            (Some(_), None, None, None, None) => {
                 let certificate = string("certificate")?;
                 let digest = certificate.strip_prefix("C:").unwrap_or(certificate);
                 ReviewedCloseAction::DraftCertificate(parse_digest(digest, "certificate")?)
             }
-            (None, Some(_), None, None) => {
+            (None, Some(_), None, None, None) => {
                 ReviewedCloseAction::PeriodTransition(match string("transition")? {
                     "soft-close" => PeriodTransition::SoftClose,
                     "close" => PeriodTransition::Close,
@@ -129,7 +131,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     }
                 })
             }
-            (None, None, Some(Json::Int(year)), None) => ReviewedCloseAction::VerifyYearEndClose {
+            (None, None, Some(Json::Int(year)), None, None) => ReviewedCloseAction::VerifyYearEndClose {
                 fiscal_year: i32::try_from(*year).map_err(|_| {
                     usage(
                         "verify_year_end_close needs a fiscal year within the i32 range",
@@ -137,13 +139,13 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     )
                 })?,
             },
-            (None, None, Some(_), None) => {
+            (None, None, Some(_), None, None) => {
                 return Err(usage(
                     "verify_year_end_close must be an integer fiscal year",
                     EXAMPLE,
                 ));
             }
-            (None, None, None, Some(_)) => {
+            (None, None, None, Some(_), None) => {
                 let manifest = string("verify_bank_reconciliation")?;
                 let digest = manifest.strip_prefix("D:").unwrap_or(manifest);
                 ReviewedCloseAction::VerifyBankReconciliation {
@@ -153,9 +155,47 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     )?),
                 }
             }
+            (None, None, None, None, Some(Json::Arr(values))) => {
+                if values.len() > fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE {
+                    return Err(usage(
+                        "bank instrument coverage exceeds the bounded manifest count",
+                        EXAMPLE,
+                    ));
+                }
+                let mut manifest_oids = values
+                    .iter()
+                    .map(|value| {
+                        let manifest = value.as_str().ok_or_else(|| {
+                            usage(
+                                "each bank instrument coverage manifest must be a document OID",
+                                EXAMPLE,
+                            )
+                        })?;
+                        let digest = manifest.strip_prefix("D:").unwrap_or(manifest);
+                        Ok(fa_model::Oid(parse_digest(
+                            digest,
+                            "verify_bank_instrument_coverage",
+                        )?))
+                    })
+                    .collect::<Result<Vec<_>, Fail>>()?;
+                manifest_oids.sort_unstable_by_key(|oid| oid.0);
+                if manifest_oids.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(usage(
+                        "bank instrument coverage names the same manifest twice",
+                        EXAMPLE,
+                    ));
+                }
+                ReviewedCloseAction::VerifyBankInstrumentCoverage { manifest_oids }
+            }
+            (None, None, None, None, Some(_)) => {
+                return Err(usage(
+                    "verify_bank_instrument_coverage must be an array of document OIDs",
+                    EXAMPLE,
+                ));
+            }
             _ => {
                 return Err(usage(
-                    "each close task names exactly one certificate, transition, verify_year_end_close or verify_bank_reconciliation",
+                    "each close task names exactly one certificate, transition, verify_year_end_close, verify_bank_reconciliation or verify_bank_instrument_coverage",
                     EXAMPLE,
                 ));
             }
@@ -231,6 +271,14 @@ fn view_json(view: &CloseRunView) -> Json {
                         Json::Null,
                         s(hex(&manifest_oid.0)),
                     ),
+                    Some(CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }) => (
+                        "verify-bank-instrument-coverage",
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
                     None => (
                         "invalid",
                         Json::Null,
@@ -249,6 +297,15 @@ fn view_json(view: &CloseRunView) -> Json {
                 ("transition", transition),
                 ("fiscal_year", fiscal_year),
                 ("bank_manifest_oid", bank_manifest_oid),
+                (
+                    "bank_manifest_oids",
+                    match definition.map(|definition| &definition.action) {
+                        Some(CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids }) => {
+                            Json::Arr(manifest_oids.iter().map(|oid| s(hex(&oid.0))).collect())
+                        }
+                        _ => Json::Null,
+                    },
+                ),
                 (
                     "depends_on",
                     Json::Arr(definition.map_or_else(Vec::new, |definition| {
@@ -843,6 +900,12 @@ mod tests {
             r#"[{"id":"x","verify_bank_reconciliation":null}]"#,
             r#"[{"id":"x","verify_bank_reconciliation":"D:00","transition":"close"}]"#,
             r#"[{"id":"x","verify_bank_reconciliation":"D:00","verify_year_end_close":2026}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":null}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":"D:00"}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":[false]}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":["D:00"]}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":[],"transition":"close"}]"#,
+            r#"[{"id":"x","verify_bank_instrument_coverage":[],"verify_bank_reconciliation":"D:00"}]"#,
         ] {
             assert!(task_definition(text).is_err(), "{text}");
         }
@@ -879,5 +942,46 @@ mod tests {
             let input = format!(r#"[{{"id":"cash","verify_bank_reconciliation":"{locator}"}}]"#);
             assert!(task_definition(&input).is_err(), "{locator}");
         }
+    }
+
+    #[test]
+    fn complete_bank_coverage_canonicalizes_exact_manifests_and_preserves_empty_inventory() {
+        let lower = "ab".repeat(32);
+        let higher = "cd".repeat(32);
+        let input = format!(
+            r#"[{{"id":"banks","depends_on":["adjustments"],"verify_bank_instrument_coverage":["D:{higher}","{lower}"]}}]"#
+        );
+        let tasks =
+            task_definition(&input).unwrap_or_else(|_| panic!("valid inventory coverage task"));
+        assert_eq!(tasks[0].depends_on, ["adjustments"]);
+        assert_eq!(
+            tasks[0].action,
+            ReviewedCloseAction::VerifyBankInstrumentCoverage {
+                manifest_oids: vec![fa_model::Oid([0xab; 32]), fa_model::Oid([0xcd; 32])],
+            }
+        );
+        let empty = task_definition(r#"[{"id":"banks","verify_bank_instrument_coverage":[]}]"#)
+            .unwrap_or_else(|_| panic!("empty inventory can be proven"));
+        assert_eq!(
+            empty[0].action,
+            ReviewedCloseAction::VerifyBankInstrumentCoverage {
+                manifest_oids: vec![],
+            }
+        );
+        let duplicated = format!(
+            r#"[{{"id":"banks","verify_bank_instrument_coverage":["D:{lower}","{lower}"]}}]"#
+        );
+        assert!(task_definition(&duplicated).is_err());
+        let too_many = vec![
+            format!("\"{lower}\"");
+            fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE + 1
+        ]
+        .join(",");
+        assert!(
+            task_definition(&format!(
+                r#"[{{"id":"banks","verify_bank_instrument_coverage":[{too_many}]}}]"#
+            ))
+            .is_err()
+        );
     }
 }
