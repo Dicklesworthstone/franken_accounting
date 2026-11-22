@@ -7103,6 +7103,19 @@ fn plan_document_into_draft(
     plan_intent_into_draft(out, &mut book, req.capability, name, intent)
 }
 
+/// Append one complete typed batch without discarding its native profile.
+/// The retained preview and record identify every member of the atomic append.
+pub(crate) fn plan_batch_into_draft(
+    out: &Out,
+    book: &mut Book,
+    capability: Capability,
+    name: &str,
+    batch: PostBatch,
+) -> Result<(), Fail> {
+    let planned = book.plan_batch_into_draft(capability, name, batch.clone())??;
+    batch_plan::emit_draft(out, book, name, &batch, &planned)
+}
+
 /// Append one exact intent and expose the kernel's retained ordered preview.
 /// Source-derived commands use this after authenticating their complete review
 /// bytes, so the surface never reconstructs or changes the reviewed proposal.
@@ -8193,8 +8206,7 @@ pub(crate) fn submit_post_batch(
         .map_err(|error| Fail::Internal(format!("CLI batch key is not UTF-8: {error}")))?
         .to_string();
     if let Some(name) = draft {
-        let planned = book.plan_batch_into_draft(capability, name, batch.clone())??;
-        return batch_plan::emit_draft(out, book, name, &batch, &planned);
+        return plan_batch_into_draft(out, book, capability, name, batch);
     }
     if args.switch("--dry-run") || out.is_bound_agent() {
         let plan = book.plan_batch(batch, &capability)??;

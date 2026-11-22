@@ -1284,6 +1284,20 @@ impl Book {
         ))
     }
 
+    /// Prepare the complete automatic event group using only the owned draft's
+    /// explicitly confined Post source grant. Every member's effects must be
+    /// admitted; event and rule catalog metadata remain private.
+    pub fn prepare_rule_batch_in_draft(
+        &self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        event: VId,
+    ) -> Outcome<fa_intents::PostBatch> {
+        with_store!(&self.store, core => core.prepare_rule_batch_in_draft(
+            &self.purposes(), capability, name, event,
+        ))
+    }
+
     /// Prepare every active matching rule as one complete atomic batch.
     /// A required input or empty matching set refuses before publication.
     /// Native plan/post rechecks selection, authority and every derivation.

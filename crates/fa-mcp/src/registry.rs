@@ -2444,6 +2444,49 @@ mod tests {
     }
 
     #[test]
+    fn automatic_rule_drafts_forward_the_complete_event_under_post_only_preflight() {
+        let (mcp, reg) = embedded();
+        let tool = mcp.tool_by_wire("fa_rules_derive").unwrap();
+        let authority = fa_cli::authority::LaunchAuthority::new(
+            std::path::PathBuf::from("unopened-automatic-rule-draft-book"),
+            None,
+            "automatic-rule-preparer",
+            fa_cli::authority::LaunchProfile::Agent,
+            &["post"],
+        )
+        .unwrap();
+        let invocation = tool
+            .invocation(
+                &mcp,
+                reg,
+                &json!({"event": "EV-1", "draft": "complete-review"}),
+            )
+            .unwrap();
+        assert!(invocation.stdin.is_none());
+        assert!(!invocation.argv.iter().any(|arg| arg == "--rule"));
+        assert!(!invocation.argv.iter().any(|arg| arg == "--dry-run"));
+        let parsed =
+            fa_cli::args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert_eq!(
+            fa_cli::cli::bound_command_ops("rule", &parsed)
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["post"]
+        );
+        // The factory subsequently admits the real issued capability's
+        // exact owned draft before observing the event or rule catalog.
+        assert!(fa_cli::cli::bound_command_admissible(reg, "rule", &parsed, &authority).is_ok());
+        let direct = tool
+            .invocation(&mcp, reg, &json!({"event": "EV-1"}))
+            .unwrap();
+        let direct =
+            fa_cli::args::parse(&direct.argv, &reg.value_flags(), &reg.switches()).unwrap();
+        assert!(fa_cli::cli::bound_command_admissible(reg, "rule", &direct, &authority).is_err());
+    }
+
+    #[test]
     fn posting_tools_plan_inline_and_commit_exact_artifacts_under_launch_authority() {
         let (mcp, reg) = embedded();
         for wire in [

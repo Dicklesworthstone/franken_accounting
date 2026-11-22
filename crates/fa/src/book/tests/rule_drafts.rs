@@ -19,6 +19,17 @@ const RULE: &str = r#"rule confidential_accrual v1 for event Sale produces Adjus
   effective as_of
 }"#;
 
+const AUTOMATIC_RULE: &str = r#"rule automatic_private_alpha v1 for event Sale produces Adjusting {
+  authority {
+    debit "6000" upto "80.00 USD"
+    credit "1000" upto "80.00 USD"
+  }
+  let net = event.resource("private_net", "USD")
+  debit "6000" net
+  credit "1000" net
+  effective event.occurred_on
+}"#;
+
 struct Fixture {
     book: Book,
     usd: fa_money::UnitId,
@@ -63,6 +74,10 @@ fn activate(book: &mut Book, source: &str, from: DateDay, key: &str) -> Compiled
 }
 
 fn fixture() -> Fixture {
+    fixture_with_rule(RULE)
+}
+
+fn fixture_with_rule(source_rule: &str) -> Fixture {
     let (mut book, usd, day, source) = certified_fixture();
     let event = fa_model::EventSpec {
         code: "PRIVATE-EVENT-CODE".into(),
@@ -94,7 +109,7 @@ fn fixture() -> Fixture {
     .unwrap()
     .unwrap();
     let event = fa_model::event_vid(book.context().book_id, &event.code);
-    let rule = activate(&mut book, RULE, day, "private-rule-v1");
+    let rule = activate(&mut book, source_rule, day, "private-rule-v1");
     let planner = Capability::new(OWNER, Profile::Agent, &[Op::Post], VId(1))
         .unwrap()
         .on_branch(fa_model::draft_branch(book.context().book_id, NAME))
@@ -454,4 +469,327 @@ fn named_rule_preparation_does_not_decode_unrelated_event_sources() {
             .all(|leg| leg.amount == Amount::new(f.usd, 4_300))
     );
     assert_eq!(f.book.head().unwrap(), before);
+}
+
+fn assert_automatic_private(refusal: &fa_journal::Refusal) {
+    assert_private(refusal);
+    let text = format!("{refusal:?}");
+    for hidden in [
+        "automatic_private_alpha",
+        "automatic_private_beta",
+        "automatic_private_gamma",
+        "40.00",
+        "4000",
+        "44.00",
+        "4400",
+    ] {
+        assert!(!text.contains(hidden), "automatic source escaped in {text}");
+    }
+}
+
+#[test]
+fn post_only_automatic_group_preserves_keys_retries_and_independent_promotion() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    let second = activate(
+        &mut f.book,
+        &AUTOMATIC_RULE.replace("automatic_private_alpha", "automatic_private_beta"),
+        f.day,
+        "automatic-beta-v1",
+    );
+    let before = f.book.head().unwrap();
+    let batch = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.automatic_event(), Some(f.event));
+    assert_eq!(batch.members().len(), 2);
+    let ordinary = f
+        .book
+        .prepare_rule_batch(
+            &Capability::embedded(OWNER, &["read", "post"]).unwrap(),
+            f.event,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.idempotency_key(), ordinary.batch.idempotency_key());
+    for ((member, ordinary), rule) in batch
+        .members()
+        .iter()
+        .zip(ordinary.batch.members())
+        .zip([&f.rule, &second])
+    {
+        let p = member.proposal();
+        assert_eq!(p.principal_ref, OWNER);
+        assert_eq!(p.class, EntryClass::ADJUSTING);
+        assert_eq!(p.idempotency_key, ordinary.proposal().idempotency_key);
+        assert_eq!(p.origin, ordinary.proposal().origin);
+        assert_eq!(p.legs, ordinary.proposal().legs);
+        assert_eq!(
+            p.idempotency_key,
+            crate::rule::default_derivation_key(rule, f.event, &Inputs::new())
+                .unwrap()
+                .into_bytes()
+        );
+        assert_eq!(
+            p.description
+                .open(
+                    &f.book.context().seal_key,
+                    fa_model::limits::MAX_DESCRIPTION_BYTES,
+                )
+                .unwrap(),
+            "Automatic rule derivation for draft review"
+        );
+    }
+    assert_eq!(f.book.head().unwrap(), before);
+    assert_eq!(
+        f.book
+            .prepare_rule_batch(&f.planner, f.event)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        code::CAPABILITY
+    );
+    let planned = f
+        .book
+        .plan_batch_into_draft(f.planner.clone(), NAME, batch)
+        .unwrap()
+        .unwrap();
+    let reviewed: Vec<_> = planned
+        .plan
+        .unwrap()
+        .members()
+        .iter()
+        .map(|member| member.entry.clone())
+        .collect();
+    let planned_at = f.book.head().unwrap();
+    let retry = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap()
+        .unwrap();
+    let retry = f
+        .book
+        .plan_batch_into_draft(f.planner.clone(), NAME, retry)
+        .unwrap()
+        .unwrap();
+    assert!(retry.recorded.already_recorded);
+    assert_eq!(f.book.head().unwrap(), planned_at);
+    assert!(
+        f.book
+            .promote_draft(
+                Capability::embedded(OWNER, &["approve", "read"]).unwrap(),
+                NAME,
+                f.day,
+                "Owner cannot independently approve",
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(f.book.head().unwrap(), planned_at);
+    let promoted = f
+        .book
+        .promote_draft(
+            Capability::embedded(VId(1), &["approve", "read"]).unwrap(),
+            NAME,
+            f.day,
+            "Review every selected rule",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(promoted.entries.len(), reviewed.len());
+    for (published, expected) in promoted.entries.iter().zip(&reviewed) {
+        let (entry, at) = f.book.read_entry(published.vid).unwrap().unwrap();
+        assert_eq!(&entry, expected);
+        assert_eq!(at, promoted.recorded_at);
+    }
+}
+
+#[test]
+fn automatic_draft_input_requirement_refuses_the_whole_private_group() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    activate(&mut f.book, RULE, f.day, "automatic-input-rule");
+    let before = f.book.head().unwrap();
+    let refusal = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, code::CANON_RULE);
+    assert_automatic_private(&refusal);
+    assert!(!format!("{refusal:?}").contains("fee"));
+    assert_eq!(f.book.head().unwrap(), before);
+    assert!(f.book.draft(NAME).unwrap().unwrap().intents.is_empty());
+}
+
+#[test]
+fn automatic_draft_denies_all_effects_if_any_member_exceeds_private_scope() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    let second = AUTOMATIC_RULE
+        .replace("automatic_private_alpha", "automatic_private_beta")
+        .replace(
+            "event.resource(\"private_net\", \"USD\")",
+            "event.resource(\"private_net\", \"USD\") * 11 / 10 round HalfEven",
+        );
+    activate(&mut f.book, &second, f.day, "automatic-larger-beta");
+    let before = f.book.head().unwrap();
+    // Alpha is within the 43.00 ceiling; Beta is 44.00. Returning the
+    // admitted prefix would silently turn complete selection into a subset.
+    for capability in [
+        f.planner.clone(),
+        f.planner.clone().for_accounts(&["1000"]).unwrap(),
+    ] {
+        let refusal = f
+            .book
+            .prepare_rule_batch_in_draft(&capability, NAME, f.event)
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            refusal.code,
+            code::CAPABILITY | fa_policy::denial::code::CEILING
+        ));
+        assert_automatic_private(&refusal);
+    }
+    assert_eq!(f.book.head().unwrap(), before);
+    assert!(f.book.draft(NAME).unwrap().unwrap().intents.is_empty());
+}
+
+#[test]
+fn automatic_draft_admission_precedes_private_corruption_and_revocation() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    let contexts = f.book.purposes();
+    let mut damage = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+    damage.set_vertex_property(
+        fa_model::rule_version_vid(f.book.context().book_id, &f.rule.ir_digest()),
+        fa_model::symbols::property::FA_PAYLOAD,
+        Some(fgdb_types::CanonicalScalar::Int(4_000)),
+    );
+    with_store!(&mut f.book.store, core => f.book.runtime.block_on(core.db.write(&contexts.commit(), damage))).unwrap();
+    let before = f.book.head().unwrap();
+    let unconfined = Capability::new(OWNER, Profile::Agent, &[Op::Post], VId(1)).unwrap();
+    let wrong_owner = Capability::new(VId(42), Profile::Agent, &[Op::Post], VId(1))
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.context().book_id, NAME))
+        .unwrap();
+    let read_only = Capability::new(OWNER, Profile::Agent, &[Op::Read], VId(1))
+        .unwrap()
+        .on_branch(fa_model::draft_branch(f.book.context().book_id, NAME))
+        .unwrap();
+    for capability in [&unconfined, &wrong_owner, &read_only] {
+        let refusal = f
+            .book
+            .prepare_rule_batch_in_draft(capability, NAME, f.event)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code, code::CAPABILITY);
+        assert_automatic_private(&refusal);
+    }
+    let corrupt = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap_err();
+    assert!(matches!(
+        corrupt,
+        BookError::Kernel(fa_journal::KernelError::Corrupt(_))
+    ));
+    assert!(!corrupt.to_string().contains("4000"));
+    assert!(!corrupt.to_string().contains("automatic_private_alpha"));
+    assert_eq!(f.book.head().unwrap(), before);
+    f.book
+        .revoke_capability(
+            Capability::embedded(VId(1), &["issue_capability"]).unwrap(),
+            f.planner.commitment().unwrap(),
+            f.day,
+            b"revoke-private-automatic-rule",
+            "Withdraw automatic source preparation",
+        )
+        .unwrap()
+        .unwrap();
+    let revoked_at = f.book.head().unwrap();
+    assert_eq!(
+        f.book
+            .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "FA-REF-023"
+    );
+    assert_eq!(f.book.head().unwrap(), revoked_at);
+}
+
+#[test]
+fn automatic_draft_selection_does_not_decode_unrelated_events() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    let contexts = f.book.purposes();
+    let mut damage = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+    damage.create_vertex(
+        VId(0xdead_cafe),
+        vec![fa_model::symbols::label::EVENT],
+        vec![(
+            fa_model::symbols::property::FA_PAYLOAD,
+            fgdb_types::CanonicalScalar::Int(99),
+        )],
+    );
+    with_store!(&mut f.book.store, core => f.book.runtime.block_on(core.db.write(&contexts.commit(), damage))).unwrap();
+    let before = f.book.head().unwrap();
+    assert!(f.book.rea_snapshot(None).is_err());
+    let batch = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.members().len(), 1);
+    assert!(
+        batch.members()[0]
+            .proposal()
+            .legs
+            .iter()
+            .all(|leg| leg.amount == Amount::new(f.usd, 4_000))
+    );
+    assert_eq!(f.book.head().unwrap(), before);
+}
+
+#[test]
+fn retained_automatic_draft_refuses_a_new_matching_rule_without_partial_promotion() {
+    let mut f = fixture_with_rule(AUTOMATIC_RULE);
+    let batch = f
+        .book
+        .prepare_rule_batch_in_draft(&f.planner, NAME, f.event)
+        .unwrap()
+        .unwrap();
+    f.book
+        .plan_batch_into_draft(f.planner.clone(), NAME, batch)
+        .unwrap()
+        .unwrap();
+    activate(
+        &mut f.book,
+        &AUTOMATIC_RULE.replace("automatic_private_alpha", "automatic_private_gamma"),
+        f.day,
+        "automatic-new-matching-rule",
+    );
+    let before = f.book.head().unwrap();
+    let preview = f.book.preview_draft(&f.planner, NAME).unwrap().unwrap_err();
+    assert_eq!(preview.code, code::CANON_RULE);
+    assert_automatic_private(&preview);
+    let refused = f
+        .book
+        .promote_draft(
+            Capability::embedded(VId(1), &["approve", "read"]).unwrap(),
+            NAME,
+            f.day,
+            "Review changed automatic selection",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::CANON_RULE);
+    assert_eq!(f.book.head().unwrap(), before);
+    let draft = f.book.draft(NAME).unwrap().unwrap();
+    assert_eq!(draft.intents.len(), 1);
+    let proposal = draft.intents[0].intent.proposal();
+    let target = fa_model::entry_vid(
+        f.book.context().book_id,
+        &proposal.principal_ref.0.to_le_bytes(),
+        &proposal.idempotency_key,
+    );
+    assert!(f.book.read_entry(target).unwrap().is_none());
 }

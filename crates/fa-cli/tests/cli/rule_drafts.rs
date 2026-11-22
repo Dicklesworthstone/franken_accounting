@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod automatic;
+
 const SOURCE: &str = r#"rule draft_accrual v1 for event Sale produces Adjusting {
   authority {
     debit "1000" upto "40.00 USD"
@@ -553,7 +555,15 @@ fn rule_draft_option_conflicts_refuse_before_reading_sources() -> std::io::Resul
     let path = dir.join("must-not-exist.plan");
     let path_text = path.to_str().unwrap();
     let cases = [
-        vec!["rule", "derive", "--event", "MISSING", "--draft", "review"],
+        vec![
+            "rule",
+            "derive",
+            "--event",
+            "MISSING",
+            "--draft",
+            "review",
+            "--dry-run",
+        ],
         vec![
             "rule",
             "derive",

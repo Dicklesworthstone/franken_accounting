@@ -79,12 +79,7 @@ pub fn default_derivation_key(
     event: VId,
     inputs: &Inputs,
 ) -> Result<String, EvalError> {
-    let encoded = encode_inputs(rule, inputs)?;
-    let inputs_digest = fa_model::domain_digest(CANON_INPUTS_DOMAIN, &[&encoded]);
-    Ok(fa_journal::evidence::hex(&fa_model::domain_digest(
-        b"fa-cli:rule-derive-key:v1",
-        &[&rule.ir_digest(), &event.0.to_le_bytes(), &inputs_digest],
-    )))
+    fa_journal::rule::default_derivation_key(rule, event, inputs)
 }
 
 /// A named-source factory cannot reveal private rule declarations, event
@@ -471,6 +466,38 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         };
         self.prepare_selected_rule_entry(cx, capability, &version.rule, &event_row, inputs, key)
+    }
+
+    /// Prepare every matching active rule for an owned open draft using only
+    /// its explicit Post source grant. No event code, rule declarations or
+    /// catalog metadata are returned; every generated effect must be admitted
+    /// before the complete automatic group can be disclosed. A matching rule
+    /// requiring explicit inputs refuses the whole request.
+    pub fn prepare_rule_batch_in_draft(
+        &self,
+        cx: &PurposeContexts,
+        capability: &Capability,
+        name: &str,
+        event: VId,
+    ) -> Outcome<fa_intents::PostBatch> {
+        let admission = match self.query(cx, |db, book| {
+            Ok(fa_journal::draft::admit_sources(
+                db, book, capability, name,
+            )?)
+        })? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let description = self.seal_text(cx, "Automatic rule derivation for draft review")?;
+        self.query(cx, |db, book| {
+            Ok(fa_journal::rule::prepare_automatic_rules_in_draft(
+                db,
+                book,
+                &admission,
+                event,
+                description,
+            )?)
+        })
     }
 
     /// Prepare all matching active rules as one atomic request. Matching
