@@ -321,6 +321,198 @@ fn three_way_matching_requires_launch_reconcile_before_book_observation() {
 }
 
 #[test]
+fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
+    static NEXT_CHAIN: AtomicU64 = AtomicU64::new(0);
+    let dir = loop {
+        let path = std::env::temp_dir().join(format!(
+            "fa-recon-chain-cli-{}-{}",
+            std::process::id(),
+            NEXT_CHAIN.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create {}: {error}", path.display()),
+        }
+    };
+    let books: Vec<_> = ["primary", "tax", "statutory", "management"]
+        .iter()
+        .map(|name| dir.join(name))
+        .collect();
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"3000","name":"Capital","type":"Equity","unit":"USD"}
+        ]}"#,
+    )
+    .unwrap();
+    let evidence = dir.join("basis.txt");
+    std::fs::write(&evidence, "Synthetic adjustment-layer ancestry fixture").unwrap();
+    let mut documents = Vec::new();
+    for (index, book) in books.iter().enumerate() {
+        ok(book, &["book", "create", "--name", "Layer chain fixture"]);
+        ok(book, &["chart", "import", chart.to_str().unwrap()]);
+        ok(book, &["period", "create", "--fiscal-year", "2026"]);
+        ok(book, &["period", "open", "FY2026-P03"]);
+        let document = ok(
+            book,
+            &[
+                "document",
+                "add",
+                evidence.to_str().unwrap(),
+                "--kind",
+                "Memo",
+                "--grade",
+                "HumanUpload",
+            ],
+        );
+        documents.push(text(data(&document), "oid").to_string());
+        if index > 0 {
+            ok(
+                book,
+                &[
+                    "recon",
+                    "anchor",
+                    "--parent-book",
+                    books[index - 1].to_str().unwrap(),
+                    "--grant",
+                    "schema_change",
+                ],
+            );
+        }
+        let amount = ["1000.00", "100.00", "20.00", "5.00"][index];
+        let intent = dir.join(format!("entry-{index}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"idempotency_key":"chain-{index}","effective_date":"2026-03-31",
+                "description":"Synthetic basis adjustment",
+                "legs":[{{"side":"debit","account":"1000","amount":"{amount} USD"}},
+                {{"side":"credit","account":"3000","amount":"{amount} USD"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let mut args = if index == 0 {
+            vec!["post"]
+        } else {
+            vec!["recon", "post", "--reason-code", "STAT-RESERVE-BASIS"]
+        };
+        args.extend([
+            "--intent",
+            intent.to_str().unwrap(),
+            "--evidence",
+            documents[index].as_str(),
+        ]);
+        ok(book, &args);
+    }
+    let primary = books[0].to_str().unwrap();
+    let tax = books[1].to_str().unwrap();
+    let statutory = books[2].to_str().unwrap();
+    let args = [
+        "recon",
+        "book-to-book",
+        "--period",
+        "FY2026-P03",
+        "--parent-book",
+        statutory,
+        "--ancestor-book",
+        tax,
+        "--ancestor-book",
+        primary,
+    ];
+    let original_heads: Vec<_> = books.iter().map(|book| head(book)).collect();
+    let first = ok(&books[3], &args);
+    let rows = data(&first).get("rows").and_then(Json::as_arr).unwrap();
+    let cash = rows.iter().find(|row| text(row, "code") == "1000").unwrap();
+    assert_eq!(text(cash, "parent_net"), "1120.00 USD");
+    assert_eq!(text(cash, "adjustments_net"), "5.00 USD");
+    assert_eq!(text(cash, "layered_net"), "1125.00 USD");
+    let ancestry = data(&first)
+        .get("parent_ancestry")
+        .and_then(Json::as_arr)
+        .unwrap();
+    assert_eq!(ancestry.len(), 3);
+    for (index, coordinate) in ancestry.iter().enumerate() {
+        assert_eq!(
+            coordinate.get("known_at"),
+            Some(&Json::Int(original_heads[index]))
+        );
+        assert_eq!(text(coordinate, "book_id").len(), 32);
+    }
+    assert_eq!(
+        books.iter().map(|book| head(book)).collect::<Vec<_>>(),
+        original_heads,
+        "complete source replay is read-only"
+    );
+
+    // Missing, reversed and unused ancestor directories are explicit failures.
+    for ancestors in [
+        vec![],
+        vec![tax],
+        vec![primary, tax],
+        vec![tax, primary, primary],
+    ] {
+        let mut invalid = vec![
+            "recon",
+            "book-to-book",
+            "--as-of",
+            "2026-03-31",
+            "--parent-book",
+            statutory,
+        ];
+        for ancestor in ancestors {
+            invalid.extend(["--ancestor-book", ancestor]);
+        }
+        let (status, error) = run(&books[3], &invalid);
+        assert_eq!(status, 2, "{}", error.render());
+    }
+    assert_eq!(
+        books.iter().map(|book| head(book)).collect::<Vec<_>>(),
+        original_heads,
+        "ancestor refusals preserve every source and target head"
+    );
+
+    // Later primary activity and a later tax anchor must not affect statutory's
+    // already-recorded tax prefix, including the recursive source commitment.
+    let late = dir.join("late-primary.json");
+    std::fs::write(
+        &late,
+        r#"{"idempotency_key":"late-primary","effective_date":"2026-03-31",
+            "description":"Later primary correction",
+            "legs":[{"side":"debit","account":"1000","amount":"900.00 USD"},
+            {"side":"credit","account":"3000","amount":"900.00 USD"}]}"#,
+    )
+    .unwrap();
+    ok(
+        &books[0],
+        &[
+            "post",
+            "--intent",
+            late.to_str().unwrap(),
+            "--evidence",
+            &documents[0],
+        ],
+    );
+    ok(
+        &books[1],
+        &[
+            "recon",
+            "anchor",
+            "--parent-book",
+            primary,
+            "--grant",
+            "schema_change",
+        ],
+    );
+    let after = ok(&books[3], &args);
+    assert_eq!(data(&after), data(&first));
+    assert_eq!(head(&books[2]), original_heads[2]);
+    assert_eq!(head(&books[3]), original_heads[3]);
+}
+
+#[test]
 fn book_to_book_schedule_m1_bridge_and_planted_negatives() {
     static NEXT_RECON: AtomicU64 = AtomicU64::new(0);
     let dir = loop {
