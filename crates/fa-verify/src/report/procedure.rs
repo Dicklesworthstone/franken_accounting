@@ -43,6 +43,7 @@ use crate::codec::{Reader, Writer};
 mod aging;
 mod benford;
 mod benford_digits;
+mod cutoff;
 mod different_dates;
 mod libr;
 mod number_analytics;
@@ -74,6 +75,8 @@ pub enum VerifiedProcedureParameters {
         window_days: u32,
     },
     PostClosing,
+    /// Document and effective dates resolved only from authenticated periods.
+    PeriodBoundary,
     UnusualAccounts {
         max_pair_count: u32,
         min_population: u32,
@@ -172,6 +175,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "jet.round_amounts",
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
             Self::PostClosing => "jet.post_closing",
+            Self::PeriodBoundary => "cutoff.period_boundary",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
             Self::SameSameSame => "duplicates.same_same_same",
             Self::OpenItemsAging { .. } => "aging.open_items",
@@ -196,6 +200,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "FA-EVID-L01",
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
             Self::PostClosing => "FA-EVID-L03",
+            Self::PeriodBoundary => "FA-EVID-L11",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
             Self::SameSameSame => "FA-EVID-L07",
             Self::OpenItemsAging { .. } => "FA-EVID-L12",
@@ -222,7 +227,7 @@ impl VerifiedProcedureParameters {
             Self::PeriodEndTiming { window_days } | Self::SameSameDifferent { window_days } => {
                 vec![("window_days", window_days)]
             }
-            Self::PostClosing | Self::SameSameSame => Vec::new(),
+            Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => Vec::new(),
             Self::OpenItemsAging { edges } => vec![
                 ("bucket_1", edges[0]),
                 ("bucket_2", edges[1]),
@@ -372,7 +377,7 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => &[("round_power", 3)],
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
-            Self::PostClosing | Self::SameSameSame => &[],
+            Self::PostClosing | Self::PeriodBoundary | Self::SameSameSame => &[],
             Self::OpenItemsAging { .. } => &aging::DEFAULTS,
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::RoundAmountDensity { .. } => &round_density::DEFAULTS,
@@ -434,7 +439,7 @@ impl VerifiedProcedureParameters {
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
-            Self::PeriodEndTiming { .. } => "O(entries)",
+            Self::PeriodEndTiming { .. } | Self::PeriodBoundary => "O(entries)",
             Self::PostClosing => "O(entries + transitions)",
             Self::OpenItemsAging { .. } => "O(open items)",
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
@@ -509,6 +514,11 @@ pub enum VerifiedProcedureStatistic {
     },
     DaysToPeriodEnd {
         period: String,
+        days: u32,
+    },
+    DaysBetweenPeriods {
+        effective_period: String,
+        document_period: String,
         days: u32,
     },
     /// Recording-sequence distance from the period's first qualifying close.
@@ -614,6 +624,7 @@ impl VerifiedProcedureStatistic {
             Self::AgedOpenAmount { name, .. } => name,
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
+            Self::DaysBetweenPeriods { .. } => "days_between_dates",
             Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
@@ -635,6 +646,7 @@ impl VerifiedProcedureStatistic {
             Self::AccountRoundLegs { count, .. } => i128::from(*count),
             Self::TracedAmount { mantissa, .. } => *mantissa,
             Self::DaysToPeriodEnd { days, .. } => i128::from(*days),
+            Self::DaysBetweenPeriods { days, .. } => i128::from(*days),
             Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
             Self::AccountPairOccurrences { count, .. } => i128::from(*count),
             Self::DuplicateEntries { count, .. } => i128::from(*count),
@@ -796,6 +808,15 @@ pub(super) struct EntryPeriod {
     pub code: String,
     pub effective: i32,
     pub end: i32,
+    pub document: Option<DocumentPeriod>,
+}
+
+/// The document date is authenticated even when its fiscal year has not been
+/// declared. Missing period coverage is refused only for a live posting.
+#[derive(Clone)]
+pub(super) struct DocumentPeriod {
+    pub date: i32,
+    pub code: Option<String>,
 }
 
 /// A period transition decoded from its original control payload and checked
@@ -921,6 +942,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
         "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
         "jet.post_closing" => ("FA-EVID-L03", None),
+        "cutoff.period_boundary" => ("FA-EVID-L11", None),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
         "duplicates.same_same_same" => ("FA-EVID-L07", None),
         "aging.open_items" => ("FA-EVID-L12", None),
@@ -940,7 +962,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and authenticated-period cutoff v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -964,6 +986,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.post_closing"
+                | "cutoff.period_boundary"
                 | "aging.open_items"
                 | "duplicates.same_same_same"
                 | "duplicates.same_same_different"
@@ -1080,11 +1103,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         if question.count(1, 20, "procedure.parameters")? != 0 {
             return Err(failed(
                 "procedure_profile",
-                "post-closing and exact duplicates take no procedure parameters",
+                "post-closing, period-boundary cutoff and exact duplicates take no procedure parameters",
             ));
         }
         if id == "jet.post_closing" {
             VerifiedProcedureParameters::PostClosing
+        } else if id == "cutoff.period_boundary" {
+            VerifiedProcedureParameters::PeriodBoundary
         } else {
             VerifiedProcedureParameters::SameSameSame
         }
@@ -1186,6 +1211,22 @@ fn finding(
                 failed("procedure_recomputation", "period finding lacks its entry")
             })?;
             w.count(2).u8(1).u128(entry).u8(4).bytes(period.as_bytes());
+        }
+        VerifiedProcedureStatistic::DaysBetweenPeriods {
+            effective_period,
+            document_period,
+            ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed("procedure_recomputation", "cutoff finding lacks its entry")
+            })?;
+            w.count(3)
+                .u8(1)
+                .u128(entry)
+                .u8(4)
+                .bytes(effective_period.as_bytes())
+                .u8(4)
+                .bytes(document_period.as_bytes());
         }
         VerifiedProcedureStatistic::AccountPairOccurrences {
             first_account,
@@ -1845,6 +1886,7 @@ fn recompute_version(
             .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
         VerifiedProcedureParameters::PeriodEndTiming { .. }
         | VerifiedProcedureParameters::PostClosing
+        | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnusualAccounts { .. }
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::OpenItemsAging { .. }
@@ -1966,6 +2008,7 @@ fn recompute_version(
                 post_closing::finding(entry, &first_closes)?
             }
             VerifiedProcedureParameters::SameSameSame
+            | VerifiedProcedureParameters::PeriodBoundary
             | VerifiedProcedureParameters::OpenItemsAging { .. }
             | VerifiedProcedureParameters::UnusualAccounts { .. }
             | VerifiedProcedureParameters::SameSameDifferent { .. }
@@ -1997,6 +2040,8 @@ fn recompute_version(
     }
     if profile == VerifiedProcedureParameters::SameSameSame {
         (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
+    } else if profile == VerifiedProcedureParameters::PeriodBoundary {
+        findings = cutoff::replay(&grouped_population)?;
     } else if matches!(profile, VerifiedProcedureParameters::OpenItemsAging { .. }) {
         (findings, live_legs) = aging::replay(profile, effective_through, registry)?;
         live_entries = 0;
@@ -2070,6 +2115,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
+        | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::SecondDigit { .. }
         | VerifiedProcedureParameters::FirstTwoDigits { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2724,6 +2770,7 @@ mod tests {
             code: "FY2026-P01".into(),
             effective,
             end,
+            document: None,
         });
         value
     }

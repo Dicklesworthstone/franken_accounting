@@ -75,6 +75,7 @@ pub fn profile(
         ("jet.round_amounts", 1 | 2) => ("FA-EVID-L01", ROUND),
         ("jet.period_end_timing", 1 | 2) => ("FA-EVID-L02", WINDOW),
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
+        ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
         ("duplicates.same_same_same", 1) => ("FA-EVID-L07", &[][..]),
         ("aging.open_items", 1) => ("FA-EVID-L12", AGING),
@@ -148,6 +149,16 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn cutoff_period_boundary_requires_its_exact_unfiltered_profile() {
+        let id = "cutoff.period_boundary";
+        assert_eq!(profile(id, 1, None, &[], &[]), Some("FA-EVID-L11"));
+        assert_eq!(profile(id, 2, None, &[], &[]), None);
+        assert_eq!(profile(id, 1, Some(0), &[], &[]), None);
+        assert_eq!(profile(id, 1, None, &[("window_days", 3)], &[]), None);
+        assert_eq!(profile(id, 1, None, &[], &[("account", "1000")]), None);
+    }
 
     #[test]
     fn open_item_aging_requires_an_effective_date_and_exact_ascending_edges() {

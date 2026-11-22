@@ -7,6 +7,8 @@ use fa_verify::report::{VerifiedReport, verify_report_expected};
 
 #[path = "offline/benford_digits.rs"]
 mod benford_digits;
+#[path = "offline/cutoff.rs"]
+mod cutoff;
 
 #[path = "offline/libr.rs"]
 mod libr;

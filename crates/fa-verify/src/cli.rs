@@ -2496,6 +2496,14 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             | crate::report::VerifiedProcedureStatistic::CommitsAfterClose { period, .. } => {
                 details.push(("period", s(period)));
             }
+            crate::report::VerifiedProcedureStatistic::DaysBetweenPeriods {
+                effective_period,
+                document_period,
+                ..
+            } => {
+                details.push(("effective_period", s(effective_period)));
+                details.push(("document_period", s(document_period)));
+            }
             crate::report::VerifiedProcedureStatistic::DuplicateEntries { entries, .. } => {
                 details.push((
                     "entries",

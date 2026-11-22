@@ -2224,6 +2224,7 @@ fn verify_report_with_native_subledger_input(
                         request.parameters,
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
                             | procedure::VerifiedProcedureParameters::PostClosing
+                            | procedure::VerifiedProcedureParameters::PeriodBoundary
                             | procedure::VerifiedProcedureParameters::GraphRoundTrips { .. }
                     ) && !legs[index].is_empty()
                     {
@@ -2238,6 +2239,20 @@ fn verify_report_with_native_subledger_input(
                             code,
                             effective,
                             end,
+                            document: if request.parameters
+                                == procedure::VerifiedProcedureParameters::PeriodBoundary
+                            {
+                                info.document_date
+                                    .map(|date| -> Result<_, ReportError> {
+                                        Ok(procedure::DocumentPeriod {
+                                            date,
+                                            code: schema.document_period(info.period, date)?,
+                                        })
+                                    })
+                                    .transpose()?
+                            } else {
+                                None
+                            },
                         })
                     } else {
                         None

@@ -1094,6 +1094,7 @@ mod tests {
             schema: None,
             time_tick: None,
             period: None,
+            document_date: None,
             resolution: None,
             supersession: Vec::new(),
             supersession_reasons: Vec::new(),

@@ -6355,6 +6355,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         {
             return Ok(Err(refusal));
         }
+        if let ReportBundleCertificate::Procedure(procedure) = report
+            && let Err(refusal) = self.check_offline_procedure_periods(cx, procedure, &journal)?
+        {
+            return Ok(Err(refusal));
+        }
         if let crate::ReportSelection::OpenItems { account } = &certificate.selection
             && let Err(refusal) =
                 fa_notary::report::check_open_items_scope(&journal, certificate.known_at, *account)?

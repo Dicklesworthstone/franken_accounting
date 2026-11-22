@@ -186,7 +186,7 @@ fn offline_unsupported(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §11.1/13.3 (independent procedure replay requires its complete supported input and policy closure)",
-        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops in 2..=8 and no cutoff",
+        "select a supported standalone procedure profile with its original canonical registry closure, or replay this selection in its original book; period-boundary cutoff v1 requires no parameters or cutoff and declared document periods at its original known-at, open-item aging v1 requires a cutoff and three ascending bucket edges, tracing v2 requires a claim date and canonical account/source handles, JET round-amount/period-end v2 permits an optional cutoff, and graph round-trips v2 requires max_hops in 2..=8 and no cutoff",
     )
 }
 
@@ -970,7 +970,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing v1, period-boundary cutoff v1 with declared document periods, unusual-accounts v2, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(
@@ -1460,6 +1460,119 @@ fn unchanged_approvals<V: Vfs + Clone>(db: &Database<V>, snapshot: &Snapshot) ->
 }
 
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Bound native cutoff export to the calendar facts actually disclosed in
+    /// the original prefix. Native replay may generate an undeclared year from
+    /// BookSpec; this portable format does not authenticate that generator.
+    pub(crate) fn check_offline_procedure_periods(
+        &self,
+        cx: &PurposeContexts,
+        certificate: &ProcedureCertificate,
+        journal: &fa_notary::Journal,
+    ) -> Outcome<()> {
+        if certificate.report.procedure != "cutoff.period_boundary" {
+            return Ok(Ok(()));
+        }
+        self.query(cx, |db, book| {
+            use fa_journal::period_creation::{PeriodCreation, SCHEMA_CHANGE_CREATE_PERIODS};
+            use fa_model::ControlPayload;
+            use fa_time::PeriodKind;
+
+            let known_at = certificate.known_at();
+            let snapshot = Snapshot::read(db, &cx.query(), book, Some(known_at), None)?;
+            let mut declared = BTreeMap::new();
+            for leaf in journal.leaves.iter().filter(|leaf| {
+                leaf.envelope.is_entry() && leaf.envelope.commit_seq <= known_at
+            }) {
+                let fa_notary::Record::Entry(entry) = leaf.record()? else {
+                    continue;
+                };
+                let Some(ControlPayload::SchemaChange {
+                    kind: SCHEMA_CHANGE_CREATE_PERIODS,
+                    canonical_bytes,
+                }) = &entry.proposal.control
+                else {
+                    continue;
+                };
+                let creation = PeriodCreation::decode(canonical_bytes)?;
+                if creation.calendar != book.calendar.id {
+                    return Ok(Err(offline_unsupported(
+                        "cutoff period declaration names a different calendar",
+                    )));
+                }
+                for (period, _) in creation.periods {
+                    if period.fiscal_year != creation.fiscal_year
+                        || declared.insert(period.code.clone(), period).is_some()
+                    {
+                        return Ok(Err(offline_unsupported(
+                            "cutoff period declarations are duplicated or cross fiscal years",
+                        )));
+                    }
+                }
+            }
+            for entry in snapshot.live_postings()? {
+                let proposal = &entry.entry.proposal;
+                let Some(date) = proposal.document_date else {
+                    continue;
+                };
+                let normal = snapshot.document_period_of(book, date, None)?;
+                let missing = || {
+                    Refusal::new(
+                        fa_notary::code::SCOPE_UNSUPPORTED,
+                        exit::REFUSAL,
+                        format!(
+                            "cutoff document date {date} requires authenticated period {} at known-at {}",
+                            normal.code, known_at.0
+                        ),
+                        "plan §7.3/11.1/13.3 (document-period resolution must use authenticated declarations at the original frontier)",
+                        format!(
+                            "run fa period create --fiscal-year {} for this book, then create a fresh cutoff.period_boundary certificate at the updated known-at; later declarations cannot repair this historical certificate, which remains replayable in its original book",
+                            normal.fiscal_year
+                        ),
+                    )
+                };
+                let mut covering = declared.values().filter(|period| {
+                    matches!(period.kind, PeriodKind::Normal | PeriodKind::Historical)
+                        && period.contains(date)
+                });
+                let Some(covered) = covering.next() else {
+                    return Ok(Err(missing()));
+                };
+                if covering.next().is_some()
+                    || covered.code != normal.code
+                    || covered.fiscal_year != normal.fiscal_year
+                    || covered.start != normal.start
+                    || covered.end != normal.end
+                {
+                    return Ok(Err(offline_unsupported(
+                        "cutoff document date has ambiguous or inconsistent authenticated normal periods",
+                    )));
+                }
+                let expected = snapshot.document_period_of(
+                    book,
+                    date,
+                    proposal.effective_period.as_ref().map(|period| period.code.as_str()),
+                )?;
+                let Some(actual) = declared.get(&expected.code) else {
+                    return Ok(Err(missing()));
+                };
+                if actual.fiscal_year != covered.fiscal_year
+                    || actual.fiscal_year != expected.fiscal_year
+                    || actual.start != expected.start
+                    || actual.end != expected.end
+                    || !actual.contains(date)
+                    || (actual.kind != expected.kind
+                        && !(actual.kind == PeriodKind::Historical
+                            && expected.kind == PeriodKind::Normal))
+                {
+                    return Ok(Err(offline_unsupported(
+                        "cutoff document-period discriminator differs from its authenticated fiscal year or date interval",
+                    )));
+                }
+            }
+            Ok(Ok(()))
+        })
+    }
+
     /// Hydrate the native history needed by a procedure only after current
     /// admission. Bank drift needs the original birth and correction history
     /// even when its output selects HEAD. No accounting record is published.

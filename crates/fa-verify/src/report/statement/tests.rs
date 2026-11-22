@@ -20,6 +20,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         time_tick: None,
         schema: None,
         period: None,
+        document_date: None,
         resolution: None,
         principal: 0,
         identity,

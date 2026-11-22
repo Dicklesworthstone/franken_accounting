@@ -3,6 +3,8 @@
 
 mod asset_cost;
 mod cash_policy;
+#[cfg(test)]
+mod cutoff_tests;
 
 use super::{ReportError, Selection, failed, text};
 use crate::codec::Reader;
@@ -21,6 +23,8 @@ pub(super) struct EntryInfo<'a> {
     pub schema: Option<(u16, &'a [u8])>,
     pub time_tick: Option<super::temporal::TimeObservation>,
     pub period: Option<(&'a str, &'a str)>,
+    /// Literal document date from the authenticated entry, never a finding.
+    pub document_date: Option<i32>,
     pub resolution: Option<(u128, [u8; 32])>,
     pub supersession: Vec<(u128, [u8; 32], u8)>,
     pub supersession_reasons: Vec<u16>,
@@ -116,9 +120,10 @@ pub(super) fn entry_info<'a>(
     first.fixed::<16>("entry.branch")?;
     first.u16("entry.class")?;
     first.i32("entry.effective")?;
-    if first.present("entry.document_date")? {
-        first.i32("entry.document_date")?;
-    }
+    let document_date = first
+        .present("entry.document_date")?
+        .then(|| first.i32("entry.document_date"))
+        .transpose()?;
     skip_erasable(&mut first, "entry.description")?;
     let period = if first.present("entry.period")? {
         Some((
@@ -517,6 +522,7 @@ pub(super) fn entry_info<'a>(
         schema,
         time_tick,
         period,
+        document_date,
         resolution,
         supersession,
         supersession_reasons,
@@ -1249,6 +1255,59 @@ impl Schema {
             ));
         }
         Ok(code.clone())
+    }
+
+    /// Resolve a document against authenticated period declarations. Native
+    /// calendars can generate absent years from BookSpec; the portable native
+    /// closure does not authenticate that generator, so absence stays None.
+    /// The birth law changes only Normal periods to Historical; special
+    /// periods retain their kinds, so both 0 and 4 identify calendar normals.
+    pub(super) fn document_period(
+        &self,
+        hint: Option<(&str, &str)>,
+        day: i32,
+    ) -> Result<Option<String>, ReportError> {
+        let hinted = if let Some((calendar, code)) = hint {
+            if self.calendar.as_deref() != Some(calendar) {
+                return Err(failed(
+                    "procedure_period",
+                    "document hint names another calendar",
+                ));
+            }
+            Some((
+                code,
+                self.periods.get(code).ok_or_else(|| {
+                    failed("procedure_period", "document hint names an absent period")
+                })?,
+            ))
+        } else {
+            None
+        };
+        let mut normal = self.periods.iter().filter(|(_, period)| {
+            matches!(period.kind, 0 | 4) && period.start <= day && day < period.end
+        });
+        let Some((code, period)) = normal.next() else {
+            return Ok(None);
+        };
+        if normal.next().is_some() {
+            return Err(failed(
+                "procedure_period",
+                "document date has ambiguous normal periods",
+            ));
+        }
+        if let Some((hint_code, hint_period)) = hinted
+            && hint_period.start <= day
+            && day < hint_period.end
+        {
+            if hint_period.fiscal_year != period.fiscal_year {
+                return Err(failed(
+                    "procedure_period",
+                    "document hint crosses fiscal years",
+                ));
+            }
+            return Ok(Some(hint_code.into()));
+        }
+        Ok(Some(code.clone()))
     }
 }
 const MAX_ROWS: usize = 1 << 20;

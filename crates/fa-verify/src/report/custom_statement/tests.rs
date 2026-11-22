@@ -105,6 +105,7 @@ fn exact(selection: &statement::Selection) -> statement::VerifiedStatement {
         schema: None,
         time_tick: None,
         period: Some(("cy", "P2")),
+        document_date: None,
         resolution: None,
         supersession: vec![],
         supersession_reasons: vec![],

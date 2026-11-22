@@ -40,6 +40,7 @@ fn posting(identity: u128, recorded_at: u64, period: &str) -> Entry {
             code: period.into(),
             effective: 5,
             end: 31,
+            document: None,
         }),
         transition: None,
     }

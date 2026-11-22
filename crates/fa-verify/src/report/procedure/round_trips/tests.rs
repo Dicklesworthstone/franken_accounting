@@ -49,6 +49,7 @@ impl Fixture {
                 code: "P".into(),
                 effective: day,
                 end: 31,
+                document: None,
             }),
             transition: None,
         });
