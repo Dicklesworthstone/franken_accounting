@@ -18310,7 +18310,21 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         Entropy::deterministic(196),
     )
     .unwrap();
+    let prefix = modern.head().unwrap();
     drop(modern);
+    keys.save(&source.join("book.keys")).unwrap();
+    let prior_chart = write(
+        &dir,
+        "prior-chart.json",
+        r#"{"accounts":[{"code":"1200","name":"Receivables","type":"Asset","unit":"USD"}]}"#,
+    );
+    let prior_import = ["chart", "import", &prior_chart, "--json"];
+    let (code, out, err) = fa(Some(&source), &prior_import);
+    assert_eq!(code, 0, "{out}\n{err}");
+    let installed = doc(&out);
+    assert_eq!(int(&installed, "accounts"), Some(1));
+    let control =
+        fgdb_types::VId(u128::from_str_radix(text(&installed, "control_entry"), 16).unwrap());
     let runtime = RuntimeBuilder::new().build().unwrap();
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let cx = PurposeContexts::narrow_runtime_root(&root);
@@ -18321,7 +18335,9 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
             native_keys(),
         ))
         .unwrap();
-    let prefix = modern.frontier().unwrap();
+    let chart_at = modern.frontier().unwrap();
+    assert_eq!(chart_at.0, prefix.0 + 1);
+    assert_eq!(int(&installed, "recorded_at"), Some(i128::from(chart_at.0)));
     let coverage_vid = fa_journal::outcome::coverage_vid(book_id);
     let (coverage, rows): (Vec<_>, Vec<_>) = modern
         .vertices_at(prefix)
@@ -18345,6 +18361,30 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         assert_ne!(edge.entry.dst, coverage_vid);
         genesis.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
     }
+    // Reproduce the older writer's original chart control and projections at
+    // their own birth. Its entry was the retry anchor before common claims.
+    let account = fa_model::account_vid(book_id, "1200");
+    let mut prior = WriteBatch::new(relation::IN_BOOK);
+    for (vid, expected_label) in [(control, label::ENTRY), (account, label::ACCOUNT)] {
+        let row = modern.vertex(vid).unwrap().unwrap();
+        assert_eq!(row.created_at, chart_at);
+        assert_eq!(row.labels.as_slice(), [expected_label]);
+        prior.create_vertex(row.vid, row.labels, row.props);
+    }
+    let account_edge =
+        fa_journal::rows::edge_id(relation::IN_BOOK, account, fa_journal::rows::book_root());
+    let edge = modern.edge_at(account_edge, chart_at).unwrap().unwrap();
+    assert_eq!(edge.entry.relation, relation::IN_BOOK);
+    prior.add_edge(edge.entry.eid, edge.entry.src, edge.entry.dst, edge.props);
+    let (entry, _) = fa_journal::post::read_entry(&modern, control)
+        .unwrap()
+        .unwrap();
+    let chart_claim = fa_model::intent_outcome_vid(
+        book_id,
+        &entry.proposal.principal_ref.0.to_le_bytes(),
+        &entry.proposal.idempotency_key,
+    );
+    assert!(modern.vertex(chart_claim).unwrap().is_some());
     drop(modern);
     std::fs::create_dir(&book)?;
     let mut legacy = runtime
@@ -18358,6 +18398,9 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     runtime
         .block_on(legacy.write(&cx.commit(), genesis))
         .unwrap();
+    let installed_at = runtime.block_on(legacy.write(&cx.commit(), prior)).unwrap();
+    assert_eq!(installed_at, chart_at);
+    assert!(legacy.vertex(chart_claim).unwrap().is_none());
     assert!(legacy.vertex(coverage_vid).unwrap().is_none());
     drop(legacy);
     keys.save(&book.join("book.keys")).unwrap();
@@ -18378,7 +18421,25 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
         "chart.json",
         r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"6000","name":"Rent","type":"Expense","unit":"USD"}]}"#,
     );
-    ok(&["chart", "import", &chart, "--json"]);
+    let original_retry = doc(&ok(&prior_import));
+    assert_eq!(
+        text(&original_retry, "control_entry"),
+        text(&installed, "control_entry")
+    );
+    assert_eq!(
+        int(&original_retry, "recorded_at"),
+        Some(i128::from(installed_at.0))
+    );
+    assert_eq!(head(), installed_at);
+    let import = ["chart", "import", &chart, "--json"];
+    let (code, out, err) = fa(Some(&book), &import);
+    assert_eq!(code, 6, "{out}\n{err}");
+    assert_eq!(text(&doc(&out), "refusal_id"), "FA-REF-034");
+    assert_eq!(
+        head(),
+        installed_at,
+        "a fresh chart needs verified coverage"
+    );
     let evidence = source_doc(&dir, &book);
     let intent = write(
         &dir,
@@ -18415,7 +18476,7 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(planned.get("wrote"), Some(&Json::Bool(false)));
     assert_eq!(planned.get("recorded_at"), Some(&Json::Null));
     assert_eq!(int(&planned, "outcomes_created"), Some(0));
-    assert!(int(&planned, "entries_checked").unwrap() > 0);
+    assert_eq!(int(&planned, "entries_checked"), Some(1));
     assert_eq!(int(&planned, "basis"), Some(i128::from(before.0)));
     assert_eq!(ok(&dry_run), preview, "legacy preview is deterministic");
     assert_eq!(head(), before, "legacy preview publishes nothing");
@@ -18438,9 +18499,13 @@ fn legacy_outcome_recovery_unblocks_posting_only_after_confirmed_publication() -
     assert_eq!(covered.get("already_covered"), Some(&Json::Bool(true)));
     assert_eq!(head(), recovered);
 
+    let added = doc(&ok(&import));
+    assert_eq!(int(&added, "accounts"), Some(2));
+    let charted = head();
+    assert_eq!(charted.0, recovered.0 + 1);
     ok(&create);
     let created = head();
-    assert_eq!(created.0, recovered.0 + 1);
+    assert_eq!(created.0, charted.0 + 1);
     ok(&open);
     let opened = head();
     assert_eq!(opened.0, created.0 + 1);
@@ -19488,7 +19553,25 @@ fn procedures_run_over_a_persisted_book_and_cite_resolving_handles() -> std::io:
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("effective_through"), "{out}");
     let (code, out) = refused(&["procedure", "run", "graph.kiting"]);
+    assert_eq!(code, 7, "{out}");
+    let denial = doc(&out);
+    assert_eq!(
+        text(denial.get("refusal").expect("capability refusal"), "code"),
+        "FA-REF-011"
+    );
+    assert!(text(&denial, "fix").contains("--grant reconcile"), "{out}");
+    assert!(denial.get("findings").is_none(), "{out}");
+    let (code, out) = refused(&[
+        "procedure",
+        "run",
+        "graph.kiting@65535",
+        "--grant",
+        "reconcile",
+        "--grant",
+        "privileged",
+    ]);
     assert_eq!(code, 2, "{out}");
+    assert!(out.contains("not an available procedure version"), "{out}");
     assert!(out.contains("fa procedure list"), "{out}");
     let (code, out) = refused(&[
         "procedure",
