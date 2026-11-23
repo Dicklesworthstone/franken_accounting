@@ -378,6 +378,15 @@ fn allocated_cash_workflow(liability: bool) {
     assert_eq!(applying.side, source_side.flipped());
     assert_eq!(applying.amount.mantissa, 3_333);
     assert_eq!(applying.base_amount.unwrap().mantissa, 3_666);
+    // The typed receipt/payment names the party only on the open item. Its
+    // cash stays untagged while conversion, realized FX and release copy it.
+    let source_dimensions = &original.proposal.legs[0].dimension_set;
+    let partial_legs = &partial_entry.proposal.legs;
+    assert_eq!(partial_legs.len(), 7);
+    assert!(partial_legs[3].dimension_set.is_empty());
+    for ordinal in [0, 1, 2, 4, 5, 6] {
+        assert_eq!(&partial_legs[ordinal].dimension_set, source_dimensions);
+    }
     assert_eq!(
         applying.settles[0].target.entry_digest,
         original.entry_digest

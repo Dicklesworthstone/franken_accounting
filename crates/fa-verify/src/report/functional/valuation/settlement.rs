@@ -630,18 +630,18 @@ impl History<'_> {
             || conversion.mantissa != settled.mantissa
             || conversion.debit == settled.debit
             || amounts[1] != relief
+            || details[1].dimensions != details[0].dimensions
             || cash.unit != self.spec.base
             || cash.debit == settled.debit
             || cash.mantissa != expected_cash
             || amounts[core - 1] != expected_cash
-            || details
-                .iter()
-                .any(|detail| detail.dimensions != details[0].dimensions)
         {
             return Err(invalid(
                 "settlement does not reproduce its foreign relief, conversion pair, dimensions and exact Rate-valued cash",
             ));
         }
+        // The signed cash leg carries its own dimensions in the component's
+        // legal entity. The conversion and realized-FX legs follow the item.
         if relief != 0 {
             let base_conversion = &legs[2];
             if base_conversion.account != conversion.account
@@ -649,6 +649,7 @@ impl History<'_> {
                 || base_conversion.debit != settled.debit
                 || base_conversion.mantissa != relief
                 || amounts[2] != relief
+                || details[2].dimensions != details[0].dimensions
             {
                 return Err(invalid(
                     "base conversion leg differs from the recorded carrying relief",
@@ -686,6 +687,7 @@ impl History<'_> {
                     }
                 || realized.mantissa != magnitude
                 || amounts[core] != magnitude
+                || details[core].dimensions != details[0].dimensions
             {
                 return Err(invalid(
                     "realized FX differs from cash minus exact recorded relief",

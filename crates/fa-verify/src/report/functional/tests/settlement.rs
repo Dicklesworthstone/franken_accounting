@@ -945,6 +945,42 @@ fn source_and_component_must_preserve_exact_legal_entity_dimensions() {
 }
 
 #[test]
+fn only_cash_can_name_its_own_dimensions_within_the_item_entity() {
+    let spec = book(&["alpha"]);
+    for (native, base, source_rate, applied, relief, cash) in
+        [(10, 15, (3, 2), 4, 6, 8), (3, 1, (1, 3), 1, 0, 2)]
+    {
+        let (mut records, rates, source) = history(native, base, source_rate, (2, 1));
+        let mut effects = component(&source, 0, "1100", true, applied, relief, cash);
+        let cash_ordinal = if relief == 0 { 2 } else { 3 };
+        // An omitted entity resolves to the sole declared entity. Recording it
+        // explicitly on cash changes the signed tag set but no entity footing.
+        effects[cash_ordinal].leg.entity = Some("alpha");
+        records.push(payment(6, 20, b"payment", &effects, &rates[1]));
+        let (report, _) = replay_fixture(&records, Selection::AsOf(58), 6, &spec, &rates).unwrap();
+        assert_eq!(totals(&report, "1000"), (cash, 0));
+
+        for ordinal in 0..effects.len() {
+            let mut changed = effects.clone();
+            changed[ordinal].leg.entity = if ordinal == cash_ordinal {
+                Some("undeclared")
+            } else {
+                Some("alpha")
+            };
+            records[5] = payment(6, 20, b"payment", &changed, &rates[1]);
+            let error =
+                replay_fixture(&records, Selection::AsOf(58), 6, &spec, &rates).unwrap_err();
+            let predicate = if ordinal == cash_ordinal {
+                "functional_entity"
+            } else {
+                "functional_carrying"
+            };
+            assert_eq!(error.predicate, predicate, "leg {ordinal}, relief {relief}");
+        }
+    }
+}
+
+#[test]
 fn historic_prefix_ignores_future_applications_but_checks_all_known_valuation_claims() {
     let (mut records, rates, source) = history(10, 15, (3, 2), (2, 1));
     records.push(payment(
