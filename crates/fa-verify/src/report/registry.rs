@@ -549,6 +549,7 @@ pub(super) fn verify_procedure(
         || profile.is_correction_history()
         || profile.is_trace()
         || profile.is_number_analytics()
+        || profile.is_account_screen()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }
@@ -568,7 +569,12 @@ pub(super) fn verify_procedure(
         || string(row, "tie_break")?
             != if benford {
                 "none"
-            } else if aging {
+            } else if aging
+                || matches!(
+                    profile,
+                    super::procedure::VerifiedProcedureParameters::SuspenseAging { .. }
+                )
+            {
                 "account_vid"
             } else {
                 "entry_vid"
@@ -666,6 +672,8 @@ pub(super) fn verify_procedure(
         unit_scales,
         unit_currencies,
         account_types: BTreeMap::new(),
+        account_codes: BTreeMap::new(),
+        account_roles: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
         entry_facts: BTreeMap::new(),
         trace: None,

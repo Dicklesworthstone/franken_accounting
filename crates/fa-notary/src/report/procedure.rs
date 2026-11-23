@@ -27,6 +27,7 @@ const PREPARERS: &[(&str, i128, i128)] = &[
     ("max_preparer_count", 0, u32::MAX as i128),
     ("min_account_entries", 0, u32::MAX as i128),
 ];
+const SUSPENSE: &[(&str, i128, i128)] = &[("max_age_days", 0, u32::MAX as i128)];
 const MANUAL_RULE: &[(&str, i128, i128)] = &[
     ("min_account_entries", 0, u32::MAX as i128),
     ("min_rule_share_bps", 0, u32::MAX as i128),
@@ -75,9 +76,11 @@ const BENFORD: &[(&str, i128, i128)] = &[
 ///
 /// Both native facade admission and transport framing use this inventory.
 /// Parameters must be explicit, unique and lexically ordered. JET
-/// round-amount/period-end v2 accepts an optional effective cutoff; tracing v2
-/// requires a claim date and canonical account/source handles. This is neither source verification
-/// nor a claim that the delivered result agrees with the selected algorithm.
+/// round-amount/period-end v2 and suspense-aging v3 accept an optional effective
+/// cutoff; expense-capitalization v2 uses its complete all-date population.
+/// Tracing v2 requires a claim date and canonical account/source handles. This
+/// is neither source verification nor a claim that the delivered result agrees
+/// with the selected algorithm.
 #[must_use]
 pub fn profile(
     id: &str,
@@ -90,6 +93,9 @@ pub fn profile(
         ("jet.round_amounts", 1 | 2) => ("FA-EVID-L01", ROUND),
         ("jet.period_end_timing", 1 | 2) => ("FA-EVID-L02", WINDOW),
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
+        ("jet.weekend", 1) => ("FA-EVID-L04", &[][..]),
+        ("jet.suspense_aging", 3) => ("FA-EVID-L28", SUSPENSE),
+        ("expense.capitalization", 2) => ("FA-EVID-L48", &[][..]),
         ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
         ("completeness.unrecorded_liabilities", 2) => ("FA-EVID-L44", POST_PERIOD_WINDOW),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
@@ -124,6 +130,7 @@ pub fn profile(
         || (!tracing
             && !aging
             && effective_through.is_some()
+            && !(id == "jet.suspense_aging" && version == 3)
             && !(version == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")))
         || parameters.len() != bounds.len()
         || !parameters
@@ -170,6 +177,122 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn suspense_profile_requires_v3_and_its_exact_unsigned_age_parameter() {
+        for cutoff in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+            for max_age in [0, 7, i128::from(u32::MAX) - 1, i128::from(u32::MAX)] {
+                assert_eq!(
+                    profile(
+                        "jet.suspense_aging",
+                        3,
+                        cutoff,
+                        &[("max_age_days", max_age)],
+                        &[],
+                    ),
+                    Some("FA-EVID-L28"),
+                    "cutoff {cutoff:?}, max_age {max_age}",
+                );
+            }
+        }
+        for version in [0, 1, 2, 4] {
+            assert_eq!(
+                profile(
+                    "jet.suspense_aging",
+                    version,
+                    None,
+                    &[("max_age_days", 7)],
+                    &[],
+                ),
+                None,
+            );
+        }
+        for parameters in [
+            vec![],
+            vec![("max_age_days", -1)],
+            vec![("max_age_days", i128::from(u32::MAX) + 1)],
+            vec![("stale_days", 7)],
+            vec![("max_age_days", 7), ("max_age_days", 7)],
+            vec![("max_age_days", 7), ("window_days", 30)],
+        ] {
+            assert_eq!(
+                profile("jet.suspense_aging", 3, Some(0), &parameters, &[]),
+                None,
+                "parameters {parameters:?}",
+            );
+        }
+        assert_eq!(
+            profile(
+                "jet.suspense_aging",
+                3,
+                None,
+                &[("max_age_days", 7)],
+                &[("account", "00000000000000000000000000000001")],
+            ),
+            None,
+            "the role population cannot be replaced by a caller-selected account",
+        );
+    }
+
+    #[test]
+    fn capitalization_profile_requires_v2_without_parameters_handles_or_cutoff() {
+        assert_eq!(
+            profile("expense.capitalization", 2, None, &[], &[]),
+            Some("FA-EVID-L48"),
+        );
+        for version in [0, 1, 3, 4] {
+            assert_eq!(
+                profile("expense.capitalization", version, None, &[], &[]),
+                None,
+            );
+        }
+        for cutoff in [i32::MIN, 0, i32::MAX] {
+            assert_eq!(
+                profile("expense.capitalization", 2, Some(cutoff), &[], &[]),
+                None,
+            );
+        }
+        assert_eq!(
+            profile(
+                "expense.capitalization",
+                2,
+                None,
+                &[("max_age_days", 7)],
+                &[],
+            ),
+            None,
+        );
+        assert_eq!(
+            profile(
+                "expense.capitalization",
+                2,
+                None,
+                &[],
+                &[("account", "00000000000000000000000000000001")],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn weekend_profile_requires_its_complete_all_date_contract() {
+        assert_eq!(
+            profile("jet.weekend", 1, None, &[], &[]),
+            Some("FA-EVID-L04")
+        );
+        for version in [0, 2, 3] {
+            assert_eq!(profile("jet.weekend", version, None, &[], &[]), None);
+        }
+        assert_eq!(profile("jet.weekend", 1, Some(0), &[], &[]), None);
+        assert_eq!(
+            profile("jet.weekend", 1, None, &[("window_days", 7)], &[]),
+            None
+        );
+        assert_eq!(
+            profile("jet.weekend", 1, None, &[], &[("source", "1000")]),
+            None
+        );
+    }
 
     #[test]
     fn override_and_correction_profiles_require_exact_all_date_contracts() {
@@ -620,7 +743,7 @@ mod tests {
                 accepts_cutoff.then_some(evidence)
             );
         }
-        assert_eq!(profile("jet.weekend", 1, None, &[], &[]), None);
+        assert_eq!(profile("jet.self_approved", 1, None, &[], &[]), None);
         assert_eq!(profile("trace.fifo", 2, Some(1), &[], &[]), None);
         assert_eq!(
             profile("duplicates.same_same_same", 2, None, &[], &[]),

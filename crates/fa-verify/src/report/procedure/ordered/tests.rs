@@ -36,6 +36,8 @@ impl Population {
                 unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
                 unit_currencies: BTreeMap::new(),
                 account_types: BTreeMap::new(),
+                account_codes: BTreeMap::new(),
+                account_roles: BTreeMap::new(),
                 leg_parties: BTreeMap::new(),
                 entry_facts: BTreeMap::new(),
                 trace: Some(TraceContext {
