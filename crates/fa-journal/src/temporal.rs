@@ -110,7 +110,7 @@ pub fn resolve_instant_at<V: asupersync::fs::Vfs + Clone>(
         .map(day_start_utc_ns);
     let mut migration_seq: Option<u64> = None;
     let mut ticks = Vec::new();
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         cx.checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
         if row.labels.contains(&label::MIGRATION_RUN) {
             let run = crate::migration::read_run_body_at(db, row.vid, at)?.ok_or_else(|| {

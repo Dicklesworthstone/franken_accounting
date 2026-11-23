@@ -352,7 +352,7 @@ fn births<V: Vfs + Clone>(
             "bank decision history ends before the selected native prefix",
         )));
     }
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         checkpoint(cx)?;
         if row.labels.iter().any(|kind| families.contains(kind)) && !births.contains_key(&row.vid) {
             return Ok(Err(drift(

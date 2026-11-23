@@ -666,7 +666,7 @@ pub(crate) fn statement_input<V: Vfs + Clone>(
     functional: bool,
 ) -> Outcome<StatementInput> {
     let mut accounts = Vec::new();
-    for row in db.vertices_at(at).map_err(fa_journal::KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, at).map_err(fa_journal::KernelError::from)? {
         if !row.labels.contains(&label::ACCOUNT) {
             continue;
         }

@@ -381,6 +381,17 @@ pub mod op_witness {
         Ok(rows)
     }
 
+    /// Read the transaction's staged overlay and retain its insertion and row
+    /// witnesses. Charge the rows returned by that single transactional scan.
+    pub fn txn_vertices<V: asupersync::fs::Vfs + Clone>(
+        txn: &fgdb::WriteTxn,
+        db: &fgdb::Database<V>,
+    ) -> Result<Vec<fgdb::VertexRow>, fgdb::WriteTxnError> {
+        let rows = txn.vertices(db)?;
+        record_vertex_scan(rows.len());
+        Ok(rows)
+    }
+
     /// Metered full-book snapshot frontier read for analytical procedures.
     /// Records the full row scan (`vertex_scans`, `scanned_rows`) AND marks
     /// the frontier snapshot count (`snapshot_frontier_scans`) so the census
@@ -425,5 +436,46 @@ pub mod op_witness {
             c.verify_cells_checked = c.verify_cells_checked.saturating_add(cells_checked);
             c.verify_legs_folded = c.verify_legs_folded.saturating_add(legs_folded);
         });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use asupersync::{Budget, runtime::RuntimeBuilder};
+        use fgdb::{Database, DatabaseKeys, WriteBatch, WriteError, WriteTxnError};
+        use fgdb_delta_types::RelationId;
+        use fgdb_types::{DatabaseSecurityNamespaceId, PurposeContexts, VId};
+
+        #[test]
+        fn transactional_scan_charges_overlay_and_preserves_insertion_conflict() {
+            let runtime = RuntimeBuilder::new().build().unwrap();
+            let root = runtime.request_cx_with_budget(Budget::INFINITE);
+            let cx = PurposeContexts::narrow_runtime_root(&root);
+            runtime.block_on(async {
+                let keys =
+                    DatabaseKeys::new([1; 32], DatabaseSecurityNamespaceId([2; 32]), [3; 32]);
+                let commit = cx.commit();
+                let mut db = Database::open_memory(&commit, keys).await.unwrap();
+                let mut txn = db.begin(&cx.txn()).unwrap();
+                let census = begin();
+                assert!(txn_vertices(&txn, &db).unwrap().is_empty());
+                let mut staged = WriteBatch::new(RelationId(1));
+                staged.create_vertex(VId(41), vec![], vec![]);
+                txn.write(&mut db, staged).unwrap();
+                let rows = txn_vertices(&txn, &db).unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].vid, VId(41));
+                let raw = census.finish();
+                assert_eq!((raw.vertex_scans, raw.scanned_rows), (2, 1));
+
+                let mut winner = WriteBatch::new(RelationId(1));
+                winner.create_vertex(VId(42), vec![], vec![]);
+                db.write(&commit, winner).await.unwrap();
+                assert!(matches!(
+                    txn.finish(&mut db, &commit).await,
+                    Err(WriteTxnError::Write(WriteError::FirstCommitterWins { .. }))
+                ));
+            });
+        }
     }
 }

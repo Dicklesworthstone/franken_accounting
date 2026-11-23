@@ -2484,7 +2484,7 @@ pub fn read_rea_at<V: asupersync::fs::Vfs + Clone>(
     }
     let book_spec = crate::genesis::read_book_spec_at(db, known_at)?
         .ok_or_else(|| corrupt("no book spec at the selected frontier"))?;
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     read_rea_from_rows_at(db, book, known_at, &book_spec, &rows, None)
 }
 
@@ -2502,7 +2502,7 @@ pub fn read_rea_from_rows_at<V: asupersync::fs::Vfs + Clone>(
     if known_at > db.frontier()? {
         return Err(corrupt("requested frontier is beyond the book head"));
     }
-    let stored_edges = db.edges_at(known_at)?;
+    let stored_edges = crate::op_witness::edges_at(db, known_at)?;
     let vertices_by_vid: BTreeMap<VId, &VertexRow> = rows.iter().map(|r| (r.vid, r)).collect();
     let decoded_by_vid: Option<BTreeMap<VId, &Entry>> = decoded_entries.map(|entries| {
         entries

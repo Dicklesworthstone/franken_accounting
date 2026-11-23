@@ -181,8 +181,8 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<ProjectionVerification, KernelError> {
     let known_at = known_at.unwrap_or(db.frontier()?);
-    let rows = db.vertices_at(known_at)?;
-    let stored_edges = db.edges_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
+    let stored_edges = crate::op_witness::edges_at(db, known_at)?;
     let vertices: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let mut expected_legs = BTreeSet::new();
     let mut expected_edges = BTreeMap::new();

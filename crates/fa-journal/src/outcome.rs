@@ -569,7 +569,7 @@ fn genesis_snapshot<V: Vfs + Clone>(
     let mut found_coverage = false;
     let mut book_ordinal = None;
     let mut first_ordinal = u64::MAX;
-    for vertex in db.vertices_at(at)? {
+    for vertex in crate::op_witness::vertices_at(db, at)? {
         if vertex.created_at != at {
             return Ok(false);
         }
@@ -597,7 +597,7 @@ fn genesis_snapshot<V: Vfs + Clone>(
             return Ok(false);
         }
     }
-    for edge in db.edges_at(at)? {
+    for edge in crate::op_witness::edges_at(db, at)? {
         if edge.entry.created_at != at
             || (edge.entry.relation != relation::IN_BOOK
                 && edge.entry.relation != relation::REPRESENTS)

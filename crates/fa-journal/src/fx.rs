@@ -1537,7 +1537,7 @@ pub fn verify_fx_conversions<V: asupersync::fs::Vfs + Clone>(
         checked: BTreeMap::new(),
         drift: Vec::new(),
     };
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }

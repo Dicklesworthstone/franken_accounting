@@ -603,7 +603,7 @@ async fn replay_batches_with_policy<W: asupersync::fs::Vfs + Clone>(
     coverage: Option<&crate::outcome::VerifiedCoverageReplay>,
 ) -> Outcome<SeqMap> {
     let at = target.frontier()?;
-    if !target.vertices_at(at)?.is_empty() {
+    if !crate::op_witness::vertices_at(target, at)?.is_empty() {
         return Ok(Err(Refusal::new(
             code::STRUCTURE,
             exit::USAGE,

@@ -133,8 +133,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     return Ok(Err(refusal));
                 }
             }
-            let periods = db
-                .vertices_at(before)
+            let periods = fa_journal::op_witness::vertices_at(db, before)
                 .map_err(KernelError::from)?
                 .into_iter()
                 .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))
@@ -232,7 +231,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 if let Err(refusal) = authority.whole_book(before) {
                     return Ok(Err(refusal));
                 }
-                let rows = db.vertices_at(before).map_err(KernelError::from)?;
+                let rows =
+                    fa_journal::op_witness::vertices_at(db, before).map_err(KernelError::from)?;
                 let definitions = rows
                     .iter()
                     .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))

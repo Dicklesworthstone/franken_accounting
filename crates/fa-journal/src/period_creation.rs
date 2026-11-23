@@ -238,7 +238,7 @@ pub fn births_at<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     known_at: CommitSeq,
 ) -> Result<BTreeMap<String, PeriodBirth>, KernelError> {
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     births_from_rows(db, &rows, book, known_at)
 }
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::{BookKeys, Entropy, ProcedureRequest, ReportArtifact};
 use asupersync::runtime::{Runtime, RuntimeBuilder};

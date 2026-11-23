@@ -1030,7 +1030,9 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
     coordinates: Coordinates,
     requests: Vec<crate::post::PostRequest>,
 ) -> Result<Result<Materialized, MaterializeRefusal>, KernelError> {
-    if target.frontier()? != CommitSeq(0) || !target.vertices_at(CommitSeq(0))?.is_empty() {
+    if target.frontier()? != CommitSeq(0)
+        || !crate::op_witness::vertices_at(&target, CommitSeq(0))?.is_empty()
+    {
         return Ok(Err(MaterializeRefusal::Replay(usage(
             "a scenario materializes into an empty memory database at sequence zero",
             "create a fresh open_memory database for the materialization",
@@ -1273,7 +1275,7 @@ pub fn list_scenarios<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<ScenarioView>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::SCENARIO) {
             let view = view_of(db, &row)?;
             if view.body.book_id == book.book_id {
@@ -1299,7 +1301,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut assumptions = None;
     let mut opened_at = None;
     let mut discarded = None;
-    for edge in db.edges_at(seq)? {
+    for edge in crate::op_witness::edges_at(db, seq)? {
         let e = &edge.entry;
         if e.dst != scenario
             || e.relation != relation::IN_CASE

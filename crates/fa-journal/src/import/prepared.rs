@@ -171,7 +171,7 @@ impl PreparedImport {
             return Ok(Err(invalid("derived-document sources form a cycle")));
         }
         let held_edges = if graph.keys().any(|child| !fresh.contains(child)) {
-            db.edges_at(self.txn.basis())?
+            crate::op_witness::edges_at(db, self.txn.basis())?
         } else {
             Vec::new()
         };

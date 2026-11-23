@@ -696,7 +696,7 @@ fn validate_sources<V: Vfs + Clone>(
     // Native v1 closes have no FX claim, but their source-bound provenance is
     // just as authoritative. A bad older native close must not be laundered
     // into a later carrying close merely because its numerical entry balances.
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         cx.query()
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -998,7 +998,7 @@ fn observe<V: Vfs + Clone>(
     let mut entries = Vec::new();
     let mut dimension_controls = Vec::new();
     let mut runs = BTreeMap::new();
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         cx.query()
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;

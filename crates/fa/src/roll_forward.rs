@@ -261,9 +261,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             };
             let mut movements = Vec::new();
             let mut runs = BTreeMap::new();
-            for (index, row) in self
-                .db
-                .vertices_at(at)
+            for (index, row) in fa_journal::op_witness::vertices_at(&self.db, at)
                 .map_err(KernelError::from)?
                 .into_iter()
                 .enumerate()
@@ -406,12 +404,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         query.with_restriction(|| {
             let mut entries = BTreeMap::new();
             let mut selected_entries = BTreeMap::new();
-            for (index, row) in self
-                .db
-                .vertices_at(CommitSeq(source.known_at))
-                .map_err(KernelError::from)?
-                .into_iter()
-                .enumerate()
+            for (index, row) in
+                fa_journal::op_witness::vertices_at(&self.db, CommitSeq(source.known_at))
+                    .map_err(KernelError::from)?
+                    .into_iter()
+                    .enumerate()
             {
                 if index % 256 == 0 {
                     query.checkpoint().map_err(BookError::Context)?;

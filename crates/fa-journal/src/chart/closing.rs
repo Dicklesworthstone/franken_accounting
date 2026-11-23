@@ -418,7 +418,7 @@ fn prepare<V: Vfs + Clone>(
     // Bind the immutable schema declarations used by chart replay as well as
     // the referenced Account mirrors. New unrelated accounts are not a reason
     // to serialize chart changes through a mutable global schema counter.
-    for row in db.vertices_at(txn.basis())? {
+    for row in crate::op_witness::vertices_at(db, txn.basis())? {
         if row.labels.contains(&label::ENTRY) {
             let entry = crate::entry_storage::decode_at(db, &row, txn.basis())?;
             if entry.proposal.class == fa_model::EntryClass::SCHEMA_CONTROL {

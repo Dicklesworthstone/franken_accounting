@@ -76,7 +76,7 @@ pub(super) fn resolve<V: Vfs + Clone, B: Vfs + Clone>(
         let mut inspected_legs = 0usize;
         let mut groups: BTreeMap<([u8; 32], u32), Group> = BTreeMap::new();
         if !wanted.is_empty() {
-            for (i, row) in book.db.vertices_at(ledger.known_at()).map_err(KernelError::from).map_err(BookError::from)?
+            for (i, row) in fa_journal::op_witness::vertices_at(&book.db, ledger.known_at()).map_err(KernelError::from).map_err(BookError::from)?
                 .into_iter().enumerate() {
                 if i % 256 == 0 { query.checkpoint().map_err(BookError::Context)?; }
                 if !row.labels.contains(&label::ENTRY) { continue; }

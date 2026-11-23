@@ -117,7 +117,7 @@ pub fn anchor_at<V: Vfs + Clone>(
     }
     let policy = EvidencePolicy::embedded().map_err(|e| corrupt(e.to_string()))?;
     let mut controls = Vec::new();
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }

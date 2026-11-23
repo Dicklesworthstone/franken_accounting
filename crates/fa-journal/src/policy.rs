@@ -3383,7 +3383,7 @@ pub fn list_issued<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<Vec<IssuedCapability>, KernelError> {
     let mut out = Vec::new();
     let seq = db.frontier()?;
-    for row in db.vertices_at(seq)? {
+    for row in crate::op_witness::vertices_at(db, seq)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }

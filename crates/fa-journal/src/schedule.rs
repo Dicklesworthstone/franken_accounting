@@ -507,7 +507,7 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
             scheds
         }
         _ => {
-            let rows = db.vertices()?;
+            let rows = crate::op_witness::vertices(db)?;
             witness.substrate_rows_read += rows.len();
             let mut scheds = Vec::new();
             for row in rows {
@@ -1318,7 +1318,7 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     // The candidate population is itself a dependency, including when it
     // is empty. A schedule posted after preparation must invalidate Open
     // instead of being silently omitted from its automatic reversals.
-    for row in txn.vertices(db)? {
+    for row in crate::op_witness::txn_vertices(txn, db)? {
         if !row.labels.contains(&label::REVERSAL_SCHEDULE) {
             continue;
         }
@@ -1397,7 +1397,7 @@ pub(crate) fn recorded_open_mints<V: asupersync::fs::Vfs + Clone>(
     }
     let today = policy.civil_date(tick.observed_utc_ns);
     let mut due: Vec<Schedule> = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.created_at > before || !row.labels.contains(&label::REVERSAL_SCHEDULE) {
             continue;
         }
@@ -1834,7 +1834,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
     let mut stored: BTreeMap<VId, Schedule> = BTreeMap::new();
     let mut cancels: BTreeMap<VId, (VId, VId)> = BTreeMap::new();
     let known_at = db.frontier()?;
-    for row in db.vertices_at(known_at)? {
+    for row in crate::op_witness::vertices_at(db, known_at)? {
         if row.labels.contains(&label::REVERSAL_SCHEDULE) {
             match decode_schedule(&row) {
                 Ok(s) => {

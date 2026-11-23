@@ -254,7 +254,7 @@ pub fn read_at<V: asupersync::fs::Vfs + Clone>(
     if known_at > db.frontier()? {
         return Err(corrupt("requested frontier is beyond the book head"));
     }
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     let mut controls = Vec::new();
     let mut lot_policies = Vec::new();
     for row in &rows {
@@ -1648,7 +1648,7 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
 
     // Check committed entries at txn.basis() for close preconditions.
     let basis = txn.basis();
-    let snapshot_rows = db.vertices_at(basis)?;
+    let snapshot_rows = crate::op_witness::vertices_at(db, basis)?;
 
     // Plan §10.3: a chart change that removes an account a live rule
     // references is refused with the rule's name. A binding is live on or
@@ -2035,7 +2035,7 @@ pub async fn promote_to_summary<V: asupersync::fs::Vfs + Clone>(
     }
 
     let basis = txn.basis();
-    let snapshot_rows = db.vertices_at(basis)?;
+    let snapshot_rows = crate::op_witness::vertices_at(db, basis)?;
     let mut blocking_entries: Vec<(VId, DateDay)> = Vec::new();
     for vrow in &snapshot_rows {
         if !vrow.labels.contains(&label::ENTRY) {

@@ -1514,7 +1514,7 @@ pub fn list_productions<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<ProductionView>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::PRODUCTION_PROFILE) {
             let view = view_of(db, &row)?;
             if view.profile.book_id == book.book_id {
@@ -1566,7 +1566,7 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     let mut ranges = Vec::new();
     let mut exhibits = Vec::new();
     let open = ProductionState::Open.tag();
-    for edge in db.edges_at(seq)? {
+    for edge in crate::op_witness::edges_at(db, seq)? {
         let e = &edge.entry;
         if e.dst != vid
             || e.relation != relation::IN_CASE

@@ -879,7 +879,7 @@ fn records_with_work<V: Vfs + Clone>(
         let mut occurrences = Vec::new();
         let at = db.frontier()?;
         work.snapshot_scans = work.snapshot_scans.saturating_add(1);
-        let rows = db.vertices_at(at)?;
+        let rows = crate::op_witness::vertices_at(db, at)?;
         work.snapshot_rows = work.snapshot_rows.saturating_add(rows.len() as u64);
         for row in rows {
             ctx.query().checkpoint().map_err(WriteTxnError::Interrupted)?;

@@ -729,7 +729,7 @@ pub fn verify_all_at_with_work<V: Vfs + Clone>(
     book: &BookContext,
     at: CommitSeq,
 ) -> Result<(Vec<String>, ExternalSubledgerVerificationWork), KernelError> {
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let mut work = ExternalSubledgerVerificationWork {
         vertex_rows_selected: rows.len(),
         ..ExternalSubledgerVerificationWork::default()

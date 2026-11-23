@@ -2345,7 +2345,7 @@ pub fn list_drafts<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<DraftView>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::DRAFT_SET) {
             let view = view_of(db, cx, &row)?;
             if view.body.book_id == book.book_id {

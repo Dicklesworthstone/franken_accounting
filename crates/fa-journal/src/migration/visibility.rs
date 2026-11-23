@@ -46,7 +46,7 @@ pub fn verify_run_visibility_at<V: Vfs + Clone>(
     if at > db.frontier()? {
         return Err(corrupt("selected prefix exceeds the current head"));
     }
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let current: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let mut runs = BTreeSet::new();
     let mut controls: BTreeMap<VId, Vec<Control>> = BTreeMap::new();

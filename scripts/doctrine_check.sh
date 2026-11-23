@@ -264,6 +264,8 @@ elif not unruns:
 # (bead fa-0hs4.27).
 metered_files = []
 for sub in [
+    "crates/fa/src",
+    "crates/fa-journal/src",
     "crates/fa-notary/src",
     "crates/fa-registers/src",
     "crates/fa-lantern/src",
@@ -271,23 +273,9 @@ for sub in [
     base = root / sub
     if base.is_dir():
         for p in sorted(base.rglob("*.rs")):
-            if p.name == "tests.rs" or "tests" in p.relative_to(base).parts:
+            if sub not in ("crates/fa/src", "crates/fa-journal/src") and (p.name == "tests.rs" or "tests" in p.relative_to(base).parts):
                 continue
             metered_files.append(p)
-for rel_file in [
-    "crates/fa-journal/src/batch.rs",
-    "crates/fa-journal/src/carrying.rs",
-    "crates/fa-journal/src/carrying/history.rs",
-    "crates/fa-journal/src/entry_history.rs",
-    "crates/fa-journal/src/period.rs",
-    "crates/fa-journal/src/post.rs",
-    "crates/fa-journal/src/register_capacity.rs",
-    "crates/fa-journal/src/evidence.rs",
-    "crates/fa-journal/src/draft/rehearsal.rs",
-]:
-    p = root / rel_file
-    if p.is_file():
-        metered_files.append(p)
 
 # Rust outer attributes are siblings of the item they decorate. Search back
 # through other attributes and comments only. Crossing a completed item
@@ -303,24 +291,102 @@ rule:
       inside:
         kind: field_expression
         field: field
-        inside: { kind: call_expression, field: function }
+        has: { field: value, pattern: '$RECEIVER' }
+        any:
+          - inside: { kind: call_expression, field: function }
+          - inside:
+              kind: generic_function
+              field: function
+              inside: { kind: call_expression, field: function }
+    - kind: identifier
+      inside:
+        kind: scoped_identifier
+        field: name
+        has: { field: path, pattern: '$OWNER' }
     # Macro argument tokens have no field_expression until Rust expands them.
     - kind: identifier
       inside: { kind: token_tree }
       follows: { regex: '^\.$', stopBy: { not: { matches: comment } } }
       precedes: { kind: token_tree, regex: '^\(', stopBy: { not: { matches: comment } } }
+    - kind: identifier
+      inside: { kind: token_tree }
+      follows:
+        regex: '^::$'
+        follows:
+          kind: identifier
+          pattern: '$MACRO_TYPE'
+          any:
+            - follows:
+                regex: '^::$'
+                follows: { kind: identifier, pattern: '$MACRO_CRATE' }
+            - regex: '.'
+      precedes: { kind: token_tree, regex: '^\(' }
+  all:
+    - any:
+        - inside:
+            stopBy: { kind: function_item }
+            kind: function_item
+            has: { field: name, pattern: '$BOUNDARY_FN' }
+            inside:
+              kind: declaration_list
+              inside:
+                kind: mod_item
+                has: { field: name, regex: '^op_witness$' }
+                inside: { kind: source_file }
+        - regex: '.'
   not:
     inside:
       stopBy: end
-      follows:
-        pattern: '#[cfg(test)]'
-        stopBy:
-          not:
-            any: [{ kind: attribute_item }, { matches: comment }]
+      any:
+        - kind: source_file
+          has: { kind: inner_attribute_item, pattern: '#![cfg(test)]' }
+        - follows:
+            any: [{ pattern: '#[cfg(test)]' }, { pattern: '#[test]' }]
+            stopBy:
+              not:
+                any: [{ kind: attribute_item }, { matches: comment }]
 utils:
   comment:
     any: [{ kind: line_comment }, { kind: block_comment }]
+---
+id: substrate-scan-import
+language: Rust
+severity: hint
+rule:
+  kind: identifier
+  inside: { kind: use_declaration, stopBy: end }
+  any:
+    - regex: '^fgdb$'
+      inside:
+        kind: use_as_clause
+        field: path
+        has: { field: alias, pattern: '$CRATE_ALIAS' }
+    - regex: '^(Database|WriteTxn)$'
+      all:
+        - any:
+            - inside:
+                kind: scoped_identifier
+                field: name
+                has: { field: path, regex: '^(::)?fgdb$' }
+            - inside:
+                kind: scoped_use_list
+                stopBy: { kind: scoped_use_list }
+                has: { field: path, regex: '^(::)?fgdb$' }
+        - any:
+            - inside:
+                kind: use_as_clause
+                stopBy: { kind: use_declaration }
+                has: { field: alias, pattern: '$TYPE_ALIAS' }
+            - regex: '.'
 """
+central_reads = {
+    "vertices": ("db", "vertices"),
+    "vertices_at": ("db", "vertices_at"),
+    "snapshot_vertices_at": ("db", "vertices_at"),
+    "txn_vertices": ("txn", "vertices"),
+    "edges": ("db", "edges"),
+    "edges_at": ("db", "edges_at"),
+}
 scan_words = re.compile(r"\b(?:vertices|edges)(?:_at)?\b")
 candidates = [str(p.relative_to(root)) for p in metered_files if scan_words.search(p.read_text(encoding="utf-8"))]
 scan_complete = True
@@ -339,13 +405,54 @@ if candidates:
             scan_complete = False
         else:
             matches = json.loads(result.stdout)
-for match in sorted(matches, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"])):
+crate_aliases = {}
+type_aliases = {}
+for match in matches:
+    if match["ruleId"] != "substrate-scan-import":
+        continue
+    captures = match.get("metaVariables", {}).get("single", {})
+    path = match["file"]
+    if "CRATE_ALIAS" in captures:
+        crate_aliases.setdefault(path, set()).add(captures["CRATE_ALIAS"]["text"])
+    else:
+        name = captures.get("TYPE_ALIAS", {}).get("text", match["text"])
+        type_aliases.setdefault(path, set()).add(name)
+
+def substrate_owner(owner, path):
+    # UFCS accepts Database::<V>::method and <fgdb::Database<V>>::method.
+    owner = "".join(owner.split())
+    if owner.startswith("<") and owner.endswith(">"):
+        owner = owner[1:-1]
+    owner = owner.split("<", 1)[0].removeprefix("::").removesuffix("::")
+    namespace, _, typename = owner.rpartition("::")
+    if namespace:
+        return (namespace == "fgdb" or namespace in crate_aliases.get(path, ())) and typename in ("Database", "WriteTxn")
+    return typename in type_aliases.get(path, ())
+
+exempted = set()
+violations = []
+calls = (m for m in matches if m["ruleId"] == "unmetered-scan")
+for match in sorted(calls, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"])):
+    captures = match.get("metaVariables", {}).get("single", {})
+    owner = captures.get("OWNER", {}).get("text")
+    if "MACRO_TYPE" in captures:
+        namespace = captures.get("MACRO_CRATE", {}).get("text")
+        owner = (namespace + "::" if namespace else "") + captures["MACRO_TYPE"]["text"]
+    if owner is not None and not substrate_owner(owner, match["file"]):
+        continue
+    fn = captures.get("BOUNDARY_FN", {}).get("text")
+    receiver = captures.get("RECEIVER", {}).get("text")
+    if (match["file"] == "crates/fa-journal/src/lib.rs" and fn in central_reads
+            and central_reads[fn] == (receiver, match["text"]) and fn not in exempted):
+        exempted.add(fn)
+        continue
+    violations.append(match)
     line = match["range"]["start"]["line"] + 1
     fails.append(
         f"metered-substrate-scans — {match['file']}:{line}: uninstrumented direct substrate scan "
         f"`.{match['text']}()`; route through `fa_journal::op_witness`"
     )
-if scan_complete and not matches:
+if scan_complete and not violations:
     passes.append(
         f"metered-substrate-scans — 0 uninstrumented substrate scans across {len(metered_files)} metered production files"
     )

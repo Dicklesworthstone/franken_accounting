@@ -1160,7 +1160,7 @@ fn read_view<V: Vfs + Clone>(
         .collect();
     let mut records = Vec::new();
     let known_at = db.frontier()?;
-    for row in db.vertices_at(known_at)? {
+    for row in crate::op_witness::vertices_at(db, known_at)? {
         cx.query()
             .checkpoint()
             .map_err(WriteTxnError::Interrupted)?;
@@ -1485,7 +1485,7 @@ fn read_view<V: Vfs + Clone>(
     }
     let selected: BTreeSet<_> = state_changes.keys().copied().collect();
     let mut found_edges = BTreeSet::new();
-    for edge in db.edges_at(db.frontier()?)? {
+    for edge in crate::op_witness::edges_at(db, db.frontier()?)? {
         let e = &edge.entry;
         if matches!(e.relation, relation::IN_CASE | relation::DEPENDS_ON)
             && (selected.contains(&e.src) || selected.contains(&e.dst))

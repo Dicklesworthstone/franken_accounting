@@ -809,7 +809,7 @@ fn read_lots<V: Vfs + Clone>(
     let mut entries = BTreeMap::new();
     let mut reversals = BTreeMap::new();
     let mut runs = BTreeMap::new();
-    for row in db.vertices_at(basis.known_at)? {
+    for row in crate::op_witness::vertices_at(db, basis.known_at)? {
         cx.query()
             .checkpoint()
             .map_err(WriteTxnError::Interrupted)?;

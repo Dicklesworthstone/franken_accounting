@@ -281,7 +281,7 @@ pub fn native_subledgers_at<V: Vfs + Clone>(
     if at > db.frontier()? {
         return Err(corrupt("known-at is beyond the book head"));
     }
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let by_id: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let mut records = BTreeMap::new();
     let mut codes = BTreeSet::new();
@@ -341,7 +341,7 @@ pub fn native_subledgers_at<V: Vfs + Clone>(
             return Err(corrupt("account control_of has no matching registration"));
         }
     }
-    let edges = db.edges_at(at)?;
+    let edges = crate::op_witness::edges_at(db, at)?;
     for record in records.values() {
         let controls: Vec<_> = edges
             .iter()
@@ -648,7 +648,7 @@ pub async fn create_native_subledger<V: Vfs + Clone>(
     // database handle remains exclusively borrowed through publication.
     // A prepared posting witnesses this account and the negative root lookup.
     let query = ctx.query();
-    for row in db.vertices_at(txn.basis())? {
+    for row in crate::op_witness::vertices_at(db, txn.basis())? {
         query.checkpoint().map_err(WriteTxnError::Interrupted)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;

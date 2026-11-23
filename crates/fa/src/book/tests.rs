@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::async_book::BOOK_BLOB_STORE;
 use asupersync::lab::{AutoAdvanceTermination, LabConfig, LabRuntime};

@@ -580,7 +580,7 @@ fn history<V: Vfs + Clone>(
     at: CommitSeq,
 ) -> Result<History, KernelError> {
     crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let mut ordered = Vec::new();
     for row in &rows {
         if row.labels.contains(&label::ENTRY) {
@@ -1798,7 +1798,7 @@ pub fn verify_asset_schedules<V: Vfs + Clone>(
     // Legacy books with no asset-cost objects need no additional historical
     // window merely to retain their existing schedule verification contract.
     let mut present = false;
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::ASSET_SCHEDULE) {
             present = true;
             break;

@@ -20,7 +20,7 @@ pub(crate) fn verify_sources<V: Vfs + Clone>(
     // incomplete resident history after reopening a checkpoint.
     fa_journal::verify_entry_history(db, cx, book, Some(at))?;
     let mut rates = BTreeMap::new();
-    for row in db.vertices_at(at).map_err(fa_journal::KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, at).map_err(fa_journal::KernelError::from)? {
         query.checkpoint().map_err(BookError::Context)?;
         if row.labels.contains(&label::DOCUMENT)
             && matches!(fa_journal::rows::prop(&row, property::CODE),

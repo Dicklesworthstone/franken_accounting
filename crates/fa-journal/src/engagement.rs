@@ -3369,7 +3369,7 @@ pub fn list_engagements<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<EngagementView>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::ENGAGEMENT) {
             let view = view_of(db, &row)?;
             if view.profile.book_id == book.book_id {

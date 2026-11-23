@@ -248,7 +248,7 @@ pub fn policy_at<V: Vfs + Clone>(
     if known_at > db.frontier()? {
         return Err(corrupt("selected prefix exceeds the head"));
     }
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     let mut policies = Vec::new();
     for row in &rows {
         if !row.labels.contains(&label::ENTRY) {

@@ -205,7 +205,7 @@ pub fn account_roles_at<V: Vfs + Clone>(
     if at > db.frontier()? {
         return Err(corrupt("known-at is beyond the book head"));
     }
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let accounts: BTreeSet<VId> = rows
         .iter()
         .filter(|row| row.labels.contains(&label::ACCOUNT))

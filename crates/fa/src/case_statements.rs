@@ -417,8 +417,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(refusal) = authority.whole_book(before_post) {
                 return Ok(Err(refusal));
             }
-            let periods = db
-                .vertices_at(before_post)
+            let periods = fa_journal::op_witness::vertices_at(db, before_post)
                 .map_err(KernelError::from)?
                 .into_iter()
                 .filter(|row| row.labels.contains(&fa_model::symbols::label::PERIOD))

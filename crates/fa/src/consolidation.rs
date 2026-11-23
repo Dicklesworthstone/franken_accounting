@@ -297,7 +297,7 @@ fn consolidate_at_basis<V: Vfs + Clone>(
     // The chart at the prefix.
     let mut chart = Vec::new();
     let mut accounts = BTreeMap::new();
-    for row in db.vertices_at(at).map_err(KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, at).map_err(KernelError::from)? {
         if !row.labels.contains(&label::ACCOUNT) {
             continue;
         }
@@ -1411,7 +1411,7 @@ fn reconcile_book_to_book_at<V: Vfs + Clone>(
     let mut chart = Vec::new();
     let mut accounts_by_code: BTreeMap<String, AccountRow> = BTreeMap::new();
     let mut vid_to_meta: BTreeMap<u128, (String, String)> = BTreeMap::new();
-    for row in db.vertices_at(at).map_err(KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, at).map_err(KernelError::from)? {
         if !row.labels.contains(&label::ACCOUNT) {
             continue;
         }

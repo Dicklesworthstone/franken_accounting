@@ -386,7 +386,7 @@ pub(super) fn unique_selection<V: Vfs + Clone>(
     if let Err(refusal) = verify_active_entries(db, cx, book, availability)? {
         return Ok(Err(refusal));
     }
-    let mut entries = db.vertices_at(request.source_known_at)?;
+    let mut entries = crate::op_witness::vertices_at(db, request.source_known_at)?;
     entries.retain(|row| row.labels.contains(&label::ENTRY));
     entries.sort_by_key(|row| (row.created_at, row.vid.0));
     let mut candidates = Vec::new();

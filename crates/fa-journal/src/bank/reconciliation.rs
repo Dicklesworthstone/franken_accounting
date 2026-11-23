@@ -971,7 +971,7 @@ pub fn prepare_bank_reconciliation_with_outstanding<V: Vfs + Clone>(
     }
     // A new contributing Entry, match correction, migration activation, or
     // source mutation invalidates this infrequent complete closing fold.
-    txn.vertices(db)?;
+    crate::op_witness::txn_vertices(&txn, db)?;
     if let Err(refusal) = request.import.retain(&txn, db, book.book_id)? {
         return Ok(Err(refusal));
     }

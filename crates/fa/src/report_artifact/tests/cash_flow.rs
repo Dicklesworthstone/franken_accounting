@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::{
     CashFlowActivity, CashFlowAssignment, CashFlowBasisDefinition, CashFlowDefinition,

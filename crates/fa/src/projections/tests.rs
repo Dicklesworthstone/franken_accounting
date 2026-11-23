@@ -1,4 +1,5 @@
 //! Real kernel postings and substrate mutations; no mocked repair or balances.
+#![cfg(test)]
 
 use std::path::Path;
 

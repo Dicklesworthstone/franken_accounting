@@ -1,5 +1,6 @@
 //! Genuine native genesis fixtures distinguish an older supported symbol
 //! table from a newer book whose mutable mirror impersonates that table.
+#![cfg(test)]
 
 mod functional;
 

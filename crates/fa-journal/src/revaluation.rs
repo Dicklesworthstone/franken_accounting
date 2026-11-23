@@ -40,6 +40,7 @@ use crate::chart::{ChartSnapshot, FxRevaluationRoute, fx_revaluation_routes_at};
 use crate::evidence::{Storage, document_vid};
 use crate::fx::{FxLawId, FxRateDocument, FxRatePurpose, RATE_DOCUMENT_KIND, RATE_EVIDENCE_ROLE};
 use crate::genesis::{BookContext, BookSpec, UnitPolicy};
+use crate::op_witness::vertices_at;
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{AccountRow, PeriodRow, book_root, bytes};
 
@@ -738,7 +739,7 @@ fn observe_using<V: Vfs + Clone>(
                 .into_iter()
                 .map(|(seq, vid, entry)| Ok((*seq, *vid, Cow::Borrowed(entry)))),
         ),
-        None => Box::new(db.vertices_at(at)?.into_iter().filter_map(|row| {
+        None => Box::new(vertices_at(db, at)?.into_iter().filter_map(|row| {
             if let Err(error) = cx.query().checkpoint() {
                 return Some(Err(fgdb::WriteTxnError::Interrupted(error).into()));
             }
@@ -1082,7 +1083,7 @@ pub(crate) fn verify_item_history<V: Vfs + Clone>(
     // and mutations that were subsequently restored.
     crate::entry_history::verify_entry_history(db, cx, book, Some(at))?;
     let mut adjustments = Vec::new();
-    for row in db.vertices_at(at)? {
+    for row in vertices_at(db, at)? {
         cx.query()
             .checkpoint()
             .map_err(fgdb::WriteTxnError::Interrupted)?;

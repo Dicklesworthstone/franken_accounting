@@ -1214,8 +1214,8 @@ pub(crate) fn verify_all_at<V: Vfs + Clone>(
     book: &crate::genesis::BookContext,
     at: CommitSeq,
 ) -> Result<Vec<String>, KernelError> {
-    let rows = db.vertices_at(at)?;
-    let stored_edges = db.edges_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
+    let stored_edges = crate::op_witness::edges_at(db, at)?;
     let vertices: std::collections::BTreeMap<_, _> =
         rows.iter().map(|row| (row.vid, row)).collect();
     let derived_edges: BTreeSet<(VId, VId)> = stored_edges
@@ -1402,7 +1402,7 @@ pub fn unmatched_bank_lines_at<V: Vfs + Clone>(
 ) -> Result<(usize, Option<Oid>), KernelError> {
     let policy = policy()?;
     let workpaper_kind = kind(&policy, "Workpaper")?;
-    let rows = db.vertices_at(at)?;
+    let rows = crate::op_witness::vertices_at(db, at)?;
     let mut receipts = Vec::new();
     for row in rows.iter().filter(|row| row.labels.contains(&label::ENTRY)) {
         if let Ok(entry) = crate::entry_storage::decode_at(db, row, at)

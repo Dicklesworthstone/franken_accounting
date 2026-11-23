@@ -485,7 +485,7 @@ fn prepare<V: Vfs + Clone>(
         .map(|route| route.valuation_account)
         .filter(|account| !existing.contains(account))
         .collect();
-    for row in db.vertices_at(txn.basis())? {
+    for row in crate::op_witness::vertices_at(db, txn.basis())? {
         if row.labels.contains(&label::ENTRY) {
             let entry = crate::entry_storage::decode_at(db, &row, txn.basis())?;
             if entry

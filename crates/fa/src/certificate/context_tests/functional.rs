@@ -1,4 +1,5 @@
 //! Real retained Rate documents and posted entries exercise the v5 closure.
+#![cfg(test)]
 
 #[path = "functional_trial_balance.rs"]
 mod trial_balance;

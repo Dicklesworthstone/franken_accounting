@@ -61,8 +61,7 @@ fn verify<V: Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<UsageVerification, KernelError> {
     let known_at = known_at.unwrap_or(db.frontier()?);
-    let rows: BTreeMap<_, _> = db
-        .vertices_at(known_at)?
+    let rows: BTreeMap<_, _> = crate::op_witness::vertices_at(db, known_at)?
         .into_iter()
         .map(|row| (row.vid, row.seen_at(known_at)))
         .collect();
@@ -234,8 +233,7 @@ fn verify<V: Vfs + Clone>(
         }
     }
     let mut receipts = Vec::with_capacity(debits.len());
-    let current_edges: BTreeMap<_, _> = db
-        .edges_at(known_at)?
+    let current_edges: BTreeMap<_, _> = crate::op_witness::edges_at(db, known_at)?
         .into_iter()
         .map(|edge| (edge.entry.eid, edge))
         .collect();

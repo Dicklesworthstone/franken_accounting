@@ -90,9 +90,7 @@ pub(super) fn from_cash<V: Vfs + Clone, B: Vfs + Clone>(
     query.checkpoint().map_err(BookError::Context)?;
     let metadata = query.with_restriction(|| -> Result<Vec<VId>, Error> {
         let mut all_periods = Vec::new();
-        for (index, row) in book
-            .db
-            .vertices_at(at)
+        for (index, row) in fa_journal::op_witness::vertices_at(&book.db, at)
             .map_err(KernelError::from)
             .map_err(BookError::from)?
             .into_iter()

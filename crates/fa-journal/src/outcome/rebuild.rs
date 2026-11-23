@@ -145,7 +145,7 @@ pub async fn prepare_outcome_rebuild<V: Vfs + Clone>(
     let mut claims = BTreeMap::<VId, EntryClaim>::new();
     let mut stage = WriteBatch::new(relation::IN_BOOK);
     let mut outcomes_created = 0;
-    for row in db.vertices_at(basis)? {
+    for row in crate::op_witness::vertices_at(db, basis)? {
         query.checkpoint().map_err(WriteTxnError::Interrupted)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;

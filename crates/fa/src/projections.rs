@@ -245,8 +245,8 @@ fn prepare<V: Vfs + Clone>(
     // Discover the source set from native births, not a possibly damaged live
     // label scan. This gate precedes both the fold and every staged repair.
     fa_journal::verify_entry_history(db, cx, book, Some(basis))?;
-    let rows = db.vertices_at(basis).map_err(KernelError::from)?;
-    let edges = db.edges_at(basis).map_err(KernelError::from)?;
+    let rows = fa_journal::op_witness::vertices_at(db, basis).map_err(KernelError::from)?;
+    let edges = fa_journal::op_witness::edges_at(db, basis).map_err(KernelError::from)?;
     let vertices: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let relations = [
         relation::HAS_LEG,

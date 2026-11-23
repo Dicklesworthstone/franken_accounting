@@ -778,7 +778,7 @@ fn publication_entries<V: Vfs + Clone, B: Vfs + Clone>(
         let mut link_bytes = 0;
         let mut old_runs = BTreeMap::new();
         let mut new_runs = BTreeMap::new();
-        for row in book.db.vertices_at(at).map_err(KernelError::from)? {
+        for row in fa_journal::op_witness::vertices_at(&book.db, at).map_err(KernelError::from)? {
             query.checkpoint().map_err(BookError::Context)?;
             if !row.labels.contains(&label::ENTRY) {
                 continue;

@@ -1395,7 +1395,8 @@ fn migration_storage_statements_at<V: Vfs + Clone>(
     db: &Database<V>,
     at: CommitSeq,
 ) -> Result<Vec<String>, BookError> {
-    let rows = db.vertices_at(at).map_err(fa_journal::KernelError::from)?;
+    let rows =
+        fa_journal::op_witness::vertices_at(db, at).map_err(fa_journal::KernelError::from)?;
     let mut statements = Vec::new();
     if rows
         .iter()

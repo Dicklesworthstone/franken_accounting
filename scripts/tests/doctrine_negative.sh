@@ -198,4 +198,72 @@ run_case case7-siblings-raw "$SIBLINGS" "$SIBLINGS/foundations"
 expect_fail "production macro scan after test items" ".edges_at()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:10:"
 expect_fail "production-only method call after test items" ".vertices()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:12:"
 
+# Only the central wrappers may issue raw reads. UFCS on the substrate,
+# including an explicitly renamed import, must obey the same contract.
+BOUNDARY="$WORK/case7-boundary"
+make_clean_tree "$BOUNDARY"
+mkdir -p "$BOUNDARY/crates/fa-journal/src/live"
+mkdir -p "$BOUNDARY/crates/fa/src/tests"
+cat >"$BOUNDARY/crates/fa/src/lib.rs" <<'RS'
+#![forbid(unsafe_code)]
+#[cfg(test)]
+mod fixture;
+mod tests { pub mod live; }
+RS
+cat >"$BOUNDARY/crates/fa/src/fixture.rs" <<'RS'
+#![cfg(test)]
+pub fn independent(db: &Db) { db.vertices(); }
+RS
+cat >"$BOUNDARY/crates/fa/src/tests/live.rs" <<'RS'
+use fgdb::Database;
+pub fn live(db: &Database<V>) { fa_journal::op_witness::vertices(db); }
+RS
+cat >"$BOUNDARY/crates/fa-journal/src/lib.rs" <<'RS'
+#![forbid(unsafe_code)]
+pub mod op_witness {
+    pub fn vertices(db: &Db) { let rows = db.vertices(); record_vertex_scan(rows.len()); }
+    pub fn txn_vertices(txn: &Txn, db: &Db) { let rows = txn.vertices(db); record_vertex_scan(rows.len()); }
+}
+#[cfg(test)]
+mod tests;
+mod live { pub mod tests; }
+RS
+cat >"$BOUNDARY/crates/fa-journal/src/live/tests.rs" <<'RS'
+use fgdb::{Database as Store, WriteTxn};
+use fgdb as graph;
+pub fn counted(db: &Store) { crate::op_witness::vertices(db); }
+pub fn unrelated(local: &LocalGraph) { LocalGraph::vertices(local); }
+#[test]
+fn literal_oracle() { Store::vertices_at(db, at); }
+RS
+run_case case7-boundary-clean "$BOUNDARY" "$BOUNDARY/foundations"
+if [ "$RC" -eq 0 ]; then
+  gate_pass "doctrine-negative — central wrappers, independent test and unrelated UFCS accepted"
+else
+  gate_fail "doctrine-negative — legitimate boundary or independent test rejected (exit $RC); see $OUT"
+fi
+cat >>"$BOUNDARY/crates/fa-journal/src/lib.rs" <<'RS'
+pub fn outside(db: &Db) { db.vertices(); }
+RS
+cat >>"$BOUNDARY/crates/fa/src/tests/live.rs" <<'RS'
+pub fn scan(txn: &fgdb::WriteTxn, db: &Database<V>) { txn.vertices::<V>(db); }
+pub fn callback(db: &Database<V>) { let scan = Database::<V>::vertices_at; scan(db, at); }
+RS
+cat >>"$BOUNDARY/crates/fa-journal/src/live/tests.rs" <<'RS'
+pub fn renamed(db: &Store) { Store::edges_at(db, at); }
+pub fn txn(txn: &WriteTxn, db: &Store) { WriteTxn::vertices(txn, db); }
+pub fn generic(db: &Store) { <fgdb::Database<V>>::vertices_at(db, at); }
+pub fn expression(db: &Store) { assert!(graph::Database::edges(db).is_ok()); }
+mod op_witness { pub fn vertices(db: &Db) { let _ = db.vertices(); } }
+RS
+run_case case7-boundary-raw "$BOUNDARY" "$BOUNDARY/foundations"
+expect_fail "scan outside the central module" "crates/fa-journal/src/lib.rs:9:" ".vertices()"
+expect_fail "renamed substrate UFCS in production tests.rs" "crates/fa-journal/src/live/tests.rs:7:" ".edges_at()"
+expect_fail "transactional UFCS" "crates/fa-journal/src/live/tests.rs:8:" ".vertices()"
+expect_fail "qualified generic substrate UFCS" "crates/fa-journal/src/live/tests.rs:9:" ".vertices_at()"
+expect_fail "macro call with crate alias" "crates/fa-journal/src/live/tests.rs:10:" ".edges()"
+expect_fail "imitated central wrapper" "crates/fa-journal/src/live/tests.rs:11:" ".vertices()"
+expect_fail "generic transaction read in a facade tests directory" "crates/fa/src/tests/live.rs:3:" ".vertices()"
+expect_fail "facade UFCS function pointer" "crates/fa/src/tests/live.rs:4:" ".vertices_at()"
+
 gate_verdict

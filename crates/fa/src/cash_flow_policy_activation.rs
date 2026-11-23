@@ -364,7 +364,7 @@ fn history<V: Vfs + Clone>(
         return Err(corrupt("selected recorded sequence is beyond the book head").into());
     }
     let mut activations = Vec::new();
-    for row in db.vertices_at(at).map_err(KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, at).map_err(KernelError::from)? {
         checkpoint(cx)?;
         if !row.labels.contains(&label::ENTRY) {
             continue;

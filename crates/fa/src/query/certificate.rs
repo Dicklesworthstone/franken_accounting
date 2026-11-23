@@ -160,7 +160,7 @@ fn last_day<V: Vfs + Clone>(
     seq: CommitSeq,
 ) -> Result<Option<DateDay>, BookError> {
     let mut last = None;
-    for row in db.vertices_at(seq).map_err(KernelError::from)? {
+    for row in fa_journal::op_witness::vertices_at(db, seq).map_err(KernelError::from)? {
         if !row.labels.contains(&label::PERIOD) {
             continue;
         }

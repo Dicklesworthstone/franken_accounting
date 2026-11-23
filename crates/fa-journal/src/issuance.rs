@@ -1070,7 +1070,7 @@ pub fn list_issuances<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
 ) -> Result<Vec<IssuanceRecord>, KernelError> {
     let mut out = Vec::new();
-    for row in db.vertices()? {
+    for row in crate::op_witness::vertices(db)? {
         if row.labels.contains(&label::STATEMENT_ISSUANCE)
             && let Some(record) = record_of(db, book, row.vid)?
         {

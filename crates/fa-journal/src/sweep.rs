@@ -218,8 +218,8 @@ pub fn latest_corroborated_tick<V: asupersync::fs::Vfs + Clone>(
         return Ok(tick);
     }
     let rows = match at {
-        None => db.vertices()?,
-        Some(seq) => db.vertices_at(seq)?,
+        None => crate::op_witness::vertices(db)?,
+        Some(seq) => crate::op_witness::vertices_at(db, seq)?,
     };
     let mut best: Option<(CommitSeq, Tick)> = None;
     for row in rows {
@@ -528,7 +528,7 @@ pub fn due_holds_with_witness<V: asupersync::fs::Vfs + Clone>(
         return Ok((due, witness));
     }
     let known_at = db.frontier()?;
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     witness.substrate_rows_read += rows.len();
     let mut due = Vec::new();
     for row in rows {
@@ -2283,9 +2283,9 @@ fn refold_sweep_index_at<V: asupersync::fs::Vfs + Clone>(
     KernelError,
 > {
     let rows = if through == db.frontier()? {
-        db.vertices()?
+        crate::op_witness::vertices(db)?
     } else {
-        db.vertices_at(through)?
+        crate::op_witness::vertices_at(db, through)?
     };
     let mut latest_corroborated: Option<(CommitSeq, Tick)> = None;
     let mut pending_rows = Vec::new();

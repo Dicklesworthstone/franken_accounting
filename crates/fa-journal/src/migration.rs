@@ -612,7 +612,7 @@ pub fn run_entries<V: asupersync::fs::Vfs + Clone>(
         None => db.frontier()?,
     };
     let mut found: Vec<(CommitSeq, VId)> = Vec::new();
-    for edge in db.edges_at(seq)? {
+    for edge in crate::op_witness::edges_at(db, seq)? {
         let e = &edge.entry;
         if e.dst != run_vid || !edge.props.is_empty() {
             continue;
@@ -847,7 +847,7 @@ pub fn tie_out<V: asupersync::fs::Vfs + Clone>(
     let own_opening = own_opening_code(book, run)?;
     let mut by_period: BTreeMap<String, Fold> = BTreeMap::new();
     let mut opening: Fold = BTreeMap::new();
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         if !row.labels.contains(&label::ENTRY) {
             continue;
         }

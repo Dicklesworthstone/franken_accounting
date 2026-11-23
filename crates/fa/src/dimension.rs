@@ -159,7 +159,8 @@ pub(crate) fn verify_functional_hierarchy<V: Vfs + Clone>(
             "functional dimension hierarchy differs from immutable controls: {why}"
         ))
     };
-    let rows = db.vertices_at(at).map_err(fa_journal::KernelError::from)?;
+    let rows =
+        fa_journal::op_witness::vertices_at(db, at).map_err(fa_journal::KernelError::from)?;
     let by_id: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let mut controls: Vec<_> = rows
         .iter()

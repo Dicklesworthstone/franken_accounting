@@ -1,5 +1,6 @@
 //! Complete period verification through the public asynchronous facade.
 //! Raw mutations below are deliberate corruption, never repair behavior.
+#![cfg(test)]
 
 use std::path::Path;
 

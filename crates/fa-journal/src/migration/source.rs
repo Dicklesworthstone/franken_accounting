@@ -316,7 +316,7 @@ pub fn read_source_manifest_at<V: asupersync::fs::Vfs + Clone>(
     }
     // This inspects authoritative control entries, not arbitrary documents.
     // A deleted manifest must never silently turn a bound run into legacy mode.
-    for row in db.vertices_at(at)? {
+    for row in crate::op_witness::vertices_at(db, at)? {
         if row.labels.contains(&label::ENTRY) {
             let entry = crate::entry_storage::decode_at(db, &row, at)?;
             if matches!(entry.proposal.control, Some(ControlPayload::MigrationControl {
