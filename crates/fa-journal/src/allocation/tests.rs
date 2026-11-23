@@ -88,6 +88,26 @@ fn tiered_posting_binds_each_marginal_band_and_conserves_the_native_legs() {
         changed.basis_digest().unwrap()
     );
     assert!(changed.legs(&outcome).is_err());
+    let revised_legs = changed.legs(&changed.request.execute().unwrap()).unwrap();
+    assert_eq!(
+        revised_legs
+            .iter()
+            .map(|leg| leg.amount.mantissa)
+            .collect::<Vec<_>>(),
+        [25_000, 20_000, 5_000]
+    );
+
+    // The upper bound is part of the request even when all 25,000 units
+    // still fall in the same bands and every computed share is identical.
+    let mut capped = basis.clone();
+    let AllocationMethod::Tiered { brackets } = &mut capped.request.method else {
+        unreachable!()
+    };
+    brackets[2].upper_bound = 30_000;
+    let capped_outcome = capped.request.execute().unwrap();
+    assert_eq!(outcome.shares(), capped_outcome.shares());
+    assert_eq!(capped.legs(&capped_outcome).unwrap(), legs);
+    assert!(capped.legs(&outcome).is_err());
     let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
     assert_eq!((totals[0].debits, totals[0].credits), (25_000, 25_000));
 }

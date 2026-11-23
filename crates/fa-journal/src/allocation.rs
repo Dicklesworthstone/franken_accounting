@@ -343,6 +343,11 @@ impl AllocationPosting {
     }
 
     fn legs(&self, outcome: &AllocationOutcome) -> Result<Vec<LegPayload>, Refusal> {
+        if outcome.request() != &self.request {
+            return Err(structure(
+                "the allocation outcome belongs to a different request",
+            ));
+        }
         let mut legs = Vec::new();
         legs.try_reserve_exact(self.request.targets.len() + 1)
             .map_err(structure)?;
