@@ -559,7 +559,10 @@ pub async fn plan_correction_into_draft<V: asupersync::fs::Vfs + Clone>(
     if !view.intents.is_empty() {
         return Ok(Err(dedicated()));
     }
-    if db.vertex(evid)?.is_some() {
+    if let Some(row) = db.vertex(evid)? {
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::DRAFT_CONTROL) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         return Err(KernelError::Corrupt(
             "a correction Plan is absent from its draft log".into(),
         ));
@@ -613,9 +616,14 @@ pub async fn plan_correction_into_draft<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    if let Err(refusal) = witness_fresh_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut writes = WriteBatch::new(relation::IN_CASE);
     writes.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut writes, &entry, evid)?;
     writes.add_edge(
         edge_id(relation::IN_CASE, evid, view.vid),
         evid,

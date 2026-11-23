@@ -458,7 +458,10 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
     if view.state != DraftState::Open {
         return Ok(Err(not_open(&view.body, view.state)));
     }
-    if db.vertex(evid)?.is_some() {
+    if let Some(row) = db.vertex(evid)? {
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::DRAFT_CONTROL) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         return Err(KernelError::Corrupt(
             "a live draft batch record is absent from its intent log".into(),
         ));
@@ -529,9 +532,14 @@ pub async fn plan_batch_into_draft<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
+    if let Err(refusal) = witness_fresh_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.add_edge(
         edge_id(relation::IN_CASE, evid, view.vid),
         evid,

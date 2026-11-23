@@ -193,11 +193,41 @@ today_posture = "One publication replaying N planned intents with current-state 
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "batch census + DraftSet transition"
+derived_objects = "batch census + DraftSet transition + 1 common-key IntentOutcome for the promotion control, counted in the aggregate template byte budget"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
 complexity_witness = "O(N * legs) intent replay + 1 DraftSet LifecycleTransition + one final-overlay capacity fold O(snapshot vertices + journal legs), retaining conservative native row/insertion witnesses without extra writes. Independent lot-disposal drafts additionally validate distinct source/offset accounts in O(N log N + total_legs log N), retain each member's immutable-history lot fold, and, when its reviewed prefix differs from the current prefix, derive both retained and current sources and compare the complete source-account EntryRef/sequence history, book/account metadata and derived relief. These are existing full history scans/folds per member, not a constant-time admission claim. A singleton intrinsic Closing draft additionally folds the complete fiscal-year source and routing history at the retained observation and current prefix, comparing the full source commitment, exact legs and carrying amounts. Its promoter's Close permission uses the same current capability admission and transaction witness as Approve; no additional publication is introduced."
 notes = "intent replay with revalidation; bounded by both max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201). Lot review bytes and proposal digests remain unchanged through draft planning, scratch rehearsal and independent authorized promotion. Control-only or unrelated prefix advancement is permitted only with identical complete lot-source history and current policy; a changed and reversed acquisition still invalidates the review. The final current-prefix guard protects publication. Mixed, same-source and cross-source dependent lot drafts remain refused, and a draft review never authorizes an Agent to post to trunk. A Closing draft admits exactly one intrinsic member, preserving its source-bound review and approvals. The planner holds current Read and Post; only an independent Human promoter holding both Approve and Close can publish it. Native closing plans and commits retain their own Close requirement. Mixed Closing batches and dependent Closing drafts remain refused."
+
+[[operation_class]]
+id = "draft_lifecycle"
+name = "Draft opening, planning and discard"
+substrate_class = "Normal-key lifecycle record and common-key claim in one WriteTxn"
+substrate_transactions = "1 for a new lifecycle record; 0 for an authenticated retry or refusal"
+today_posture = "The DraftControl, common-key IntentOutcome and draft projection effects publish atomically"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "Open creates DraftSet, Entry and IntentOutcome vertices plus one IN_CASE edge. Plan (single, ordered batch, automatic selection or correction pair) and Discard create Entry and IntentOutcome vertices plus one IN_CASE edge; Discard also moves the existing state. Promotion is priced separately."
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "Existing ordered-draft reads and native scratch rehearsal remain history-dependent. Common-key admission adds metadata point witnesses and authenticated genesis or recovered-key coverage; each observed lifecycle record authenticates its immutable Entry and original atomic claim through historical point reads. No constant-time draft replay claim."
+notes = "One claim per lifecycle record, not per retained intent. Exact retries do not publish. Genuine pre-claim controls remain read-only retry anchors; deleted or rewritten modern claims cannot become legacy records. No shared mutable outcome head, extra transaction or additional full-frontier guard is introduced. This is a structural cost contract, not a measured latency result."
+
+[[operation_class]]
+id = "scenario_lifecycle"
+name = "Scenario opening, planning and discard"
+substrate_class = "Normal-key lifecycle record and common-key claim in one WriteTxn"
+substrate_transactions = "1 for a new lifecycle record; 0 for an authenticated retry or refusal"
+today_posture = "The ScenarioControl, common-key IntentOutcome and scenario projection effects publish atomically"
+today_transactions = 1
+barrier_count = 2
+today_barrier_count = 2
+derived_objects = "Open creates Scenario, Entry and IntentOutcome vertices plus one IN_CASE edge. Plan and Discard create Entry and IntentOutcome vertices plus one IN_CASE edge; Discard also moves the existing state. Counterfactual accounting remains confined to scratch replay."
+hot_object_exceptions = []
+external_authorities = "none"
+complexity_witness = "Existing source-prefix selection and scenario intent reads retain their history-dependent cost. Common-key admission uses metadata point witnesses and authenticated genesis or recovered-key coverage. Each lifecycle record observed by a view or retry additionally authenticates original Entry and claim snapshots; this does not make scenario replay constant-time."
+notes = "The lifecycle record key is distinct from its retained counterfactual intent key. Exact retries publish nothing and remain valid after discard. Immutable pre-claim records remain retry anchors, while damaged modern claims fail closed. No shared mutable outcome head, extra publication or measured latency claim."
 
 [[operation_class]]
 id = "period_creation"

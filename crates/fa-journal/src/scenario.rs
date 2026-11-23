@@ -26,6 +26,10 @@
 //! Nothing in a scenario is a trunk entry and a scenario is never promoted.
 //! Its fork sequence fixes the trunk prefix it replays, so later trunk
 //! commits never change what it computes.
+//!
+//! Lifecycle records reserve the ordinary successful-intent key atomically
+//! with their effects. A retry authenticates the original control and claim;
+//! immutable records written before that protocol remain valid retry anchors.
 
 use fa_intents::PostIntent;
 use fa_model::symbols::{label, property, relation};
@@ -368,6 +372,113 @@ fn record_proposal(
     })
 }
 
+/// Only the scenario writer's registered normal-key records participate in
+/// the shared successful-intent namespace. Admission and the history fold
+/// validate the bodies and their referenced effects.
+pub(crate) fn is_lifecycle_control(entry: &fa_model::Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::SCENARIO_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: ControlKind::SCENARIO_TRANSITION,
+        spec_body_digest,
+    } = &p.origin
+    else {
+        return false;
+    };
+    let Some(ControlPayload::LifecycleTransition {
+        object_ref,
+        from,
+        to,
+        proof_refs,
+        reason_code: 0,
+    }) = &p.control
+    else {
+        return false;
+    };
+    let (kind, discriminator) = match (*from, *to, p.extensions.as_slice(), proof_refs.as_slice()) {
+        (0, 1, [(fa_model::entry::SCENARIO_BODY_EXTENSION, bytes)], proofs) => {
+            let Ok(body) = ScenarioBody::decode(bytes) else {
+                return false;
+            };
+            if body.book_id != p.book_id
+                || body.owner != p.principal_ref
+                || body.vid() != *object_ref
+                || body.digest().ok().as_ref() != Some(spec_body_digest)
+                || body.canonical_bytes().ok().as_ref() != Some(bytes)
+                || !proofs
+                    .iter()
+                    .all(|proof| matches!(proof, TypedRef::Object(_)))
+            {
+                return false;
+            }
+            (Kind::Open, Vec::new())
+        }
+        (1, 1, [(fa_model::entry::SCENARIO_INTENT_EXTENSION, bytes)], []) => {
+            let Ok((intent, capability)) = decode_intent(bytes) else {
+                return false;
+            };
+            let inner = intent.proposal();
+            if capability.holder() != p.principal_ref
+                || inner.principal_ref != p.principal_ref
+                || inner.book_id != p.book_id
+                || inner.branch_id != Id128::TRUNK
+            {
+                return false;
+            }
+            (Kind::Plan, inner.idempotency_key.clone())
+        }
+        (1, 2, [], []) => (Kind::Discard, Vec::new()),
+        _ => return false,
+    };
+    p.idempotency_key == record_key(kind, *object_ref, &discriminator)
+}
+
+/// Retain the scenario's record identity while witnessing its common key
+/// in the same transaction that will publish the lifecycle effect.
+async fn witness_record<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    evid: VId,
+) -> Outcome<Option<VertexRow>> {
+    crate::outcome::witness_control_record(
+        txn,
+        db,
+        ctx,
+        book,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+        EntryClass::SCENARIO_CONTROL,
+    )
+    .await
+}
+
 /// Authority before any read (doctrine 8): the `ScenarioControl` row's
 /// preparer op for `kind`, held by the acting principal, current at the
 /// head. A scenario record is not a trunk entry, so an Agent may fork, run
@@ -485,7 +596,8 @@ fn conflict_with(row: &VertexRow) -> Refusal {
 
 /// The identical record's outcome, or the conflict (plan §4.9: exact bytes,
 /// else a seal-aware semantic comparison under the book key).
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
@@ -496,6 +608,9 @@ fn recorded_or_conflict(
         return Ok(Err(conflict_with(row)));
     }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(conflict_with(row)));
+    }
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
     }
@@ -585,19 +700,19 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
         }
         Err(WriteTxnError::Write(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
-        )) => match db.vertex(control_entry)? {
-            Some(row) => Ok(
-                recorded_or_conflict(book, &row, proposal)?.map(|recorded_at| ScenarioRecorded {
-                    scenario,
-                    control_entry,
-                    recorded_at,
-                    already_recorded: true,
-                }),
-            ),
-            None => Err(KernelError::Corrupt(
-                "scenario record identity spent but no live row".into(),
-            )),
-        },
+        )) => {
+            match db.vertex(control_entry)? {
+                Some(row) => Ok(recorded_or_conflict(db, book, &row, proposal)?.map(
+                    |recorded_at| ScenarioRecorded {
+                        scenario,
+                        control_entry,
+                        recorded_at,
+                        already_recorded: true,
+                    },
+                )),
+                None => Ok(Err(fcw("the scenario record key was claimed concurrently"))),
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -724,10 +839,17 @@ pub async fn open_scenario<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match witness_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = recorded {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| ScenarioRecorded {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ScenarioRecorded {
                 scenario,
                 control_entry: evid,
                 recorded_at,
@@ -773,6 +895,7 @@ pub async fn open_scenario<V: asupersync::fs::Vfs + Clone>(
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(scenario, vec![label::SCENARIO], props);
     in_case.add_edge(
         edge_id(relation::IN_CASE, evid, scenario),
@@ -967,7 +1090,10 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
         )
         .or_field_change("effective_date", vec![from.to_string()])));
     }
-    if db.vertex(evid)?.is_some() {
+    if let Some(row) = db.vertex(evid)? {
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::SCENARIO_CONTROL) {
+            return Ok(Err(conflict_with(&row)));
+        }
         return Err(KernelError::Corrupt(format!(
             "scenario `{name}` names no Plan record at {:032x}, which is live",
             evid.0
@@ -1155,6 +1281,24 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    let recorded = match witness_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = recorded {
+        txn.abort();
+        return Ok(
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ScenarioRecorded {
+                scenario,
+                control_entry: evid,
+                recorded_at,
+                already_recorded: true,
+            }),
+        );
+    }
     if let Err(r) = witness_open(&txn, db, book, name)? {
         txn.abort();
         return Ok(Err(r));
@@ -1162,6 +1306,7 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.add_edge(
         edge_id(relation::IN_CASE, evid, scenario),
         evid,
@@ -1208,9 +1353,23 @@ pub async fn discard_scenario<V: asupersync::fs::Vfs + Clone>(
     )?;
     let scenario = view.vid;
     let evid = record_vid(book, &proposal);
-    if let Some(row) = db.vertex(evid)? {
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let recorded = match witness_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = recorded {
+        txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| ScenarioRecorded {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| ScenarioRecorded {
                 scenario,
                 control_entry: evid,
                 recorded_at,
@@ -1219,13 +1378,8 @@ pub async fn discard_scenario<V: asupersync::fs::Vfs + Clone>(
         );
     }
     if view.state != ScenarioState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
-    }
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
-    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
         txn.abort();
-        return Ok(Err(r));
+        return Ok(Err(not_open(&view.body, view.state)));
     }
     if let Err(r) = witness_open(&txn, db, book, name)? {
         txn.abort();
@@ -1234,6 +1388,7 @@ pub async fn discard_scenario<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.compare_and_set_vertex_property(
         scenario,
         property::STATE,
@@ -1321,6 +1476,21 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
             return Err(KernelError::Corrupt(format!(
                 "scenario {:032x} has a member {:032x} that is not a ScenarioControl record",
                 scenario.0, e.src.0
+            )));
+        }
+        if !crate::outcome::verify_control_recorded(db, &src, &entry)?
+            || entry.proposal.book_id != body.book_id
+            || !matches!(
+                &entry.proposal.origin,
+                EntryOrigin::Control {
+                    control_kind: ControlKind::SCENARIO_TRANSITION,
+                    spec_body_digest,
+                } if *spec_body_digest == body.digest()?
+            )
+        {
+            return Err(KernelError::Corrupt(format!(
+                "scenario record {:032x} no longer matches its original control and key claim",
+                e.src.0
             )));
         }
         let Some(ControlPayload::LifecycleTransition {

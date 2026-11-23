@@ -59,6 +59,8 @@ mod disposal_tests;
 mod draft_authority_tests;
 #[path = "genesis/draft_correction.rs"]
 mod draft_correction_tests;
+#[path = "genesis/draft_outcome_keys.rs"]
+mod draft_outcome_keys;
 #[path = "genesis/engagement_outcome_keys.rs"]
 mod engagement_outcome_keys;
 #[path = "genesis/entry_storage.rs"]
@@ -93,6 +95,8 @@ mod register_capacity;
 mod registration_outcome_keys;
 #[path = "genesis/rule_draft_admission.rs"]
 mod rule_draft_admission_tests;
+#[path = "genesis/scenario_outcome_keys.rs"]
+mod scenario_outcome_keys;
 #[path = "genesis/scheduled_admission.rs"]
 mod scheduled_admission_tests;
 #[path = "genesis/settlement_scaling.rs"]

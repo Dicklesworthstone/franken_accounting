@@ -813,6 +813,128 @@ fn record_vid(book: &BookContext, proposal: &EntryPayload) -> VId {
     )
 }
 
+/// The registered draft records reserve the same successful-intent key as
+/// postings and batches. Only their canonical lifecycle shapes qualify for
+/// the immutable, claim-free historical retry exception.
+pub(crate) fn is_lifecycle_control(entry: &Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::DRAFT_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: ControlKind::DRAFT_TRANSITION,
+        spec_body_digest,
+    } = &p.origin
+    else {
+        return false;
+    };
+    let Some(ControlPayload::LifecycleTransition {
+        object_ref,
+        from,
+        to,
+        proof_refs,
+        reason_code: 0,
+    }) = &p.control
+    else {
+        return false;
+    };
+    let (kind, discriminator) = match (*from, *to, p.extensions.as_slice(), proof_refs.as_slice()) {
+        (0, 1, [(fa_model::entry::DRAFT_BODY_EXTENSION, bytes)], []) => {
+            let Ok(body) = DraftBody::decode(bytes) else {
+                return false;
+            };
+            if body.book_id != p.book_id
+                || body.owner != p.principal_ref
+                || body.vid() != *object_ref
+                || body.digest().ok().as_ref() != Some(spec_body_digest)
+                || body.canonical_bytes().ok().as_ref() != Some(bytes)
+            {
+                return false;
+            }
+            (Kind::Open, Vec::new())
+        }
+        (1, 1, [(fa_model::entry::DRAFT_INTENT_EXTENSION, bytes)], []) => {
+            let Ok(record) = decode_plan_record(bytes) else {
+                return false;
+            };
+            if record.members.iter().any(|(intent, capability, ..)| {
+                capability.holder() != p.principal_ref
+                    || intent.proposal().principal_ref != p.principal_ref
+                    || intent.proposal().book_id != p.book_id
+                    || intent.proposal().branch_id != Id128::TRUNK
+            }) {
+                return false;
+            }
+            (record.kind, record.discriminator)
+        }
+        (1, 2, [], [TypedRef::Vertex(_)]) => (Kind::Promote, Vec::new()),
+        (1, 3, [], []) => (Kind::Discard, Vec::new()),
+        _ => return false,
+    };
+    p.idempotency_key == record_key(kind, *object_ref, &discriminator)
+}
+
+async fn witness_record<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    evid: VId,
+) -> Outcome<Option<VertexRow>> {
+    crate::outcome::witness_control_record(
+        txn,
+        db,
+        ctx,
+        book,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        evid,
+        EntryClass::DRAFT_CONTROL,
+    )
+    .await
+}
+
+/// A fresh append/promotion must not share a key with any prior successful
+/// intent, even when that intent has a target-derived Entry identity.
+async fn witness_fresh_record<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
+    book: &BookContext,
+    proposal: &EntryPayload,
+    evid: VId,
+) -> Outcome<()> {
+    Ok(
+        match witness_record(txn, db, ctx, book, proposal, evid).await? {
+            Ok(None) => Ok(()),
+            Ok(Some(_)) => Err(crate::outcome::key_conflict()),
+            Err(refusal) => Err(refusal),
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_proposal(
     book: &BookContext,
@@ -1029,7 +1151,8 @@ fn conflict_with(row: &VertexRow) -> Refusal {
 
 /// The identical record's outcome, or the conflict (plan §4.9: exact bytes,
 /// else a seal-aware semantic comparison under the book key).
-fn recorded_or_conflict(
+fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
     book: &BookContext,
     row: &VertexRow,
     proposal: &EntryPayload,
@@ -1040,6 +1163,11 @@ fn recorded_or_conflict(
         return Ok(Err(conflict_with(row)));
     }
     let (stored, recorded_at) = crate::post::entry_of(row)?;
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Err(KernelError::Corrupt(
+            "draft record does not retain its original atomic intent outcome".into(),
+        ));
+    }
     if stored.proposal_digest == proposal.proposal_digest()? {
         return Ok(Ok(recorded_at));
     }
@@ -1178,16 +1306,17 @@ async fn finish<V: asupersync::fs::Vfs + Clone>(
             fgdb::WriteError::AlreadyLive { .. } | fgdb::WriteError::IdentitySpent { .. },
         )) => match db.vertex(control_entry)? {
             Some(row) => Ok(
-                recorded_or_conflict(book, &row, proposal)?.map(|recorded_at| DraftRecorded {
+                recorded_or_conflict(db, book, &row, proposal)?.map(|recorded_at| DraftRecorded {
                     draft,
                     control_entry,
                     recorded_at,
                     already_recorded: true,
                 }),
             ),
-            None => Err(KernelError::Corrupt(
-                "draft record identity spent but no live row".into(),
-            )),
+            None => Ok(Err(fcw(
+                "the draft record key was claimed concurrently",
+                "draft record",
+            ))),
         },
         Err(e) => Err(e.into()),
     }
@@ -1240,10 +1369,17 @@ pub async fn open_draft<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
-    if let Some(row) = txn.vertex(db, evid)? {
+    let previous = match witness_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        Ok(previous) => previous,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = previous {
         txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| DraftRecorded {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| DraftRecorded {
                 draft,
                 control_entry: evid,
                 recorded_at,
@@ -1290,6 +1426,7 @@ pub async fn open_draft<V: asupersync::fs::Vfs + Clone>(
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(draft, vec![label::DRAFT_SET], props);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, draft), evid, draft, vec![]);
     txn.write(db, in_case)?;
@@ -1730,7 +1867,10 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         }
         return Ok(Err(refusal));
     }
-    if db.vertex(evid)?.is_some() {
+    if let Some(row) = db.vertex(evid)? {
+        if !crate::entry_storage::has_class_mirror(&row, EntryClass::DRAFT_CONTROL) {
+            return Ok(Err(crate::outcome::key_conflict()));
+        }
         return Err(KernelError::Corrupt(format!(
             "draft `{name}` names no Plan record at {:032x}, which is live",
             evid.0
@@ -1785,6 +1925,10 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(r));
     }
+    if let Err(refusal) = witness_fresh_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
     if let Err(r) = witness_open(&txn, db, book, name)? {
         txn.abort();
         return Ok(Err(r));
@@ -1796,6 +1940,7 @@ pub async fn plan_into_draft<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.add_edge(edge_id(relation::IN_CASE, evid, draft), evid, draft, vec![]);
     txn.write(db, in_case)?;
     Ok(finish(db, ctx, book, txn, &proposal, draft, evid)
@@ -1842,9 +1987,23 @@ pub async fn discard_draft<V: asupersync::fs::Vfs + Clone>(
     )?;
     let draft = view.vid;
     let evid = record_vid(book, &proposal);
-    if let Some(row) = db.vertex(evid)? {
+    let txn_cx = ctx.txn();
+    let mut txn = db.begin(&txn_cx)?;
+    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
+        txn.abort();
+        return Ok(Err(r));
+    }
+    let previous = match witness_record(&mut txn, db, ctx, book, &proposal, evid).await? {
+        Ok(previous) => previous,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = previous {
+        txn.abort();
         return Ok(
-            recorded_or_conflict(book, &row, &proposal)?.map(|recorded_at| DraftRecorded {
+            recorded_or_conflict(db, book, &row, &proposal)?.map(|recorded_at| DraftRecorded {
                 draft,
                 control_entry: evid,
                 recorded_at,
@@ -1853,13 +2012,8 @@ pub async fn discard_draft<V: asupersync::fs::Vfs + Clone>(
         );
     }
     if view.state != DraftState::Open {
-        return Ok(Err(not_open(&view.body, view.state)));
-    }
-    let txn_cx = ctx.txn();
-    let mut txn = db.begin(&txn_cx)?;
-    if let Err(r) = capability_witness(&txn, db, book, &req.capability)? {
         txn.abort();
-        return Ok(Err(r));
+        return Ok(Err(not_open(&view.body, view.state)));
     }
     if let Err(r) = witness_open(&txn, db, book, name)? {
         txn.abort();
@@ -1868,6 +2022,7 @@ pub async fn discard_draft<V: asupersync::fs::Vfs + Clone>(
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.compare_and_set_vertex_property(
         draft,
         property::STATE,
@@ -2141,11 +2296,10 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
         Vec::new(),
     )?;
     let evid = record_vid(book, &proposal);
-    if staged.txn().vertex(db, evid)?.is_some() {
+    let (txn, _) = staged.parts()?;
+    if let Err(refusal) = witness_fresh_record(txn, db, ctx, book, &proposal, evid).await? {
         staged.abort();
-        return Err(KernelError::Corrupt(format!(
-            "draft `{name}` is open but its Promote record already exists"
-        )));
+        return Ok(Err(refusal));
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let draft = view.vid;
@@ -2162,6 +2316,7 @@ async fn promote_draft_in<V: asupersync::fs::Vfs + Clone>(
     );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::outcome::stage_control_tracked(&mut in_case, tracker, relation::IN_CASE, &entry, evid)?;
     in_case.compare_and_set_vertex_property(
         draft,
         property::STATE,
@@ -2388,6 +2543,19 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
         if entry.proposal.class != EntryClass::DRAFT_CONTROL {
             // A promoted entry: listed by its promotion's outcome.
             continue;
+        }
+        if !crate::outcome::verify_control_recorded(db, &src, &entry)?
+            || entry.proposal.book_id != body.book_id
+            || entry.proposal.origin
+                != (EntryOrigin::Control {
+                    control_kind: ControlKind::DRAFT_TRANSITION,
+                    spec_body_digest: body.digest()?,
+                })
+        {
+            return Err(KernelError::Corrupt(format!(
+                "draft record {:032x} does not retain its original lifecycle outcome",
+                src_vid.0
+            )));
         }
         let Some(ControlPayload::LifecycleTransition {
             object_ref,
