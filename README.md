@@ -2004,6 +2004,9 @@ fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt \
 ```
 
 Obtain the book's trusted public key and the account vertex ID independently.
+On a trusted copy of the book, run
+`fa explain register 1000 --period FY2026-P03 --book ./books/acme --json`.
+Prefix the hexadecimal digits in `data.account_vid` with `0x` for the verifier.
 Supply all three scope arguments to require that account and date interval.
 The inclusive day numbers 20513 and 20543 mean March 1 and March 31, 2026.
 A valid bundle for another account or interval returns exit 8. Omitting the

@@ -314,12 +314,19 @@ fn exercise_bundle() -> Result<()> {
             &book_key,
             "--receipt",
             "invoice.receipt",
+            "--account",
+            &account,
+            "--from",
+            &from,
+            "--to",
+            &to,
         ],
         8,
     )?;
     check(&changed, "checkpoint", "pass")?;
     check(&changed, "manifest", "fail")?;
     check(&changed, "production_receipt", "fail")?;
+    check(&changed, "recipient_scope", "unrun")?;
     Ok(())
 }
 
