@@ -272,6 +272,7 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
     }
     let verifier = authority(LaunchProfile::Agent, &["verify"]);
     for argv in [
+        vec!["book", "open", "--json"],
         vec!["book", "info", "--json"],
         vec!["chart", "list", "--json"],
         vec!["period", "list", "--json"],
@@ -768,7 +769,7 @@ fn only_an_actual_read_authorized_inline_period_plan_can_reach_the_book() {
 fn bound_handlers_refuse_file_paths_before_observing_the_book() {
     let authority = authority(
         LaunchProfile::Preparer,
-        &["read", "post", "verify", "produce"],
+        &["read", "post", "verify", "produce", "reconcile"],
     );
     let target = authority.book().parent().unwrap().join("preserve.txt");
     std::fs::write(&target, "preserve this host file").unwrap();
@@ -795,6 +796,19 @@ fn bound_handlers_refuse_file_paths_before_observing_the_book() {
         vec!["commit", "--plan", path, "--json"],
         vec!["replay", path, "--json"],
         vec!["certificate", "status", path, "--json"],
+        vec!["import", "qbo", path, "--account", "1000", "--json"],
+        vec!["import", "ofx", path, "--account", "1000", "--json"],
+        vec!["import", "bai2", path, "--account", "1000", "--json"],
+        vec![
+            "import",
+            "camt",
+            path,
+            "--bank-format",
+            "camt052",
+            "--account",
+            "1000",
+            "--json",
+        ],
         vec!["tb", "--certificate-out", path, "--json"],
     ] {
         for leased in [false, true] {

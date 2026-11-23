@@ -906,17 +906,16 @@ mod tests {
         sources[3].1 = sources[3]
             .1
             .replace("taken_on = \"2026-10-10\"", "taken_on = \"2026-09-01\"")
-            // A syntactically valid synthetic prior pin exercises the source
-            // revision boundary. This fixture does not execute that binary:
-            // every native input is still replayed by the actual linked DB.
+            // Record the previous substrate revision in the historical epoch.
+            // Every native input is still replayed by the linked database.
             .replace(
+                "1f854205dae212914a8a41ef53053b8b4d8e201a",
                 "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf",
-                "a323bd17ceaf81e97ce89e43d8d9f6d5151695cf",
             );
         assert!(
             sources[3]
                 .1
-                .contains("a323bd17ceaf81e97ce89e43d8d9f6d5151695cf")
+                .contains("b323bd17ceaf81e97ce89e43d8d9f6d5151695cf")
         );
         Epoch::new(book, sources).unwrap()
     }

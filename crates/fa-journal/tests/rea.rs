@@ -184,6 +184,64 @@ fn setup_book() -> (
 }
 
 #[test]
+fn rea_scans_only_controls_candidates_and_rejects_foreign_endpoints_at_their_frontier() {
+    let (rt, mut db, ctx, book, _) = setup_book();
+    let census_read = |db: &Database<MemVfs>, at, candidates| {
+        let guard = fa_journal::op_witness::begin();
+        let result = read_rea_at(db, &book, at);
+        let work = guard.finish();
+        assert_eq!((work.edge_scans, work.scanned_edges), (1, candidates));
+        result
+    };
+    let before = db.frontier().unwrap();
+    let unrelated = db.edges_at(before).unwrap();
+    assert!(!unrelated.is_empty());
+    assert!(
+        unrelated
+            .iter()
+            .all(|e| e.entry.relation != relation::CONTROLS)
+    );
+    let original = census_read(&db, before, 0).unwrap();
+
+    // Neither account belongs to the journaled REA endpoint set. Starting an
+    // adjacency walk at the declared parties/entities would miss this edge.
+    let eid = fgdb_types::EId(0xc0117);
+    let src = account_vid(book.book_id, "1010");
+    let dst = account_vid(book.book_id, "2010");
+    let mut plant = fgdb::WriteBatch::new(relation::CONTROLS);
+    plant.add_edge(eid, src, dst, vec![]);
+    rt.block_on(db.write(&ctx.commit(), plant)).unwrap();
+    let planted = db.frontier().unwrap();
+    let rejection = format!(
+        "CONTROLS edge {:032x} ({:032x} -> {:032x}) violates control-edge semantics",
+        eid.0, src.0, dst.0
+    );
+    let expect_rejection = |db: &Database<MemVfs>, candidates| {
+        let error = census_read(db, planted, candidates).unwrap_err();
+        assert!(
+            matches!(error, fa_journal::KernelError::Corrupt(message) if message.contains(&rejection))
+        );
+    };
+    expect_rejection(&db, 1);
+    assert_eq!(census_read(&db, before, 1).unwrap(), original);
+
+    let mut retire = fgdb::WriteBatch::new(relation::CONTROLS);
+    retire.delete_edge(eid);
+    rt.block_on(db.write(&ctx.commit(), retire)).unwrap();
+    let after = db.frontier().unwrap();
+    let restored = census_read(&db, after, 2).unwrap();
+    assert_eq!(
+        restored,
+        fa_journal::rea::ReaSnapshot {
+            known_at: after,
+            ..original
+        }
+    );
+    expect_rejection(&db, 2);
+    assert_eq!(db.frontier().unwrap(), after);
+}
+
+#[test]
 fn rea_objects_party_dimensions_instruments_and_temporal_closure() {
     let (rt, mut db, ctx, book, usd) = setup_book();
     let controller = principal_vid("controller");
@@ -690,7 +748,10 @@ fn rea_objects_party_dimensions_instruments_and_temporal_closure() {
     assert_eq!(chart_snap.accounts().len(), 3);
 
     // Read REA snapshot and check CONTROLS semantics + temporal closure across dates!
+    let census = fa_journal::op_witness::begin();
     let rea_snap = read_rea_at(&db, &book, head).expect("read_rea_at");
+    let work = census.finish();
+    assert_eq!((work.edge_scans, work.scanned_edges), (1, 1));
     assert_eq!(rea_snap.parties.len(), 2);
     assert_eq!(rea_snap.instruments.len(), 1);
     assert_eq!(rea_snap.legal_entities.len(), 2);

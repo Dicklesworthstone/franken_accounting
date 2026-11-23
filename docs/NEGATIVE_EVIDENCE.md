@@ -4306,3 +4306,13 @@ compares all seven state payloads and signed checkpoints with literal
 recomputation. A changed ancestor and a checkpoint signed by another key
 at the same accounting coordinate both require the literal path. Their
 refusals preserve the frontier.
+
+For `query_procedure`, the REA reader was scanning all historical edges to
+validate one relation, `CONTROLS`. FrankenGraphDB revision `1f854205` indexes
+each relation's edge runs in authenticated blocks. The reader now asks for that
+relation at the selected journal prefix. The unchanged scale test measured one
+frontier read and zero candidate edges at both sizes. Its vertex scan still
+visited 4,174 rows at 1,000 entries and 40,473 rows at 10,000 entries. A
+separate history with an inserted and retired control edge charged one and two
+candidates respectively. The benchmark smoke runner completed all nine cost
+witnesses. Its 19 SLO manifests still have no measured latency baseline.

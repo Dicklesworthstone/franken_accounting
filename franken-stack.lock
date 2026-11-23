@@ -28,7 +28,7 @@ package_patterns = ["fgdb", "fgdb-*"]
 production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
 production_features = []
 source = "git+https://github.com/Dicklesworthstone/frankengraphdb"
-rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+rev = "1f854205dae212914a8a41ef53053b8b4d8e201a"
 version = "0.0.1 (unpublished, publish = false)"
 crates = ["fgdb", "fgdb-types", "fgdb-delta-types", "fgdb-gql", "fgdb-crypto", "fgdb-bigint", "fgdb-sim"]
 role = "substrate: Chronicle commit stream, bounded WriteTxn with point-read witnesses, native GQL, certified reads"

@@ -1,0 +1,19 @@
+# The court's computed result is an external comparison value for trace.fifo.
+[[fact]]
+id = "MINC-FIFO-RESULT"
+provenance = "sourced"
+source = "SRC-MINC-001"
+anchor_kind = "page"
+anchor = "p10:l5-11"
+quote_sha256 = "1d220ac87bf8d1cf65d78b45980b164ff730bff94bf20f1ec7038e8e77c5c40b"
+about_scope = "period:2024-09"
+granularity = "dated_aggregate"
+
+[[value]]
+fact = "MINC-FIFO-RESULT"
+ordinal = 1
+literal = "$10,203.54"
+rule = "scale"
+param = 0
+value = "1020354"
+unit = "USD"

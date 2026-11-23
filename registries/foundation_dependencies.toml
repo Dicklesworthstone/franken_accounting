@@ -61,14 +61,14 @@ tracking = "fa-dbx"
 
 [[capability]]
 row = "R-API"
-capability = "`fgdb::Database` embedded API: `WriteBatch`, `WriteTxn` (`begin`, point reads, `write_ordered`, `refresh_snapshot`, `commit`), `Database::query`, `execute_certified`, `replay`, `read_session`, `subscribe_native`, `delta_since`/`ensure_delta_window`, `open_memory`, `bulk_load`"
+capability = "`fgdb::Database` embedded API: `WriteBatch`, `WriteTxn` (`begin`, point reads, `write_ordered`, `refresh_snapshot`, `commit`), `Database::query`, `execute_certified`, `edges_by_relation_at`, `replay`, `read_session`, `subscribe_native`, `delta_since`/`ensure_delta_window`, `open_memory`, `bulk_load`"
 status = "Live (single-writer handle)"
 posture = "the legacy `execute_gql*`/`BoundPlan` path is never called"
 switch_over = "—"
 foundation = "frankengraphdb"
 upstream = "live"
 fa_status = "live"
-consumed_apis = ["WriteBatch", "WriteTxn", "execute_certified", "replay", "delta_since", "ensure_delta_window", "open_memory"]
+consumed_apis = ["WriteBatch", "WriteTxn", "execute_certified", "edges_by_relation_at", "replay", "delta_since", "ensure_delta_window", "open_memory"]
 unconsumed_apis = ["Database::query", "read_session", "subscribe_native", "bulk_load"]
 conformance_tests = ["a_live_identity_is_refused_already_live_by_autocommit_and_while_staging", "a_transaction_behind_the_frontier_is_refused_snapshot_advanced_at_staging", "refresh_snapshot_refuses_first_committer_wins_iff_a_witnessed_row_changed", "a_witnessed_row_changed_after_staging_loses_first_committer_wins_at_commit", "delta_since_returns_every_committed_batch_in_commit_order", "open_memory_and_directory_books_produce_identical_commits_and_certified_reads", "write_ordered_publishes_all_or_none_across_every_crash_point"]
 

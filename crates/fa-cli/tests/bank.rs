@@ -2192,31 +2192,35 @@ fn missing_authority_and_agent_import_refuse_before_reading_missing_input() {
     ] {
         let authority =
             LaunchAuthority::new(f.book.clone(), None, "bank-bound-agent", profile, ops).unwrap();
-        let args = [
-            "bank",
-            "import",
-            "-",
-            "--bank-format",
-            "csv",
-            "--account",
-            "1000",
-            "--json",
-        ]
-        .map(str::to_string);
-        let (code, captured) = fa_with_authority(
-            &args,
-            Files {
-                cwd: Some(f.dir.clone()),
-                stdin: Stdin::Missing,
-            },
-            &authority,
-            true,
-        );
-        assert_eq!(code, 7, "{captured:?}");
-        let output = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
-        assert_eq!(text(data(&output), "refusal_id"), expected);
-        assert!(!captured.stdout.contains("no input reached the daemon"));
-        assert_eq!(head(&f.book), before);
+        for words in [
+            &[
+                "bank",
+                "import",
+                "-",
+                "--bank-format",
+                "csv",
+                "--account",
+                "1000",
+                "--json",
+            ][..],
+            &["import", "qbo", "-", "--account", "1000", "--json"][..],
+        ] {
+            let args: Vec<_> = words.iter().map(|word| (*word).to_string()).collect();
+            let (code, captured) = fa_with_authority(
+                &args,
+                Files {
+                    cwd: Some(f.dir.clone()),
+                    stdin: Stdin::Missing,
+                },
+                &authority,
+                true,
+            );
+            assert_eq!(code, 7, "{captured:?}");
+            let output = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
+            assert_eq!(text(data(&output), "refusal_id"), expected);
+            assert!(!captured.stdout.contains("no input reached the daemon"));
+            assert_eq!(head(&f.book), before);
+        }
     }
 }
 
@@ -2372,6 +2376,14 @@ fn one_entry_with_multiple_cash_legs_preserves_each_selected_ordinal() {
 /// SWIFT profile and the pipe profile).
 #[test]
 fn every_format_imports_via_cli() {
+    fn named_import<'a>(selector: &'a str, path: &'a str, profiles: &[&'a str]) -> Vec<&'a str> {
+        let mut argv = vec!["import", selector, path, "--account", "1000"];
+        for profile in profiles {
+            argv.extend(["--bank-format", *profile]);
+        }
+        argv
+    }
+
     let f = Fixture::new();
     f.post("wire-sale", "2026-03-05", "debit", "125.00", "WIRE-125");
     let camt = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2432,7 +2444,91 @@ fn every_format_imports_via_cli() {
         ("statement-note.mt940", "mt940", mt940_with_note.as_str()),
         ("statement-pipe.mt940", "mt940", mt940_pipe),
     ] {
-        let imported = f.import(name, format, raw);
+        let imported = if matches!(format, "ofx" | "bai2" | "camt052" | "camt053") {
+            let path = f.file(name, raw);
+            let before = head(&f.book);
+            let refused = |words: &[&str], refusal: Option<&str>| {
+                let (status, error) = run(&f.book, words);
+                assert_eq!(status, 2, "{words:?}: {}", error.render());
+                assert_eq!(
+                    data(&error).get("refusal_id").and_then(Json::as_str),
+                    refusal,
+                    "{words:?}: {}",
+                    error.render()
+                );
+                assert_eq!(head(&f.book), before);
+            };
+            let received = if matches!(format, "camt052" | "camt053") {
+                let wrong = if format == "camt052" {
+                    "camt053"
+                } else {
+                    "camt052"
+                };
+                refused(&named_import("camt", &path, &[]), None);
+                refused(&named_import("camt", &path, &["ofx"]), None);
+                refused(&named_import("camt", &path, &[format, wrong]), None);
+                refused(&named_import("camt", &path, &[wrong]), Some("FA-REF-083"));
+                ok(&f.book, &named_import("camt", &path, &[format]))
+            } else {
+                let wrong = if format == "ofx" { "bai2" } else { "ofx" };
+                refused(&named_import(format, &path, &["csv"]), None);
+                refused(&named_import(wrong, &path, &[]), Some("FA-REF-083"));
+                if format == "ofx" {
+                    refused(&["import", "unknown-format", &path], None);
+                    refused(&named_import("qbo", &path, &["csv"]), None);
+                    for selector in ["bai2", "ofx", "qbo", "camt"] {
+                        let (code, error) = run(
+                            &f.book,
+                            &[
+                                "import",
+                                selector,
+                                "--account",
+                                "1000",
+                                "--bank-format",
+                                "camt053",
+                            ],
+                        );
+                        assert_eq!(code, 2, "{}", error.render());
+                        assert!(
+                            text(data(&error), "message").contains("requires a statement file"),
+                            "{}",
+                            error.render()
+                        );
+                    }
+                    assert_eq!(head(&f.book), before);
+                    let qbo = f.file("statement.qbo", raw);
+                    let receipt = ok(&f.book, &["import", "qbo", &qbo, "--account", "1000"]);
+                    let repeated = ok(&f.book, &["import", "ofx", &path, "--account", "1000"]);
+                    assert_eq!(
+                        text(data(&receipt), "manifest_oid"),
+                        text(data(&repeated), "manifest_oid")
+                    );
+                    assert_eq!(
+                        data(&repeated).get("already_recorded"),
+                        Some(&Json::Bool(true))
+                    );
+                    receipt
+                } else {
+                    ok(&f.book, &["import", format, &path, "--account", "1000"])
+                }
+            };
+            assert_eq!(
+                data(&received).get("already_recorded"),
+                Some(&Json::Bool(false))
+            );
+            let replay = f.import(name, format, raw);
+            assert_eq!(
+                data(&replay).get("already_recorded"),
+                Some(&Json::Bool(true))
+            );
+            assert_eq!(
+                text(data(&replay), "manifest_oid"),
+                text(data(&received), "manifest_oid")
+            );
+            received
+        } else {
+            f.import(name, format, raw)
+        };
         println!("import {name} {format}: {}", imported.render());
         assert_eq!(text(data(&imported), "bank_format"), format, "{name}");
         let before = head(&f.book);

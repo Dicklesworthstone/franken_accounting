@@ -14,7 +14,7 @@
 #   4. planted `#[derive(Serialize, Deserialize)]` on a first-party type;
 #   5. planted missing `#![forbid(unsafe_code)]` at a crate root;
 #   6. planted duplicate `fnx-classes` package ID in a posture closure;
-#   7. direct full-book scans, including production siblings after test items.
+#   7. direct table and relation scans, including production siblings after test items.
 # =============================================================================
 set -u
 
@@ -193,10 +193,12 @@ pub fn unmetered(db: &Db) { assert!(db
     .edges_at(42).is_ok()); }
 #[cfg(not(test))]
 pub fn production_only(db: &Db) { let _ = db /* live handle */ .vertices(); }
+pub fn relation_scan(db: &Db) { let _ = db.edges_by_relation_at(rel, seq); }
 RS
 run_case case7-siblings-raw "$SIBLINGS" "$SIBLINGS/foundations"
 expect_fail "production macro scan after test items" ".edges_at()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:10:"
 expect_fail "production-only method call after test items" ".vertices()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:12:"
+expect_fail "relation scan bypasses candidate accounting" ".edges_by_relation_at()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:13:"
 
 # Only the central wrappers may issue raw reads. UFCS on the substrate,
 # including an explicitly renamed import, must obey the same contract.

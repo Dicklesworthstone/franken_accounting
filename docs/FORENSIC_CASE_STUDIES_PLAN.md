@@ -856,7 +856,9 @@ key resolves.
 #### 3.2b Naming conventions
 
 - **Case directories** under `crates/fa-oracles/cases/`: `worldcom` (W), `xbrl` (X: SunPower, Microsoft
-  and RH as one case), `enron` (E), `lehman` (L), `blmis` (M), `mergers` (C), and `_selftest`.
+  and RH as one case), `enron` (E), `lehman` (L), `blmis` (M), `mergers` (C), `minc` (I), and `_selftest`.
+  The Minc source ledger records the bankruptcy court's FIFO worksheets and its result. The
+  product tie-out uses the two opening assumptions and both final-debit alternatives in fa-yugf.100.
 - **Book-variant files** `books/<stem>.toml`. A stem is `<kind>` or `<kind>-<suffix>`, where the kind
   (`native`, `migration`, `statement`, `ledger`) is the prefix: e.g. `statement-bridge`,
   `statement-sunpower`.
@@ -3382,7 +3384,7 @@ found in the fa-lantern and fa-gen tests. The closure test checks that the named
 | cutoff (1) | period_boundary on Enron (B) | on WorldCom F9, F10, F12 (§6.4 W-D-06) | — |
 | aging (2) | — | — | open_items, inventory: no sourced open items or inventory → fa-gen `CleanRetailer`, `ChannelStuffing` |
 | graph (13) | related_party_exposure, circular_flows, party_communities (Enron, conditional on E5) | sharpened E5: related_party_exposure (D) and party_circular_flows (N) (§7.2 E5/E6) | round_trips, structuring, layering, party_layering, communities, shell_signature, concentration, identity_resolution: no sourced party money flows → fa-gen `ShellNetwork`, `KitingBank`, `RoundTripKiting`. party_communities: tier P → X. ponzi_motif: population-relative over all investors; 13 accounts of thousands → X; fa-gen `Ponzi`, `PonziCohortRedemption` |
-| trace (9) | — | — | No public source gives a commingled-account series together with a court's computed traceable amount. Forcing the trustee's transfer rule through `trace.libr` would mislabel the law, which is the reasoning of H5. → research R-TRACE (§12.2), else fa-gen tests |
+| trace (9) | — | — | Minc docket 95 gives a commingled-account series and the court's FIFO result. Source and amount verified in R-TRACE. Product tie-out for `trace.fifo` is tracked in fa-yugf.100. The BLMIS trustee transfer rule has its own semantics (H5). |
 | recon (5) | assertion_drift (R) | assertion_drift on the native WorldCom book (§6.4 W-T-03/W-D-07) | attested_register_compare: duplicates assertion_drift on attested cells (`adds_no_claim`). intercompany, lapping, bank_statement_drift: no sourced data → fa-gen `KitingBank` and bank tests |
 | solvency (2) | — | — | balance_sheet_test on a statement book only reads back posted equity (`adds_no_claim`); cash_flow_test has no sourced obligations → fa-gen |
 | lookback (2) | fraudulent_transfer: no claim (H5) | preferences (insider window) only if E5 sources the facts (§7.2 E5/E6) | fraudulent_transfer's insolvency badge reads book-wide running balances (`cutoff.rs:2299-2387`): tier A |

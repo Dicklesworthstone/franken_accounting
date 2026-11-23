@@ -20,7 +20,7 @@
 #      `src/bin/*.rs`) carries `#![forbid(unsafe_code)]`.
 #   6. single-fnx-classes: every shipped posture (`fa`, `fa-cli`, `fad`,
 #      `fa-mcp`) resolves `fnx-classes` to a single package ID.
-#   7. metered-substrate-scans: direct full-book reads in metered production
+#   7. metered-substrate-scans: whole-table and relation scans in metered production
 #      paths must go through the counted wrappers in `fa_journal::op_witness`.
 #
 # Every source violation reports `<relative-file>:<line>` in its `FAIL` line.
@@ -259,7 +259,7 @@ if fnx_hits:
 elif not unruns:
     passes.append("single-fnx-classes — every shipped posture resolves fnx-classes to a single package ID")
 
-# 7. metered-substrate-scans: no direct .vertices/.vertices_at/.edges/.edges_at
+# 7. metered-substrate-scans: no direct whole-table or relation-scoped scans
 # bypassing fa_journal::op_witness in metered kernel/register/notary/lantern paths
 # (bead fa-0hs4.27).
 metered_files = []
@@ -285,7 +285,7 @@ id: unmetered-scan
 language: Rust
 severity: hint
 rule:
-  regex: '^(r#)?(vertices|edges)(_at)?$'
+  regex: '^(r#)?((vertices|edges)(_at)?|edges_by_relation_at)$'
   any:
     - kind: field_identifier
       inside:
@@ -386,8 +386,9 @@ central_reads = {
     "txn_vertices": ("txn", "vertices"),
     "edges": ("db", "edges"),
     "edges_at": ("db", "edges_at"),
+    "edges_by_relation_at": ("db", "edges_by_relation_at"),
 }
-scan_words = re.compile(r"\b(?:vertices|edges)(?:_at)?\b")
+scan_words = re.compile(r"\b(?:(?:vertices|edges)(?:_at)?|edges_by_relation_at)\b")
 candidates = [str(p.relative_to(root)) for p in metered_files if scan_words.search(p.read_text(encoding="utf-8"))]
 scan_complete = True
 matches = []

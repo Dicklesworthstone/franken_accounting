@@ -1382,7 +1382,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fgdb"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-beacon",
@@ -1399,7 +1399,7 @@ dependencies = [
 [[package]]
 name = "fgdb-beacon"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-types",
 ]
@@ -1407,12 +1407,12 @@ dependencies = [
 [[package]]
 name = "fgdb-bigint"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 
 [[package]]
 name = "fgdb-calibrate"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-claim",
@@ -1425,7 +1425,7 @@ dependencies = [
 [[package]]
 name = "fgdb-chronicle"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-crypto",
@@ -1435,12 +1435,12 @@ dependencies = [
 [[package]]
 name = "fgdb-claim"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 
 [[package]]
 name = "fgdb-codec"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-types",
@@ -1449,7 +1449,7 @@ dependencies = [
 [[package]]
 name = "fgdb-collections"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-types",
  "fgdb-unsafe-arena",
@@ -1458,12 +1458,12 @@ dependencies = [
 [[package]]
 name = "fgdb-crypto"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 
 [[package]]
 name = "fgdb-delta-types"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-bigint",
  "fgdb-types",
@@ -1472,7 +1472,7 @@ dependencies = [
 [[package]]
 name = "fgdb-evidence"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-claim",
  "fgdb-types",
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "fgdb-gql"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-crypto",
  "fgdb-delta-types",
@@ -1491,7 +1491,7 @@ dependencies = [
 [[package]]
 name = "fgdb-prism"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-crypto",
  "fgdb-delta-types",
@@ -1504,7 +1504,7 @@ dependencies = [
 [[package]]
 name = "fgdb-reference"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-crypto",
  "fgdb-delta-types",
@@ -1514,7 +1514,7 @@ dependencies = [
 [[package]]
 name = "fgdb-sim"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb",
@@ -1530,7 +1530,7 @@ dependencies = [
 [[package]]
 name = "fgdb-sketch"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-collections",
@@ -1540,7 +1540,7 @@ dependencies = [
 [[package]]
 name = "fgdb-strata"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-codec",
@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "fgdb-types"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
 ]
@@ -1560,7 +1560,7 @@ dependencies = [
 [[package]]
 name = "fgdb-unsafe-arena"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "fgdb-types",
 ]
@@ -1568,7 +1568,7 @@ dependencies = [
 [[package]]
 name = "fgdb-warden"
 version = "0.0.1"
-source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=b323bd17ceaf81e97ce89e43d8d9f6d5151695cf#b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb?rev=1f854205dae212914a8a41ef53053b8b4d8e201a#1f854205dae212914a8a41ef53053b8b4d8e201a"
 dependencies = [
  "asupersync",
  "fgdb-delta-types",

@@ -263,19 +263,50 @@ enum Source<'a> {
 }
 
 fn import(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let [_, _, path] = args.positional.as_slice() else {
-        return Err(usage(
-            "bank import requires one statement file (or - for stdin)",
-            IMPORT_EXAMPLE,
-        ));
+    let (path, format) = match args.positional.as_slice() {
+        [_, _, path] => {
+            let name = required(args, "--bank-format", IMPORT_EXAMPLE)?;
+            let format = BankFormat::parse_name(name).ok_or_else(|| {
+                usage(format!("unsupported bank format `{name}`"), IMPORT_EXAMPLE)
+            })?;
+            (path, format)
+        }
+        [_, _, profile, path] if profile == "camt" => {
+            let format = match args.flag("--bank-format") {
+                Some("camt052") => BankFormat::Camt052,
+                Some("camt053") => BankFormat::Camt053,
+                _ => {
+                    return Err(usage(
+                        "import camt requires --bank-format camt052 or camt053",
+                        "select camt052 for an intraday account report or camt053 for an account statement",
+                    ));
+                }
+            };
+            (path, format)
+        }
+        [_, _, profile, path] if matches!(profile.as_str(), "qbo" | "ofx" | "bai2") => {
+            if args.flag("--bank-format").is_some() {
+                return Err(usage(
+                    format!("import {profile} already selects the bank parser"),
+                    "omit --bank-format and name the statement and its cash account",
+                ));
+            }
+            (
+                path,
+                if profile == "bai2" {
+                    BankFormat::Bai2
+                } else {
+                    BankFormat::Ofx
+                },
+            )
+        }
+        _ => {
+            return Err(usage(
+                "bank import requires one statement file (or - for stdin)",
+                IMPORT_EXAMPLE,
+            ));
+        }
     };
-    let format_name = required(args, "--bank-format", IMPORT_EXAMPLE)?;
-    let format = BankFormat::parse_name(format_name).ok_or_else(|| {
-        usage(
-            format!("unsupported bank format `{format_name}`"),
-            IMPORT_EXAMPLE,
-        )
-    })?;
     statement(ctx, args, format, Source::File(path))
 }
 

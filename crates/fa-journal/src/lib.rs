@@ -445,6 +445,18 @@ pub mod op_witness {
         Ok(rows)
     }
 
+    /// Historical relation read. Charge all candidate statements examined,
+    /// including statements that produce no visible edge at this frontier.
+    pub fn edges_by_relation_at<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+        relation: fgdb_delta_types::RelationId,
+        at: fgdb_types::CommitSeq,
+    ) -> Result<Vec<fgdb::EdgeRecord>, fgdb::ReadError> {
+        let read = db.edges_by_relation_at(relation, at)?;
+        record_edge_scan(read.candidate_edges);
+        Ok(read.edges)
+    }
+
     #[inline]
     pub fn record_register_cell_touch(cells: u32) {
         update(|c| c.register_cell_touches = c.register_cell_touches.saturating_add(cells));

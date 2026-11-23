@@ -1,0 +1,84 @@
+# In re Minc, No. 24-48965 (Bankr. E.D. Mich.), docket 95, July 25, 2025.
+# https://apps.mieb.uscourts.gov/files/opinions/24-48965%20-%2007-25-2025.pdf
+# PDF sha256 3df8f879112537a65a4264ab6ff675aad7ac95897ca04824cfd6f851360b7fa3
+# Appendices 1 and 2, PDF pp. 44–49 and 51–56. Sole account, USD cents.
+# Observation date | printed transaction date or interval | movement | cents (tab-separated).
+# Observation dates mark the opening, a statement close, or the petition cutoff.
+# The February 2024 movements use the following explicit March 25 closing balance.
+# The January table prints December 13 for its $1,562 credit. Preserve that text.
+# July 24 and August 23 are the last dated activity before the next opening.
+# April 23, 2024 shows $32,313.76; its printed components and movements sum to
+# $32,313.78. Both later petition balances reconcile to the gross movements.
+# Gross debits combine the two source columns where necessary. The court's
+# attribution of debits and its computed source balances are excluded from the inputs.
+2023-03-24	03/24/23	opening	3760302
+2023-04-25	03/24/23–03/28/23	debit	27499
+2023-04-25	04/03/23	other	167584
+2023-04-25	04/03/23–04/11/23	debit	855024
+2023-04-25	04/12/23	social	150300
+2023-04-25	04/12/23–04/17/23	debit	26811
+2023-04-25	04/18/23	other	433333
+2023-04-25	04/18/23–04/24/23	debit	274169
+2023-05-23	04/26/23–05/01/23	debit	114366
+2023-05-23	05/02/23	other	233333
+2023-05-23	05/02/23–05/09/23	debit	556844
+2023-05-23	05/10/23	social	150300
+2023-05-23	05/12/23–05/16/23	debit	69201
+2023-05-23	05/17/23	other	343333
+2023-05-23	05/18/23–05/23/23	debit	379783
+2023-06-26	unknown	social	150300
+2023-06-26	unknown	other	14
+2023-06-26	unknown	debit	647257
+2023-07-26	06/27/23–06/30/23	debit	32416
+2023-07-26	07/12/23	social	150300
+2023-07-26	07/17/23–07/26/23	debit	80709
+2023-07-26	07/26/23	other	20
+2023-08-23	08/09/23	social	150300
+2023-08-23	08/16/23–08/23/23	debit	54495
+2023-08-23	08/23/23	other	19
+2023-09-26	08/28/23	debit	26214
+2023-09-26	09/13/23	social	150300
+2023-09-26	09/15/23–09/26/23	debit	80709
+2023-09-26	09/26/23	other	24
+2023-10-25	10/11/23	social	150300
+2023-10-25	10/13/23	social	13500
+2023-10-25	10/16/23	social	900
+2023-10-25	10/25/23	other	21
+2023-10-25	09/29/23–10/23/23	debit	70739
+2023-11-24	11/08/23	social	151900
+2023-11-24	10/26/23–11/20/23	debit	62317
+2023-11-24	11/24/23	other	22
+2023-11-24	unknown	other	10000
+2023-11-24	unknown	debit	28392
+2023-12-26	11/28/23	debit	26214
+2023-12-26	12/13/23	social	151900
+2023-12-26	12/18/23–12/26/23	debit	54495
+2023-12-26	12/26/23	other	24
+2024-01-25	12/27/23	debit	26214
+2024-01-25	12/13/23	social	156200
+2024-01-25	01/16/24–01/23/24	debit	54495
+2024-01-25	01/25/24	other	23
+2024-03-25	02/14/24	social	156200
+2024-03-25	02/16/24–02/23/24	debit	54495
+2024-03-25	02/25/24	other	26
+2024-03-25	03/13/24	social	156200
+2024-03-25	03/18/24–03/25/24	debit	54495
+2024-03-25	03/25/24	other	23
+2024-04-23	unknown	social	156200
+2024-04-23	unknown	debit	54495
+2024-04-23	unknown	other	25
+2024-05-23	05/08/24	social	156200
+2024-05-23	05/16/24–05/23/24	debit	54495
+2024-05-23	05/23/24	other	27
+2024-06-26	06/12/24	social	156200
+2024-06-26	06/17/24–06/24/24	debit	54495
+2024-06-26	06/26/24	other	31
+2024-07-24	07/10/24	social	156200
+2024-07-24	07/17/24–07/23/24	debit	54495
+2024-07-24	07/24/24	other	27
+2024-08-23	08/14/24	social	156200
+2024-08-23	08/15/24–08/23/24	debit	54495
+2024-08-23	08/23/24	other	29
+2024-09-19	09/11/24	social	156200
+2024-09-19	unknown, before petition	schedule-debit	15566
+2024-09-19	unknown, before petition	trustee-debit	40771

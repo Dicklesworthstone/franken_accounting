@@ -502,6 +502,46 @@ fn first_try_spellings_matrix() {
     assert!(run.stdout.contains("fa post"), "{}", run.stdout);
 }
 
+#[test]
+fn book_open_reports_the_selected_book_and_refuses_a_missing_one() {
+    let (dir, book) = posted_book("book-open");
+    let open = ["book", "open", "--json"];
+    let opened = fa(Some(&book), &open);
+    log("book-open", &open, &opened);
+    assert_eq!(opened.code, 0, "{}", opened.stderr);
+    let identity = json::parse(opened.stdout.trim()).unwrap();
+    assert_eq!(identity.get("event").and_then(Json::as_str), Some("book"));
+    let book_id = identity.get("data").unwrap().get("book_id").unwrap();
+    assert_eq!(identity.get("book"), Some(book_id));
+    let info = fa(Some(&book), &["book", "info", "--json"]);
+    assert_eq!(info.code, 0, "{}", info.stderr);
+    assert_eq!(opened.stdout, info.stdout);
+
+    let caps = fa(None, &["capabilities", "--json"]);
+    assert_eq!(caps.code, 0, "{}", caps.stderr);
+    let caps = json::parse(caps.stdout.trim()).unwrap();
+    let aliases = caps
+        .get("data")
+        .unwrap()
+        .get("aliases")
+        .unwrap()
+        .as_arr()
+        .unwrap();
+    assert!(
+        aliases.iter().any(
+            |alias| alias.get("name").and_then(Json::as_str) == Some("book open")
+                && alias.get("expands").and_then(Json::as_str) == Some("book info")
+        )
+    );
+
+    let missing = dir.join("missing-book");
+    let refused = fa(Some(&missing), &open);
+    log("missing-book-open", &open, &refused);
+    assert_eq!(refused.code, 4, "{}", refused.stdout);
+    assert_eq!(events(&refused.stdout), ["error"]);
+    assert!(!missing.exists());
+}
+
 /// Plan §15.3 spells some verbs shorter than the registry names them (`fa
 /// cap`, `fa doc`, `fa revalue`) or verb-first (`fa book verify`, `fa chart
 /// open-account`, `fa export csv`, `fa sample random`); each is a
@@ -726,10 +766,6 @@ fn bare_fa_prints_triage_and_exits_zero() {
 fn every_plan_leaf_present_or_registered() {
     const PENDING: &[(&str, &str)] = &[
         (
-            "fa book open",
-            "fa-waow: the plan gives it no meaning beyond fa book info",
-        ),
-        (
             "fa bundle show",
             "fa-waow: the standalone fa-verify reads a .fab (fa-cli is surface, and workspace_topology.toml admits no normal edge into fa-verify's verification layer)",
         ),
@@ -752,6 +788,21 @@ fn every_plan_leaf_present_or_registered() {
     let start = plan.find("**Verb taxonomy (1.0).**").expect("the taxonomy");
     let end = start + plan[start..].find("**Robot mode.**").expect("its end");
     let reg = fa_cli::verbs::registry().expect("verbs.toml");
+    let registered = |argv: &[&str]| {
+        let expanded = reg.expand_alias(argv);
+        let Some((name, tail)) = expanded.split_first() else {
+            return false;
+        };
+        reg.verb(name).is_some_and(|verb| match tail {
+            [] => true,
+            [sub] => verb.subcommands.is_empty() || verb.subcommands.contains(sub),
+            [sub, child] => verb.has_nested_subcommand(sub, child),
+            _ => false,
+        })
+    };
+    for unknown in [["import", "unknown-format"], ["hold", "unknown-action"]] {
+        assert!(!registered(&unknown), "unsupported alias tail: {unknown:?}");
+    }
     let mut unresolved = std::collections::BTreeSet::new();
     let mut leaves = 0;
     for span in plan[start..end].split('`').skip(1).step_by(2) {
@@ -779,12 +830,7 @@ fn every_plan_leaf_present_or_registered() {
                 } else {
                     let mut argv = vec![verb];
                     argv.extend(sub);
-                    let expanded = reg.expand_alias(&argv);
-                    reg.verb(&expanded[0])
-                        .is_some_and(|v| match expanded.get(1) {
-                            Some(sub) if !v.subcommands.is_empty() => v.subcommands.contains(sub),
-                            _ => true,
-                        })
+                    registered(&argv)
                 };
                 if !resolved {
                     unresolved.insert(leaf);

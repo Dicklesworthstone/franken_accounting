@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "minc.rs"]
+mod minc;
+
 fn withdrawal(fixture: &Fixture, key: &str, date: &str, amount: &str, evidence: &str) {
     let intent = write(
         &fixture.dir,

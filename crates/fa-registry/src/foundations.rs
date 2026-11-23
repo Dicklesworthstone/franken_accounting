@@ -573,7 +573,7 @@ impl FoundationStack {
         })
     }
 
-    /// Concise space-separated foundation pin list (`asupersync@78b64636 frankengraphdb@b323bd17 ...`).
+    /// Concise space-separated list of foundation names and their abbreviated revisions.
     #[must_use]
     pub fn foundations_summary(&self) -> String {
         self.foundations
@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(stack.foundations.len(), 8);
         let summary = stack.foundations_summary();
         assert!(summary.contains("asupersync@78b64636"), "{summary}");
-        assert!(summary.contains("frankengraphdb@b323bd17"), "{summary}");
+        assert!(summary.contains("frankengraphdb@1f854205"), "{summary}");
         assert!(summary.contains("franken_networkx@9d710b1c"), "{summary}");
         assert!(summary.contains("fastmcp-rust@1fd4b6c4"), "{summary}");
         assert!(summary.contains("frankensympy@9fd3a317"), "{summary}");

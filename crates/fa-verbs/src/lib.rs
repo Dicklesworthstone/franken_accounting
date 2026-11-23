@@ -134,6 +134,8 @@ pub struct Verb {
     pub summary: String,
     pub writes: bool,
     pub subcommands: Vec<String>,
+    /// Fixed two-word tails used by registered aliases, e.g. `import qbo`.
+    pub nested_subcommands: Vec<String>,
     pub flags: Vec<String>,
     pub switches: Vec<String>,
     pub events: Vec<String>,
@@ -150,6 +152,14 @@ impl Verb {
     #[must_use]
     pub fn accepts(&self, flag: &str) -> bool {
         self.flags.iter().chain(&self.switches).any(|f| f == flag)
+    }
+
+    /// Whether the verb registers this literal action under its subcommand.
+    #[must_use]
+    pub fn has_nested_subcommand(&self, parent: &str, child: &str) -> bool {
+        self.nested_subcommands
+            .iter()
+            .any(|path| path.split_once(' ') == Some((parent, child)))
     }
 }
 
@@ -536,6 +546,11 @@ impl Registry {
                     .and_then(Value::as_bool)
                     .ok_or_else(|| format!("verbs.toml: {what}: missing bool `writes`"))?,
                 subcommands: get_strs(t, "subcommands", &what)?,
+                nested_subcommands: if t.contains_key("nested_subcommands") {
+                    get_strs(t, "nested_subcommands", &what)?
+                } else {
+                    Vec::new()
+                },
                 flags: get_strs(t, "flags", &what)?,
                 switches: get_strs(t, "switches", &what)?,
                 events: get_strs(t, "events", &what)?,
@@ -803,23 +818,23 @@ impl Registry {
 
     fn validate(&self) -> Result<(), String> {
         self.validate_bound()?;
+        let ok_word =
+            |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
+        // Subcommand slots, including the second word of an alias, may carry
+        // digits after the first letter (part370 and bai2).
+        let ok_subcommand = |w: &str| {
+            w.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                && w.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
         let mut names = BTreeSet::new();
         for v in &self.verbs {
-            let ok_word =
-                |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
             if !ok_word(v.name.as_str()) || !names.insert(v.name.as_str()) {
                 return Err(format!(
                     "verbs.toml: invalid or duplicate verb `{}`",
                     v.name
                 ));
             }
-            // A subcommand starts with a letter and may carry digits after
-            // it: plan §15.6.3 names the FDIC export `fa export part370`.
-            let ok_subcommand = |w: &str| {
-                w.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-                    && w.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            };
             let subs: BTreeSet<_> = v.subcommands.iter().collect();
             if subs.len() != v.subcommands.len()
                 || !v.subcommands.iter().all(|s| ok_subcommand(s.as_str()))
@@ -831,6 +846,18 @@ impl Registry {
                     "verbs.toml: verb {}: needs usage and exits starting at 0 (1 is never emitted)",
                     v.name
                 ));
+            }
+            let mut nested = BTreeSet::new();
+            for path in &v.nested_subcommands {
+                if !path.split_once(' ').is_some_and(|(parent, child)| {
+                    v.subcommands.iter().any(|sub| sub == parent) && ok_subcommand(child)
+                }) || !nested.insert(path)
+                {
+                    return Err(format!(
+                        "verbs.toml: verb {}: invalid nested subcommand `{path}`",
+                        v.name
+                    ));
+                }
             }
             for e in &v.events {
                 if self.event(e).is_none() {
@@ -878,9 +905,10 @@ impl Registry {
                 }),
                 _ => true,
             };
-            let ok_word =
-                |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
-            if shadows || !words.iter().all(|w| ok_word(w)) || !alias_names.insert(a.name.as_str())
+            if shadows
+                || !ok_word(words[0])
+                || words.get(1).is_some_and(|w| !ok_subcommand(w))
+                || !alias_names.insert(a.name.as_str())
             {
                 return Err(format!(
                     "verbs.toml: alias `{}` shadows a verb or subcommand, repeats, or is not one or two words",
@@ -897,6 +925,7 @@ impl Registry {
             match a.expands.get(1..).unwrap_or_default() {
                 [] => {}
                 [sub] if target.subcommands.contains(sub) => {}
+                [sub, child] if target.has_nested_subcommand(sub, child) => {}
                 _ => {
                     return Err(format!(
                         "verbs.toml: alias `{}` expands past the verb's subcommands",
@@ -1493,6 +1522,14 @@ mod tests {
         assert_eq!(words("book verify --json"), ["verify", "book", "--json"]);
         assert_eq!(words("cap list"), ["capability", "list"]);
         assert_eq!(
+            words("import qbo statement.qbo"),
+            ["bank", "import", "qbo", "statement.qbo"]
+        );
+        assert_eq!(
+            words("import receipt id"),
+            ["document", "import", "receipt", "id"]
+        );
+        assert_eq!(
             words("revalue --period P"),
             ["fx", "revalue", "--period", "P"]
         );
@@ -1532,6 +1569,23 @@ mod tests {
             (
                 "alias to a missing verb",
                 with(|s| s.replace("expands = [\"tb\"]", "expands = [\"tbx\"]")),
+            ),
+            (
+                "alias to an unknown nested action",
+                with(|s| {
+                    s.replace(
+                        "expands = [\"bank\", \"import\", \"qbo\"]",
+                        "expands = [\"bank\", \"import\", \"typo\"]",
+                    )
+                }),
+            ),
+            (
+                "nested action with an unknown parent",
+                with(|s| s.replace("\"import qbo\",", "\"typo qbo\",")),
+            ),
+            (
+                "subcommand alias beginning with a digit",
+                with(|s| s.replace("name = \"import bai2\"", "name = \"import 2bai\"")),
             ),
             (
                 "a two-word alias that shadows a subcommand",

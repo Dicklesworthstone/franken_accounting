@@ -66,16 +66,16 @@ asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "7
 # The substrate (unpublished; git rev recorded in franken-stack.lock). Bumping
 # this rev is a deliberate, single-commit event that re-runs the substrate
 # behavior suite (plan §16.3).
-fgdb = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
-fgdb-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
-fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
-fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
-fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
-fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
+fgdb-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
+fgdb-delta-types = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
+fgdb-gql = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
+fgdb-crypto = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
+fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
 # The substrate's lab VFS (fault injection, crash simulation), at the same
 # rev: a dev-only edge of fa-journal's tests, never in a shipped closure
 # (fa-txf B, CobaltGull 3452/3462; fa-0fl reuses it).
-fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
+fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "1f854205dae212914a8a41ef53053b8b4d8e201a", version = "=0.0.1" }
 
 # The fa-mcp posture uses the upstream 0.12.0 backport of the URL security fix.
 # Its registry pin of asupersync `=0.5.0` resolves

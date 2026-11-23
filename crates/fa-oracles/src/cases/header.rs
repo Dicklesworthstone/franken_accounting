@@ -37,7 +37,7 @@ closed_set! {
 }
 
 /// The six case letters (§3.2b).
-pub const LETTERS: [&str; 6] = ["W", "X", "E", "L", "M", "C"];
+pub const LETTERS: [&str; 7] = ["W", "X", "E", "L", "M", "C", "I"];
 
 /// Keys a case item adds to its own `case.toml` (table `case`) or to its
 /// `[[decision]]` rows (table `decision`). A key in neither the header's
@@ -142,7 +142,7 @@ pub(crate) fn parse(
         }
         (CaseKind::Case, Some(l)) if !LETTERS.contains(&l) => errs.push(r.err(
             LoadErrorKind::UnknownValue,
-            format!("`letter = \"{l}\"` is not one of W, X, E, L, M, C"),
+            format!("`letter = \"{l}\"` is not one of {}", LETTERS.join(", ")),
         )),
         (CaseKind::HarnessSelftest, Some(_)) => errs.push(r.err(
             LoadErrorKind::UnknownValue,

@@ -2192,6 +2192,26 @@ fn dispatch(ctx: &mut Ctx<'_>, reg: &Registry, args: &Args) -> Result<(), Fail> 
     })
 }
 
+fn expand_command(args: &mut Args, reg: &Registry) -> Result<(), UsageError> {
+    let words = reg.expand_alias(&args.positional);
+    // A bare format alias has no source. Its expanded selector would otherwise
+    // look like a filename in the original "bank import FILE --bank-format ..." form.
+    if !args.switch("--help")
+        && args.positional.len() == 2
+        && matches!(words.as_slice(), [verb, sub, _] if verb == "bank" && sub == "import")
+    {
+        return Err(UsageError {
+            message: "bank import requires a statement file or - for stdin".into(),
+            fix: format!(
+                "fa {} <statement|-> --account <cash-account-code>; see fa bank --help",
+                args.positional.join(" ")
+            ),
+        });
+    }
+    args.positional = words;
+    Ok(())
+}
+
 fn dispatch_with(
     ctx: &mut Ctx<'_>,
     reg: &Registry,
@@ -2207,7 +2227,7 @@ fn dispatch_with(
     // An alias expands in the verb position (plan §15.3: the spellings agents
     // try first). It is a registered synonym, never a guessed correction.
     let mut expanded = args.clone();
-    expanded.positional = reg.expand_alias(&args.positional);
+    expand_command(&mut expanded, reg)?;
     let args = &expanded;
     let Some(word) = args.positional.first() else {
         check_flags(reg, None, args)?;
@@ -2279,6 +2299,12 @@ fn dispatch_with(
         let joined = verb.subcommands.join("|");
         match args.positional.get(1) {
             Some(sub) if verb.subcommands.contains(sub) => {}
+            Some(sub) if verb.name == "bundle" && sub == "show" => {
+                return Err(usage(
+                    "The standalone fa-verify recipient displays the evidence bundle's manifest and checks its proofs against your trusted checkpoint public key.",
+                    "fa-verify bundle <file.fab> --key <trusted-checkpoint-public-key> [--receipt <receipt-file>] --json",
+                ));
+            }
             Some(sub) => {
                 return Err(usage(
                     format!("`fa {}` has no subcommand `{sub}`", verb.name),
@@ -2979,6 +3005,7 @@ fn host_path_arguments<'a>(verb: &str, args: &'a Args) -> Vec<(&'static str, &'a
         }
     }
     let input = match (verb, sub) {
+        ("bank", Some("import")) if args.positional.len() == 4 => args.positional.get(3),
         ("chart" | "bank", Some("import"))
         | ("document", Some("add"))
         | ("chart", Some("open"))
@@ -4655,7 +4682,7 @@ pub fn parse_cli_invocation(argv: &[String]) -> Result<Args, UsageError> {
     if args.switch("--version") {
         return Ok(args);
     }
-    args.positional = reg.expand_alias(&args.positional);
+    expand_command(&mut args, reg)?;
     let to_usage = |f: Fail| match f {
         Fail::Usage(u) => u,
         other => UsageError {

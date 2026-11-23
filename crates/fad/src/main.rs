@@ -803,7 +803,7 @@ mod tests {
         let text = cli::version_text("fa");
         assert!(text.starts_with("fa "), "{text}");
         assert!(text.contains("asupersync@78b64636"), "{text}");
-        assert!(text.contains("frankengraphdb@b323bd17"), "{text}");
+        assert!(text.contains("frankengraphdb@1f854205"), "{text}");
         assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
         assert!(text.contains("fastmcp-rust@1fd4b6c4"), "{text}");
         assert!(text.contains("frankensympy@9fd3a317"), "{text}");

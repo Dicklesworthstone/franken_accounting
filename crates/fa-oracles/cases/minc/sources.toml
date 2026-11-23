@@ -1,0 +1,20 @@
+# Source for the single-account FIFO research item fa-yugf.30.
+[[source]]
+id = "SRC-MINC-001"
+title = "In re Minc, No. 24-48965, opinion regarding the Chapter 7 trustee's objection to exemptions, docket 95"
+publisher = "United States Bankruptcy Court for the Eastern District of Michigan"
+original_url = "https://apps.mieb.uscourts.gov/files/opinions/24-48965%20-%2007-25-2025.pdf"
+archive_url = ""
+retrieval_route = "original"
+original_hash_compared = true
+retrieved_utc = "2026-11-23T18:49:21Z"
+sha256 = "3df8f879112537a65a4264ab6ff675aad7ac95897ca04824cfd6f851360b7fa3"
+format = "pdf"
+extraction = ["case_fetch.py extract", "pdftotext 26.04.0 -layout", "07020ce7d8c8dec5a1100a0502fc661c4d25bfd91579816a61a63a09b89fdb08"]
+redistribution_basis = "government-work"
+assertion_status = "court_ruling"
+anchor_scheme = ["page", "table_cell"]
+status = "OK"
+filed_on = "2025-07-25"
+restates = []
+notes = "Pages 10 and 12 state the court's FIFO result. Appendices 1 and 2 give the movement series under opposite opening classifications. Preserve printed statement order, date ranges, unknown dates and alternative final debits."

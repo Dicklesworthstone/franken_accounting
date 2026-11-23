@@ -15,7 +15,28 @@ pub struct EmbeddedCase {
 }
 
 /// Every committed case.
-pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL, LEHMAN, ENRON];
+pub const CASES: &[EmbeddedCase] = &[SELFTEST, WORLDCOM, XBRL, LEHMAN, ENRON, MINC];
+
+/// The court's FIFO worksheets and independently sourced finding (fa-yugf.30).
+pub const MINC: EmbeddedCase = EmbeddedCase {
+    id: "minc",
+    files: &[
+        ("case.toml", include_str!("../../cases/minc/case.toml")),
+        (
+            "fifo-movements.tsv",
+            include_str!("../../cases/minc/fifo-movements.tsv"),
+        ),
+        (
+            "sources.toml",
+            include_str!("../../cases/minc/sources.toml"),
+        ),
+        ("facts.toml", include_str!("../../cases/minc/facts.toml")),
+        (
+            "receipts.toml",
+            include_str!("../../cases/minc/receipts.toml"),
+        ),
+    ],
+};
 
 /// The harness self-test (A7a; A8a completes it).
 pub const SELFTEST: EmbeddedCase = EmbeddedCase {

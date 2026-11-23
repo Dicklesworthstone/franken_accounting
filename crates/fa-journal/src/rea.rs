@@ -2461,7 +2461,8 @@ pub fn read_rea_from_rows_at<V: asupersync::fs::Vfs + Clone>(
     if known_at > db.frontier()? {
         return Err(corrupt("requested frontier is beyond the book head"));
     }
-    let stored_edges = crate::op_witness::edges_at(db, known_at)?;
+    let stored_controls =
+        crate::op_witness::edges_by_relation_at(db, relation::CONTROLS, known_at)?;
     let vertices_by_vid: BTreeMap<VId, &VertexRow> = rows.iter().map(|r| (r.vid, r)).collect();
     let decoded_by_vid: Option<BTreeMap<VId, &Entry>> = decoded_entries.map(|entries| {
         entries
@@ -2840,24 +2841,22 @@ pub fn read_rea_from_rows_at<V: asupersync::fs::Vfs + Clone>(
             )));
         }
     }
-    for edge in &stored_edges {
-        if edge.entry.relation == relation::CONTROLS {
-            let src = vertices_by_vid.get(&edge.entry.src);
-            let dst = vertices_by_vid.get(&edge.entry.dst);
-            let is_legacy_migration = dst.is_some_and(|r| r.labels.contains(&label::MIGRATION_RUN));
-            let is_subledger_control = src.is_some_and(|r| r.labels.contains(&label::SUBLEDGER))
-                && dst.is_some_and(|r| r.labels.contains(&label::ACCOUNT));
-            let is_rea_control = src.is_some_and(|r| {
-                r.labels.contains(&label::PARTY) || r.labels.contains(&label::LEGAL_ENTITY)
-            }) && dst.is_some_and(|r| {
-                r.labels.contains(&label::PARTY) || r.labels.contains(&label::LEGAL_ENTITY)
-            });
-            if !is_legacy_migration && !is_subledger_control && !is_rea_control {
-                return Err(corrupt(format!(
-                    "CONTROLS edge {:032x} ({:032x} -> {:032x}) violates control-edge semantics",
-                    edge.entry.eid.0, edge.entry.src.0, edge.entry.dst.0
-                )));
-            }
+    for edge in stored_controls {
+        let src = vertices_by_vid.get(&edge.entry.src);
+        let dst = vertices_by_vid.get(&edge.entry.dst);
+        let is_legacy_migration = dst.is_some_and(|r| r.labels.contains(&label::MIGRATION_RUN));
+        let is_subledger_control = src.is_some_and(|r| r.labels.contains(&label::SUBLEDGER))
+            && dst.is_some_and(|r| r.labels.contains(&label::ACCOUNT));
+        let is_rea_control = src.is_some_and(|r| {
+            r.labels.contains(&label::PARTY) || r.labels.contains(&label::LEGAL_ENTITY)
+        }) && dst.is_some_and(|r| {
+            r.labels.contains(&label::PARTY) || r.labels.contains(&label::LEGAL_ENTITY)
+        });
+        if !is_legacy_migration && !is_subledger_control && !is_rea_control {
+            return Err(corrupt(format!(
+                "CONTROLS edge {:032x} ({:032x} -> {:032x}) violates control-edge semantics",
+                edge.entry.eid.0, edge.entry.src.0, edge.entry.dst.0
+            )));
         }
     }
 

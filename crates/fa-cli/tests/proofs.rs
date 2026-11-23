@@ -802,7 +802,7 @@ fn bundles_produced_by_the_cli_verify_offline_with_their_receipts() {
     );
     f.post("bundle-sale-1", "2026-03-10", "12.34", &evidence);
     f.post("bundle-sale-2", "2026-03-20", "2.00", &evidence);
-    f.checkpoint();
+    let checkpoint = f.checkpoint();
 
     let fab = f.dir.join("prefix.fab");
     let receipt = f.dir.join("prefix.receipt");
@@ -824,6 +824,37 @@ fn bundles_produced_by_the_cli_verify_offline_with_their_receipts() {
         .try_into()
         .expect("32-byte key");
     assert!(text(&line, "verify").starts_with("fa-verify bundle "));
+    let missing_book = f.dir.join("absent-book");
+    let (code, redirect) = run(&missing_book, &["bundle", "show", "nonexistent.fab"]);
+    assert_eq!(code, 2);
+    assert!(text(&redirect, "fix").contains("fa-verify bundle <file.fab> --key"));
+    assert!(!missing_book.exists());
+    let recipient = |bundle: &Path| {
+        let out = Command::new(env!("CARGO_BIN_FILE_FA_VERIFY"))
+            .arg("bundle")
+            .arg(bundle)
+            .args(["--key", text(&checkpoint, "public_key"), "--receipt"])
+            .arg(&receipt)
+            .arg("--json")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            json::parse(std::str::from_utf8(&out.stdout).unwrap()).unwrap(),
+        )
+    };
+    let (status, inspected) = recipient(&fab);
+    assert_eq!(status, Some(0), "{inspected:?}");
+    assert_eq!(text(&inspected, "verdict"), "verified");
+    let manifest = get(&inspected, "checks")
+        .as_arr()
+        .unwrap()
+        .iter()
+        .find(|check| text(check, "check") == "bundle" && text(check, "scope") == "format")
+        .map(|check| get(check, "detail"))
+        .unwrap();
+    assert_eq!(text(manifest, "bundle_digest"), text(&line, "digest"));
+    assert_eq!(text(manifest, "book_id"), text(&checkpoint, "book"));
     let bundle_bytes = std::fs::read(&fab).expect("bundle file");
     let receipt_bytes = std::fs::read(&receipt).expect("receipt file");
     assert_eq!(bundle_bytes.len() as i128, integer(&line, "byte_len"));
@@ -871,6 +902,11 @@ fn bundles_produced_by_the_cli_verify_offline_with_their_receipts() {
     let mut flipped = bundle_bytes.clone();
     let middle = flipped.len() / 2;
     flipped[middle] ^= 1;
+    let damaged = f.dir.join("damaged.fab");
+    std::fs::write(&damaged, &flipped).unwrap();
+    let (status, inspected) = recipient(&damaged);
+    assert_eq!(status, Some(8), "{inspected:?}");
+    assert_eq!(text(&inspected, "verdict"), "failed");
     assert!(
         fa_verify::verify_bundle(&flipped, &[key], Some(&receipt_bytes))
             .map_or(true, |report| !report.verified())

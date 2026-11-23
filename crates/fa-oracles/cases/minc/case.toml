@@ -1,0 +1,10 @@
+id = "minc"
+letter = "I"
+title = "In re Minc, FIFO tracing of a commingled account"
+version = 1
+kind = "case"
+scope = "The issuing court's two FIFO worksheets for the March 2023 opening balance through the September 2024 petition, and its recorded non-Social-Security balance."
+claims = []
+capabilities = ["procedure:trace.fifo@2"]
+pinned_commit = "46e48c36"
+variants = []

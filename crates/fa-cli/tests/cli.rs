@@ -5110,7 +5110,19 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
     let verdict = doc(&out);
     assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
     let targets = arr(&verdict, "targets");
-    assert_eq!(targets.len(), 14, "{out}");
+    let mut expected: BTreeSet<_> = registry()
+        .unwrap()
+        .verb("verify")
+        .unwrap()
+        .subcommands
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !matches!(*name, "book" | "close" | "export"))
+        .collect();
+    expected.insert("functional-registers");
+    let executed: BTreeSet<_> = targets.iter().map(|row| text(row, "target")).collect();
+    assert_eq!(executed, expected, "{out}");
+    assert_eq!(targets.len(), expected.len(), "duplicate check in {out}");
     assert!(
         targets.iter().all(|t| text(t, "verdict") == "pass"),
         "{out}"

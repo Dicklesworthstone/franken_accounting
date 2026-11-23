@@ -745,7 +745,21 @@ impl Fixture {
         );
         assert_eq!(head(&self.book), before_prepare_retry);
         assert_eq!(self.cash(None), format!("0.00 {}", self.unit));
-        let shown = self.show(&package);
+        let shown = if matches!(self.format.as_str(), "beancount" | "csv") {
+            ok(
+                &self.book,
+                &[
+                    "import",
+                    &self.format,
+                    "--action",
+                    "show",
+                    "--package",
+                    &package,
+                ],
+            )
+        } else {
+            self.show(&package)
+        };
         assert_eq!(data(&shown).get("chunks"), data(&prepared).get("chunks"));
         let count = rows(data(&prepared), "chunks").len();
         assert!(count > 0);
@@ -863,7 +877,27 @@ fn stage_full_detail(fixture: &Fixture, prepared: &Json, period: &str) -> Vec<(S
     for (count, index) in (0..chunks.len()).rev().enumerate() {
         let (first, second) = &approvals[index];
         let before = head(&fixture.book);
-        let staged = fixture.stage(package, index, &[first, second]);
+        let staged = if matches!(fixture.format.as_str(), "beancount" | "csv") {
+            ok(
+                &fixture.book,
+                &[
+                    "import",
+                    &fixture.format,
+                    "--action",
+                    "stage",
+                    "--package",
+                    package,
+                    "--chunk",
+                    &index.to_string(),
+                    "--approval",
+                    first,
+                    "--approval",
+                    second,
+                ],
+            )
+        } else {
+            fixture.stage(package, index, &[first, second])
+        };
         assert_eq!(text(&staged, "event"), "migration_import_staged");
         assert_eq!(
             text(data(&staged), "entry_vid"),
@@ -2986,25 +3020,31 @@ fn launch_templates_cannot_self_grant_migration_or_consume_input_before_admissio
             &["read", "post"],
         )
         .unwrap();
-        let args = [
-            "migrate", "import", "--action", "prepare", "--intent", "-", "--json",
-        ]
-        .map(str::to_string);
         let before = head(&fixture.book);
-        let (status, captured) = fa_with_authority(
-            &args,
-            Files {
-                cwd: Some(fixture.dir.clone()),
-                stdin: Stdin::Missing,
-            },
-            &authority,
-            true,
-        );
-        assert_eq!(status, 7, "{captured:?}");
-        let output = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
-        assert_eq!(text(data(&output), "refusal_id"), "FA-REF-011");
-        assert!(!captured.stdout.contains("no input reached the daemon"));
-        assert_eq!(head(&fixture.book), before);
+        for [verb, format] in [
+            ["migrate", "import"],
+            ["import", "beancount"],
+            ["import", "csv"],
+        ] {
+            let args = [
+                verb, format, "--action", "prepare", "--intent", "-", "--json",
+            ]
+            .map(str::to_string);
+            let (status, captured) = fa_with_authority(
+                &args,
+                Files {
+                    cwd: Some(fixture.dir.clone()),
+                    stdin: Stdin::Missing,
+                },
+                &authority,
+                true,
+            );
+            assert_eq!(status, 7, "{captured:?}");
+            let output = json::parse(captured.stdout.lines().last().unwrap()).unwrap();
+            assert_eq!(text(data(&output), "refusal_id"), "FA-REF-011");
+            assert!(!captured.stdout.contains("no input reached the daemon"));
+            assert_eq!(head(&fixture.book), before);
+        }
     }
 }
 
@@ -3546,15 +3586,65 @@ fn export_import_identity(export_format: &str) {
 
     // The true export imports and folds to the source in every period.
     let source_oid = fixture.document(&format!("export.{export_format}"), &ledger, "Other");
-    let intent = fixture.file("import.json", &import(&source_oid).render());
+    let mut request = import(&source_oid);
+    let route = if matches!(format, "beancount" | "csv") {
+        let wrong = if format == "csv" { "beancount" } else { "csv" };
+        let conflicting = fixture.file("wrong-format.json", &request.render());
+        let before = head(&fixture.book);
+        let (status, error) = run(
+            &fixture.book,
+            &[
+                "import",
+                wrong,
+                "--action",
+                "prepare",
+                "--intent",
+                &conflicting,
+            ],
+        );
+        assert_eq!(status, 2, "{}", error.render());
+        assert_eq!(head(&fixture.book), before);
+        let Json::Obj(fields) = &mut request else {
+            unreachable!()
+        };
+        fields.retain(|(key, _)| key != "format");
+        ["import", format]
+    } else {
+        ["migrate", "import"]
+    };
+    let intent = fixture.file("import.json", &request.render());
     let prepared = ok(
         &fixture.book,
         &[
-            "migrate", "import", "--action", "prepare", "--intent", &intent,
+            route[0], route[1], "--action", "prepare", "--intent", &intent,
         ],
     );
     assert_eq!(text(data(&prepared), "mode"), "FullDetail");
     assert_eq!(rows(data(&prepared), "chunks").len(), 4);
+    if route[0] == "import" {
+        let wrong = if format == "csv" { "beancount" } else { "csv" };
+        let package = text(data(&prepared), "package_oid");
+        let shown = ok(
+            &fixture.book,
+            &["import", format, "--action", "show", "--package", package],
+        );
+        assert_eq!(text(data(&shown), "format"), format);
+        let before = head(&fixture.book);
+        for action in ["show", "stage"] {
+            let mut argv = vec!["import", wrong, "--action", action, "--package", package];
+            if action == "stage" {
+                argv.extend(["--chunk", "0"]);
+            }
+            let (status, error) = run(&fixture.book, &argv);
+            assert_eq!(status, 2, "{}", error.render());
+            assert!(
+                text(data(&error), "message").contains("source"),
+                "{}",
+                error.render()
+            );
+        }
+        assert_eq!(head(&fixture.book), before);
+    }
     let fixture = Fixture { run_vid, ..fixture };
     stage_full_detail(&fixture, &prepared, "FY2025-P12");
     assert_eq!(

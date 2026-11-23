@@ -93,13 +93,18 @@ fn one<'a>(args: &'a Args, flag: &str) -> Result<Option<&'a str>, Fail> {
     Ok(args.flag(flag))
 }
 
-fn options(args: &Args) -> Result<&str, Fail> {
-    if args.positional.len() != 2 {
-        return Err(usage(
-            "migration import takes an explicit --action",
-            EXAMPLE,
-        ));
-    }
+fn options(args: &Args) -> Result<(&str, Option<LegacyFormat>), Fail> {
+    let selected = match args.positional.as_slice() {
+        [_, _] => None,
+        [_, _, name] if name == "beancount" => Some(LegacyFormat::Beancount),
+        [_, _, name] if name == "csv" => Some(LegacyFormat::GenericCsv),
+        _ => {
+            return Err(usage(
+                "unknown migration import format or extra argument",
+                EXAMPLE,
+            ));
+        }
+    };
     let action = one(args, "--action")?.ok_or_else(|| {
         usage(
             "migration import requires --action prepare, show or stage",
@@ -169,7 +174,7 @@ fn options(args: &Args) -> Result<&str, Fail> {
     {
         return Err(usage("--plan-out requires a new file path", EXAMPLE));
     }
-    Ok(action)
+    Ok((action, selected))
 }
 
 fn capability(ctx: &Ctx<'_>, args: &Args, writing: bool) -> Result<Capability, Fail> {
@@ -308,7 +313,11 @@ fn format_name(format: LegacyFormat) -> &'static str {
 }
 
 impl ImportRequest {
-    fn parse(book_id: Id128, text: &str) -> Result<Self, Fail> {
+    fn parse(
+        book_id: Id128,
+        text: &str,
+        default_format: Option<LegacyFormat>,
+    ) -> Result<Self, Fail> {
         let value = parse_json("legacy import intent", text)?;
         let Json::Obj(fields) = &value else {
             return Err(usage("legacy import intent must be a JSON object", EXAMPLE));
@@ -333,7 +342,11 @@ impl ImportRequest {
                 ));
             }
         }
-        let format = match required_text(&value, "format")? {
+        let declared = match (value.get("format"), default_format) {
+            (None, Some(format)) => format_name(format),
+            _ => required_text(&value, "format")?,
+        };
+        let format = match declared {
             "quickbooks-iif" => LegacyFormat::QuickBooksIif,
             "quickbooks-csv" => LegacyFormat::QuickBooksCsv,
             "xero-csv" => LegacyFormat::XeroCsv,
@@ -348,6 +361,7 @@ impl ImportRequest {
                 ));
             }
         };
+        require_format(format, default_format)?;
         let Some(Json::Obj(mappings)) = value.get("account_map") else {
             return Err(usage(
                 "account_map must be an object mapping legacy identifiers to target leaf codes",
@@ -1973,7 +1987,7 @@ fn retained_package(
         if !Package::names_run(&document.bytes, book.context().book_id, run.vid) {
             continue;
         }
-        let loaded = load_package(book, cap, summary.oid)?;
+        let loaded = load_package(book, cap, summary.oid, None)?;
         if loaded.document.retrieved_by != cap.holder() {
             return Err(usage(
                 "this run's retained package was prepared by a different principal",
@@ -1994,7 +2008,28 @@ fn retained_package(
     Ok(None)
 }
 
-fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Loaded, Fail> {
+fn require_format(actual: LegacyFormat, selected: Option<LegacyFormat>) -> Result<(), Fail> {
+    if let Some(selected) = selected
+        && selected != actual
+    {
+        return Err(usage(
+            format!(
+                "import {} received a {} source",
+                format_name(selected),
+                format_name(actual)
+            ),
+            "use the command that names the retained source format; prepare and stage the same reviewed package",
+        ));
+    }
+    Ok(())
+}
+
+fn load_package(
+    book: &mut Book,
+    cap: &Capability,
+    selected: Oid,
+    format: Option<LegacyFormat>,
+) -> Result<Loaded, Fail> {
     let document = full_document(book, cap, selected)?;
     let (kind, grade) = package_tags()?;
     if document.oid() != selected
@@ -2042,7 +2077,8 @@ fn load_package(book: &mut Book, cap: &Capability, selected: Oid) -> Result<Load
     }
     let trial_balances = trial_balance_documents(book, cap, &run)?;
     let (config, exact_timestamps) = package.open_mapping(book)?;
-    let mut request = ImportRequest::parse(package.book_id, &config)?;
+    let mut request = ImportRequest::parse(package.book_id, &config, None)?;
+    require_format(request.format, format)?;
     if request.run != package.run || request.source != package.source {
         return Err(invalid(
             "mapping configuration does not bind the selected run and source",
@@ -2292,7 +2328,7 @@ fn review_text(book: &Book, loaded: &Loaded) -> Result<String, Fail> {
 }
 
 pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
-    let action = options(args)?;
+    let (action, format) = options(args)?;
     let writing = action != "show";
     let cap = capability(ctx, args, writing)?;
     let mut book = ctx
@@ -2304,7 +2340,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             crate::intake::read_document_with_limit(&ctx.files, path, MAX_REQUEST_BYTES as u64)?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| usage("legacy import intent must be UTF-8 JSON", EXAMPLE))?;
-        let mut request = ImportRequest::parse(book.context().book_id, text)?;
+        let mut request = ImportRequest::parse(book.context().book_id, text, format)?;
         let run = load_run(&book, request.run)?;
         let tie = book.migration_tie_out(&run, None)?;
         let source = full_document(&mut book, &cap, request.source)?;
@@ -2446,7 +2482,7 @@ pub(crate) fn import_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     // The complete source, all trial balances and all retained transformations
     // are authenticated once for this request. Only Migration chunks can be
     // published below; they cannot alter those documents, chart or run body.
-    let loaded = load_package(&mut book, &cap, package_oid)?;
+    let loaded = load_package(&mut book, &cap, package_oid, format)?;
     if action == "show" {
         ctx.out.at_book(&book)?;
         let review = review_text(&book, &loaded)?;
