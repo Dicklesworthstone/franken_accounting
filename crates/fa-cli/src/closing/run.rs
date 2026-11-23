@@ -131,14 +131,16 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     }
                 })
             }
-            (None, None, Some(Json::Int(year)), None, None) => ReviewedCloseAction::VerifyYearEndClose {
-                fiscal_year: i32::try_from(*year).map_err(|_| {
-                    usage(
-                        "verify_year_end_close needs a fiscal year within the i32 range",
-                        EXAMPLE,
-                    )
-                })?,
-            },
+            (None, None, Some(Json::Int(year)), None, None) => {
+                ReviewedCloseAction::VerifyYearEndClose {
+                    fiscal_year: i32::try_from(*year).map_err(|_| {
+                        usage(
+                            "verify_year_end_close needs a fiscal year within the i32 range",
+                            EXAMPLE,
+                        )
+                    })?,
+                }
+            }
             (None, None, Some(_), None, None) => {
                 return Err(usage(
                     "verify_year_end_close must be an integer fiscal year",
@@ -300,9 +302,9 @@ fn view_json(view: &CloseRunView) -> Json {
                 (
                     "bank_manifest_oids",
                     match definition.map(|definition| &definition.action) {
-                        Some(CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids }) => {
-                            Json::Arr(manifest_oids.iter().map(|oid| s(hex(&oid.0))).collect())
-                        }
+                        Some(CloseTaskBodyAction::VerifyBankInstrumentCoverage {
+                            manifest_oids,
+                        }) => Json::Arr(manifest_oids.iter().map(|oid| s(hex(&oid.0))).collect()),
                         _ => Json::Null,
                     },
                 ),
@@ -972,11 +974,9 @@ mod tests {
             r#"[{{"id":"banks","verify_bank_instrument_coverage":["D:{lower}","{lower}"]}}]"#
         );
         assert!(task_definition(&duplicated).is_err());
-        let too_many = vec![
-            format!("\"{lower}\"");
-            fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE + 1
-        ]
-        .join(",");
+        let too_many =
+            vec![format!("\"{lower}\""); fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE + 1]
+                .join(",");
         assert!(
             task_definition(&format!(
                 r#"[{{"id":"banks","verify_bank_instrument_coverage":[{too_many}]}}]"#

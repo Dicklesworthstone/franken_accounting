@@ -262,7 +262,10 @@ pub(crate) fn render(
                                         .iter()
                                         .map(|item| {
                                             obj(vec![
-                                                ("instrument", s(format!("{:032x}", item.instrument.0))),
+                                                (
+                                                    "instrument",
+                                                    s(format!("{:032x}", item.instrument.0)),
+                                                ),
                                                 ("code", s(&item.code)),
                                                 ("account", s(format!("{:032x}", item.account.0))),
                                                 ("unit_id", Json::Int(i128::from(item.unit.0))),
@@ -270,12 +273,24 @@ pub(crate) fn render(
                                                 (
                                                     "attestation",
                                                     obj(vec![
-                                                        ("vid", s(format!("{:032x}", item.attestation.vid.0))),
-                                                        ("digest", s(hex(&item.attestation.digest))),
+                                                        (
+                                                            "vid",
+                                                            s(format!(
+                                                                "{:032x}",
+                                                                item.attestation.vid.0
+                                                            )),
+                                                        ),
+                                                        (
+                                                            "digest",
+                                                            s(hex(&item.attestation.digest)),
+                                                        ),
                                                     ]),
                                                 ),
                                                 ("statement_date", s(item.statement_date.render())),
-                                                ("checkpoint_digest", s(hex(&item.checkpoint_digest))),
+                                                (
+                                                    "checkpoint_digest",
+                                                    s(hex(&item.checkpoint_digest)),
+                                                ),
                                             ])
                                         })
                                         .collect(),

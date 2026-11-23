@@ -124,7 +124,9 @@ pub(super) fn bank_instrument_coverage_checkpoint_at<V: Vfs + Clone>(
     let mut selected = manifest_oids.to_vec();
     selected.sort_by_key(|oid| oid.0);
     if selected.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Ok(Err(incomplete("bank coverage contains duplicate manifests")));
+        return Ok(Err(incomplete(
+            "bank coverage contains duplicate manifests",
+        )));
     }
     let period = match period_at(db, book, period_code, at)? {
         Ok(period) => period,
@@ -159,7 +161,8 @@ pub(super) fn bank_instrument_coverage_checkpoint_at<V: Vfs + Clone>(
     if selected.len() != banks.len() {
         return Ok(Err(incomplete(format!(
             "bank coverage selects {} manifests for {} registered bank instruments; every instrument requires one distinct manifest",
-            selected.len(), banks.len(),
+            selected.len(),
+            banks.len(),
         ))));
     }
     let root = db

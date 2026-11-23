@@ -3,6 +3,7 @@
 
 use super::*;
 
+#[path = "rule_drafts/automatic.rs"]
 mod automatic;
 
 const SOURCE: &str = r#"rule draft_accrual v1 for event Sale produces Adjusting {
