@@ -770,6 +770,75 @@ PERMITTED_LOCAL
   return 0
 }
 
+fetch_preserves_unpublished_verification_notes() {
+  local origin="$base/notes-origin.git" writer="$base/notes-writer" reader="$base/notes-reader"
+  local rc
+  (
+    set -e
+    git clone -q --bare "$dev" "$origin"
+    git clone -q "$origin" "$writer"
+    git clone -q "$origin" "$reader"
+    for checkout in "$writer" "$reader"; do
+      git -C "$checkout" config user.name "Note writer"
+      git -C "$checkout" config user.email "notes@example.invalid"
+    done
+    local base_sha remote_sha local_sha note tracking
+    base_sha=$(git -C "$writer" rev-parse HEAD)
+    for note in fa-tier0 fa-verdict; do
+      git -C "$writer" notes --ref="$note" add -m original "$base_sha"
+      git -C "$writer" push -q origin "refs/notes/$note"
+    done
+    git -C "$reader" config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'
+    git -C "$reader" config --add remote.origin.fetch '+refs/tags/probe/*:refs/probe-tags/*'
+    git -C "$reader" fetch -q origin
+    git -C "$writer" commit -q --allow-empty -m 'Remote proof target'
+    remote_sha=$(git -C "$writer" rev-parse HEAD)
+    git -C "$writer" push -q origin HEAD
+    git -C "$reader" commit -q --allow-empty -m 'Unpublished proof target'
+    local_sha=$(git -C "$reader" rev-parse HEAD)
+    for note in fa-tier0 fa-verdict; do
+      git -C "$reader" notes --ref="$note" add -m local-proof "$local_sha"
+      git -C "$writer" notes --ref="$note" add -m remote-proof "$remote_sha"
+      git -C "$writer" push -q origin "refs/notes/$note"
+    done
+    bash "$SOURCE_ROOT/scripts/install-hooks.sh" --repository "$reader"
+    bash "$SOURCE_ROOT/scripts/install-hooks.sh" --repository "$reader"
+    git -C "$reader" fetch -q origin
+    for note in fa-tier0 fa-verdict; do
+      test "$(git -C "$reader" notes --ref="$note" show "$local_sha")" = local-proof
+    done
+    tracking='+refs/notes/*:refs/fa-remote-notes/origin/*'
+    test "$(git -C "$reader" config --get-all remote.origin.fetch | grep -Fxc "$tracking")" = 1
+    git -C "$reader" config --fixed-value --get-all remote.origin.fetch '+refs/tags/probe/*:refs/probe-tags/*'
+    git clone -q "$origin" "$base/notes-fresh"
+    bash "$SOURCE_ROOT/scripts/install-hooks.sh" --repository "$base/notes-fresh" --sync-notes
+    bash "$SOURCE_ROOT/scripts/install-hooks.sh" --repository "$reader" --sync-notes
+    for note in fa-tier0 fa-verdict; do
+      test "$(git -C "$reader" notes --ref="$note" show "$local_sha")" = local-proof
+      test "$(git -C "$reader" notes --ref="$note" show "$remote_sha")" = remote-proof
+      test "$(git -C "$base/notes-fresh" notes --ref="$note" show "$remote_sha")" = remote-proof
+    done
+    git -C "$writer" notes --ref=fa-verdict add -f -m remote-judgment "$base_sha"
+    git -C "$writer" push -q origin refs/notes/fa-verdict
+    git -C "$reader" notes --ref=fa-verdict add -f -m local-judgment "$base_sha"
+    git -C "$reader" config notes.mergeStrategy theirs
+    if bash "$SOURCE_ROOT/scripts/install-hooks.sh" --repository "$reader" --sync-notes; then
+      echo 'conflicting verdicts unexpectedly merged'
+      exit 1
+    fi
+    test "$(git -C "$reader" notes --ref=fa-verdict show "$base_sha")" = local-judgment
+    test "$(git -C "$reader" rev-parse refs/fa-remote-notes/origin/fa-verdict)" = \
+      "$(git -C "$writer" rev-parse refs/notes/fa-verdict)"
+  ) >"$base/fetch-notes.log" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cat "$base/fetch-notes.log" >&2
+    gate_fail "fetch_preserves_unpublished_verification_notes (exit $rc)"
+    return 1
+  fi
+  gate_pass "fetch_preserves_unpublished_verification_notes"
+}
+
 setup_fixture_repo
 
 if [ "$#" -gt 0 ]; then
@@ -780,6 +849,7 @@ if [ "$#" -gt 0 ]; then
       refuses_test_target_syntax_error|\
       refuses_lib_type_error|\
       pre_push_requires_tier0_note|\
+      fetch_preserves_unpublished_verification_notes|\
       falls_back_to_local_lane_on_rch_refusal|\
       unexecuted_transport_failure_is_unrun|\
       unconfirmed_remote_completion_never_replays_locally|\
@@ -800,6 +870,7 @@ else
   refuses_test_target_syntax_error
   refuses_lib_type_error
   pre_push_requires_tier0_note
+  fetch_preserves_unpublished_verification_notes
   falls_back_to_local_lane_on_rch_refusal
   unexecuted_transport_failure_is_unrun
   unconfirmed_remote_completion_never_replays_locally
