@@ -585,7 +585,7 @@ pub(crate) fn open_item_carrying_observed<V: Vfs + Clone>(
     let mut entries = Vec::new();
     let mut reversals = BTreeMap::new();
     if history.is_none() {
-        for row in db.vertices_at(at)? {
+        for row in crate::op_witness::vertices_at(db, at)? {
             query
                 .checkpoint()
                 .map_err(fgdb::WriteTxnError::Interrupted)?;
@@ -2411,7 +2411,7 @@ pub(crate) fn validate_reversal<V: Vfs + Clone>(
             !matches!(FxLawId::from_oid(&total.fx_law_oid), Some(FxLawId::SpotClose | FxLawId::PeriodAverage))
         }) { return Ok(Ok(())); }
         let mut allocated_ordinals = BTreeSet::new();
-        for row in db.vertices_at(at)? {
+        for row in crate::op_witness::vertices_at(db, at)? {
             cx.query().checkpoint().map_err(fgdb::WriteTxnError::Interrupted)?;
             if !row.labels.contains(&label::ENTRY) { continue; }
             let Some((entry, _)) = crate::post::read_entry_at(db, row.vid, at)? else { continue; };

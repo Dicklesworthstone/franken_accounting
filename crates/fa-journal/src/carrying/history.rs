@@ -147,7 +147,7 @@ impl CarryingIndex {
             history_scans: 1,
             ..CarryingPopulationWork::default()
         };
-        for row in db.vertices_at(at)? {
+        for row in crate::op_witness::vertices_at(db, at)? {
             cx.query()
                 .checkpoint()
                 .map_err(fgdb::WriteTxnError::Interrupted)?;

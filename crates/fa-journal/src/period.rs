@@ -2288,13 +2288,11 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     use std::collections::{BTreeMap, BTreeSet};
 
     let known_at = known_at.unwrap_or(db.frontier()?);
-    let raw_rows = db.vertices_at(known_at)?;
-    crate::op_witness::record_vertex_scan(raw_rows.len());
-    let rows: Vec<_> = raw_rows
+    let rows: Vec<_> = crate::op_witness::vertices_at(db, known_at)?
         .into_iter()
         .map(|row| row.seen_at(known_at))
         .collect();
-    let edges = db.edges_at(known_at)?;
+    let edges = crate::op_witness::edges_at(db, known_at)?;
     let bvid = crate::rows::book_root();
     let root_row = rows
         .iter()
@@ -2482,9 +2480,7 @@ pub fn verify_periods<V: asupersync::fs::Vfs + Clone>(
     let legacy_members: BTreeSet<_> = if legacy_genesis {
         let basis =
             journal_cutover.map_or(known_at, |cutover| CommitSeq(cutover.0.saturating_sub(1)));
-        let basis_rows = db.vertices_at(basis)?;
-        crate::op_witness::record_vertex_scan(basis_rows.len());
-        basis_rows
+        crate::op_witness::vertices_at(db, basis)?
             .into_iter()
             .filter(|row| row.labels.contains(&label::PERIOD))
             .map(|row| row.vid)

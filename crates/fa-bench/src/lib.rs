@@ -1664,6 +1664,7 @@ mod tests {
     #[test]
     fn kernel_op_witness_reads_live_substrate_counters_not_literals() {
         let (mut book, book_id, usd) = build_witness_test_book(19, 2);
+        let before_post = book.head().expect("period verification prefix");
         let operator = principal_vid("operator");
         let controller = principal_vid("controller");
         let post_cap = Capability::embedded(operator, &["post"]).expect("post cap");
@@ -1732,6 +1733,24 @@ mod tests {
         })
         .expect("warm io")
         .expect("warm admitted");
+
+        // The period states are identical at the two prefixes. The later
+        // scan must charge the newly posted rows and their provenance edges.
+        let mut verify_periods = |known_at| {
+            let (verified, _, raw) = book
+                .measure_with_op_witness_raw(|book| {
+                    book.verify_periods(known_at).map_err(|e| e.to_string())
+                })
+                .expect("verify periods with census");
+            assert!(verified.is_green());
+            assert_eq!(raw.edge_scans, 1, "{raw:?}");
+            assert!(raw.vertex_scans > 0 && raw.scanned_edges > 0, "{raw:?}");
+            raw
+        };
+        let earlier = verify_periods(Some(before_post));
+        let current = verify_periods(None);
+        assert!(current.scanned_rows > earlier.scanned_rows);
+        assert!(current.scanned_edges > earlier.scanned_edges);
 
         // 1. A 4-leg post across 4 distinct leaf accounts dynamically produces
         // 17 point reads (1 Period + 8 Dimension requirement vertices + 4 Accounts + 4 NativeSubledger bindings),
@@ -2401,13 +2420,43 @@ mod tests {
                 out
             };
 
+        // Replay the same accounting prefix into a fresh handle. This leaves the
+        // source warm for the nine operation comparisons and gives the cold post
+        // the same populated accounts without copying the source's RAM caches.
+        let measure_cold_post = |source: &mut Book, populated_entries| {
+            let (mut cold, _) = source
+                .replay_into_scratch(
+                    None,
+                    BookKeys::for_development(31),
+                    Entropy::deterministic(37),
+                )
+                .expect("replay prefix")
+                .expect("scratch book");
+            let day = DateDay::from_ymd(2026, 2, 15).expect("feb");
+            let (_, live, raw) = cold
+                .measure_with_op_witness_raw(|book| {
+                    Ok(post_single(
+                        book,
+                        day,
+                        "1010",
+                        "4000",
+                        100,
+                        b"cold:at-scale",
+                    ))
+                })
+                .expect("cold post at scale");
+            check_cold_post_reads(&op_costs, op_count_from_live_witness(live), raw, populated_entries);
+        };
+
         // Populate 1,000 real entries into FY2026-P02 and measure all 9 operations.
         populate_batches(&mut book, 0, 1_000);
+        measure_cold_post(&mut book, 1_000);
         let ops_1k = measure_suite(&mut book, "1k", "FY2026-P03");
         assert_eq!(ops_1k.len(), 9);
 
         // Populate 9,000 more real entries (10,000+ total) and re-measure all 9 operations.
         populate_batches(&mut book, 1_000, 9_000);
+        measure_cold_post(&mut book, 10_000);
         let ops_10k = measure_suite(&mut book, "10k", "FY2026-P04");
         assert_eq!(ops_10k.len(), 9);
 
@@ -2479,6 +2528,31 @@ mod tests {
         }
     }
 
+    fn check_cold_post_reads(
+        op_costs: &OperationCosts,
+        counts: OpCount,
+        raw: fa_journal::op_witness::RawOpCensus,
+        minimum_book_rows: u32,
+    ) {
+        let ceiling = op_costs.witness("post").expect("registered post").point_reads;
+        // Each full scan of this populated prefix must charge at least its
+        // known population. A path that avoids scanning can meet the ceiling.
+        assert_eq!(raw.vertex_scans == 0, raw.scanned_rows == 0, "{raw:?}");
+        assert_eq!(raw.edge_scans == 0, raw.scanned_edges == 0, "{raw:?}");
+        assert!(raw.scanned_rows >= raw.vertex_scans * minimum_book_rows, "{raw:?}");
+        let scanned = raw.scanned_rows + raw.scanned_edges;
+        assert!(counts.point_reads >= scanned, "{counts:?}, {raw:?}");
+        if scanned == 0 {
+            assert!(counts.point_reads <= ceiling, "{counts:?}, {raw:?}");
+        } else if counts.point_reads > ceiling {
+            let verdict = verify_kernel_op_witness("post", &counts, op_costs);
+            assert!(matches!(
+                verdict, Err(BenchError::WitnessDrift { field: "point_reads", expected, actual, .. })
+                if expected == ceiling && actual == counts.point_reads
+            ), "cold post should report its excess reads: {verdict:?}");
+        }
+    }
+
     #[test]
     fn cold_book_post_exposes_real_capacity_vertex_scan() {
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
@@ -2496,9 +2570,8 @@ mod tests {
         book.add_document(&doc).expect("doc io").expect("doc ok");
         let day = DateDay::from_ymd(2026, 1, 15).expect("day");
 
-        // First post on a cold Book (unwarmed CarriedHistory) MUST honestly
-        // record the full-frontier cold-init scan(s) and trip
-        // `verify_kernel_op_witness("post", ...)` loudly.
+        // On the first post the Book has no warm CarriedHistory. Measure any
+        // full-frontier initialization work against the known chart and periods.
         let sealed_cold = book.seal_text("cold witness").unwrap();
         let make_proposal = |key: &[u8]| {
             let legs = vec![
@@ -2556,19 +2629,7 @@ mod tests {
                 .map_err(|r| r.message)
             })
             .expect("cold post");
-        assert!(
-            raw_cold.vertex_scans >= 1,
-            "cold post must report its cold-init vertex scan(s): {raw_cold:?}"
-        );
-        assert!(
-            raw_cold.scanned_rows > 10,
-            "cold post must count scanned rows: {raw_cold:?}"
-        );
-        assert!(
-            verify_kernel_op_witness("post", &op_count_from_live_witness(live_cold), &op_costs)
-                .is_err(),
-            "cold-book capacity scan must trip operation_costs ceiling"
-        );
+        check_cold_post_reads(&op_costs, op_count_from_live_witness(live_cold), raw_cold, 12);
 
         // Second post on the same warm handle uses CarriedHistory with zero scans.
         let warm_prop = make_proposal(b"cold:second");
@@ -2666,8 +2727,8 @@ mod tests {
 
         // Inject a real frontier `db.vertices_at` scan during `post` and assert
         // that `verify_kernel_op_witness` fails loudly with `WitnessDrift`.
-        let (scanned, live) = book
-            .measure_with_op_witness(|b| {
+        let (scanned, live, raw) = book
+            .measure_with_op_witness_raw(|b| {
                 let scanned = b.inject_vertex_scan_for_test().map_err(|e| e.to_string())?;
                 let legs = vec![
                     LegPayload::simple(
@@ -2723,6 +2784,8 @@ mod tests {
             scanned > 30,
             "real book frontier has >30 vertices, got {scanned}"
         );
+        assert_eq!(raw.vertex_scans, 1, "{raw:?}");
+        assert_eq!(usize::try_from(raw.scanned_rows).unwrap(), scanned, "{raw:?}");
         let actual = op_count_from_live_witness(live);
         let err = verify_kernel_op_witness("post", &actual, &op_costs)
             .expect_err("injected vertex scan must trip operation_costs ceiling");

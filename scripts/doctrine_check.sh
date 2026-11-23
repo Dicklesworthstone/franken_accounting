@@ -5,7 +5,7 @@
 #
 # Usage: scripts/doctrine_check.sh [<workspace-root> [<foundations-receipts-dir>]]
 #
-# Enforces six mechanical prohibitions across the workspace:
+# Enforces seven mechanical prohibitions across the workspace:
 #   1. no-raw-gql: no `execute_gql*` or `BoundPlan` calls/references.
 #   2. no-float-in-amount-crates: no `f32`/`f64`/`as f32`/`as f64` in
 #      amount/ledger/verification crates (`fa-money`, `fa-model`, `fa-journal`,
@@ -20,6 +20,8 @@
 #      `src/bin/*.rs`) carries `#![forbid(unsafe_code)]`.
 #   6. single-fnx-classes: every shipped posture (`fa`, `fa-cli`, `fad`,
 #      `fa-mcp`) resolves `fnx-classes` to a single package ID.
+#   7. metered-substrate-scans: direct full-book reads in metered production
+#      paths must go through the counted wrappers in `fa_journal::op_witness`.
 #
 # Every source violation reports `<relative-file>:<line>` in its `FAIL` line.
 # =============================================================================
@@ -43,7 +45,10 @@ command -v python3 >/dev/null 2>&1 || gate_abort_unrun "doctrine — python3 is 
 [ -d "$TARGET_ROOT/crates" ] || gate_abort_unrun "doctrine — workspace root $TARGET_ROOT has no crates/ directory"
 
 VERDICT_LINES="$(python3 -B - "$TARGET_ROOT" "$FOUNDATIONS_DIR" <<'PY' 2>&1
+import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -257,7 +262,6 @@ elif not unruns:
 # 7. metered-substrate-scans: no direct .vertices/.vertices_at/.edges/.edges_at
 # bypassing fa_journal::op_witness in metered kernel/register/notary/lantern paths
 # (bead fa-0hs4.27).
-scan_re = re.compile(r"\.\s*(vertices|vertices_at|edges|edges_at)\s*\(")
 metered_files = []
 for sub in [
     "crates/fa-notary/src",
@@ -271,6 +275,11 @@ for sub in [
                 continue
             metered_files.append(p)
 for rel_file in [
+    "crates/fa-journal/src/batch.rs",
+    "crates/fa-journal/src/carrying.rs",
+    "crates/fa-journal/src/carrying/history.rs",
+    "crates/fa-journal/src/entry_history.rs",
+    "crates/fa-journal/src/period.rs",
     "crates/fa-journal/src/post.rs",
     "crates/fa-journal/src/register_capacity.rs",
     "crates/fa-journal/src/evidence.rs",
@@ -280,25 +289,63 @@ for rel_file in [
     if p.is_file():
         metered_files.append(p)
 
-scan_hits = []
-for path in metered_files:
-    rel = path.relative_to(root)
-    in_cfg_test = False
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        code = strip_line_comment(raw)
-        if re.match(r"^\s*#\[cfg\(test\)\]", code):
-            in_cfg_test = True
-        if in_cfg_test:
-            continue
-        m = scan_re.search(code)
-        if m:
-            scan_hits.append(
-                f"{rel}:{lineno}: uninstrumented direct substrate scan `.{m.group(1)}()`; route through `fa_journal::op_witness`"
-            )
-if scan_hits:
-    for hit in scan_hits:
-        fails.append(f"metered-substrate-scans — {hit}")
-else:
+# Rust outer attributes are siblings of the item they decorate. Search back
+# through other attributes and comments only. Crossing a completed item
+# would let an earlier test-only import excuse later production code.
+scan_rule = r"""
+id: unmetered-scan
+language: Rust
+severity: hint
+rule:
+  regex: '^(r#)?(vertices|edges)(_at)?$'
+  any:
+    - kind: field_identifier
+      inside:
+        kind: field_expression
+        field: field
+        inside: { kind: call_expression, field: function }
+    # Macro argument tokens have no field_expression until Rust expands them.
+    - kind: identifier
+      inside: { kind: token_tree }
+      follows: { regex: '^\.$', stopBy: { not: { matches: comment } } }
+      precedes: { kind: token_tree, regex: '^\(', stopBy: { not: { matches: comment } } }
+  not:
+    inside:
+      stopBy: end
+      follows:
+        pattern: '#[cfg(test)]'
+        stopBy:
+          not:
+            any: [{ kind: attribute_item }, { matches: comment }]
+utils:
+  comment:
+    any: [{ kind: line_comment }, { kind: block_comment }]
+"""
+scan_words = re.compile(r"\b(?:vertices|edges)(?:_at)?\b")
+candidates = [str(p.relative_to(root)) for p in metered_files if scan_words.search(p.read_text(encoding="utf-8"))]
+scan_complete = True
+matches = []
+if candidates:
+    if shutil.which("ast-grep") is None:
+        unruns.append("metered-substrate-scans — ast-grep is required to distinguish Rust production and test items")
+        scan_complete = False
+    else:
+        result = subprocess.run(
+            ["ast-grep", "scan", "--inline-rules", scan_rule, "--json=compact", "--", *candidates],
+            cwd=root, capture_output=True, text=True,
+        )
+        if result.returncode:
+            unruns.append(f"metered-substrate-scans — ast-grep exited {result.returncode}: {result.stderr.strip()}")
+            scan_complete = False
+        else:
+            matches = json.loads(result.stdout)
+for match in sorted(matches, key=lambda m: (m["file"], m["range"]["byteOffset"]["start"])):
+    line = match["range"]["start"]["line"] + 1
+    fails.append(
+        f"metered-substrate-scans — {match['file']}:{line}: uninstrumented direct substrate scan "
+        f"`.{match['text']}()`; route through `fa_journal::op_witness`"
+    )
+if scan_complete and not matches:
     passes.append(
         f"metered-substrate-scans — 0 uninstrumented substrate scans across {len(metered_files)} metered production files"
     )

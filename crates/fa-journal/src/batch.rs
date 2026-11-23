@@ -614,7 +614,7 @@ pub(crate) fn recorded_carrying_members<V: Vfs + Clone>(
     let Some(before) = recorded_at.0.checked_sub(1).map(CommitSeq) else {
         return Ok(Err(invalid()));
     };
-    let edges = db.edges_at(recorded_at)?;
+    let edges = crate::op_witness::edges_at(db, recorded_at)?;
     let memberships: Vec<_> = edges
         .iter()
         .filter(|edge| edge.entry.relation == relation::IN_BATCH && edge.entry.src == reference.vid)

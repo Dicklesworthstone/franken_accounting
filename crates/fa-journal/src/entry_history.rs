@@ -329,7 +329,7 @@ fn verify<V: Vfs + Clone>(
     let known_at = known_at.unwrap_or(db.frontier()?);
     work.rebuilt = true;
     work.snapshot_scans = work.snapshot_scans.saturating_add(1);
-    let rows = db.vertices_at(known_at)?;
+    let rows = crate::op_witness::vertices_at(db, known_at)?;
     work.snapshot_rows = work.snapshot_rows.saturating_add(rows.len() as u64);
     let current: BTreeMap<_, _> = rows.iter().map(|row| (row.vid, row)).collect();
     let mut births: BTreeMap<VId, (CommitSeq, u64)> = BTreeMap::new();

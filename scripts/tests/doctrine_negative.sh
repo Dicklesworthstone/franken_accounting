@@ -6,14 +6,15 @@
 # Usage: scripts/tests/doctrine_negative.sh [<foundations-dir> [<workdir>]]
 #
 # Runs scripts/doctrine_check.sh on the real workspace (positive control) and
-# on six isolated scratch fixtures, each planting one constitutional violation
+# on isolated scratch fixtures, each planting one constitutional violation
 # and asserting a FAIL line naming the violation and `<file>:<line>`:
 #   1. planted `execute_gql` / `BoundPlan` reference;
 #   2. planted `f64` in an amount crate (`crates/fa-money/src/lib.rs`);
 #   3. planted `std::thread::spawn` in production `src/`;
 #   4. planted `#[derive(Serialize, Deserialize)]` on a first-party type;
 #   5. planted missing `#![forbid(unsafe_code)]` at a crate root;
-#   6. planted duplicate `fnx-classes` package ID in a posture closure.
+#   6. planted duplicate `fnx-classes` package ID in a posture closure;
+#   7. direct full-book scans, including production siblings after test items.
 # =============================================================================
 set -u
 
@@ -163,5 +164,38 @@ pub fn scan(db: &Db, seq: u64) { let _ = db.vertices_at(seq); }
 RS
 run_case case7-scan "$CASE7" "$CASE7/foundations"
 expect_fail "uninstrumented substrate scan" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:2:" "fa_journal::op_witness"
+
+# Test-only attributes apply to a single item. Start with a clean file that
+# uses the metered wrapper in production and literal scans in test code.
+SIBLINGS="$WORK/case7-siblings"
+make_clean_tree "$SIBLINGS"
+mkdir -p "$SIBLINGS/crates/fa-notary/src"
+cat >"$SIBLINGS/crates/fa-notary/src/lib.rs" <<'RS'
+#![forbid(unsafe_code)]
+#[cfg(test)]
+use crate::fixtures;
+#[cfg(test)]
+#[allow(dead_code)]
+/// The literal comparison exercises the storage read directly.
+mod checks { fn literal(db: &Db) { assert!(db.vertices().is_ok()); } }
+pub fn scan(db: &Db, seq: u64) { let _ = fa_journal::op_witness::vertices_at(db, seq); }
+RS
+run_case case7-siblings-clean "$SIBLINGS" "$SIBLINGS/foundations"
+if [ "$RC" -eq 0 ]; then
+  gate_pass "doctrine-negative — test-only scan and metered production sibling accepted"
+else
+  gate_fail "doctrine-negative — valid metered production sibling failed (exit $RC); see $OUT"
+fi
+
+# The production call occurs inside an ordinary Rust macro and crosses a line.
+cat >>"$SIBLINGS/crates/fa-notary/src/lib.rs" <<'RS'
+pub fn unmetered(db: &Db) { assert!(db
+    .edges_at(42).is_ok()); }
+#[cfg(not(test))]
+pub fn production_only(db: &Db) { let _ = db /* live handle */ .vertices(); }
+RS
+run_case case7-siblings-raw "$SIBLINGS" "$SIBLINGS/foundations"
+expect_fail "production macro scan after test items" ".edges_at()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:10:"
+expect_fail "production-only method call after test items" ".vertices()" "metered-substrate-scans" "crates/fa-notary/src/lib.rs:12:"
 
 gate_verdict
