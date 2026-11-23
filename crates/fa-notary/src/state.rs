@@ -1253,12 +1253,24 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
         svid,
         vec![],
     );
+    // A reopened book can retain its current state without the preceding delta.
+    // The marker only seeds the next checkpoint's memo. Resolve it before
+    // publication so a cache read cannot turn a committed write into an error.
+    let memo_marker = if memo.is_some() {
+        match fa_journal::rows::marker_at(db, through) {
+            Ok(marker) => marker,
+            Err(KernelError::Read(fgdb::ReadError::DeltaCursorRetired { .. })) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     txn.write_ordered(db, vec![batch, checkpoints])?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => {
             let leaf_kinds = journal.leaf_kinds();
             if let Some(memo) = memo {
-                memo.state = fa_journal::rows::marker_at(db, through)?.map(|marker| CarriedState {
+                memo.state = memo_marker.map(|marker| CarriedState {
                     book_id: book.book_id,
                     through_seq: through,
                     marker,

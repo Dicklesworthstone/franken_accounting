@@ -11,22 +11,73 @@ use fgdb_types::{CommitSeq, VId};
 
 const PRINCIPAL: VId = VId(7);
 
-fn book() -> Book {
+fn spec() -> BookSpec {
     let units = UnitRegistry::embedded().unwrap();
+    BookSpec {
+        book_id: Id128([71; 16]),
+        name: "Access checkpoint fixture".into(),
+        base_unit: units.lookup("USD").unwrap(),
+        calendar: FiscalCalendar::monthly("access-monthly", 1, 0).unwrap(),
+        time_zone_policy: None,
+        entities: Vec::new(),
+        opening_date: None,
+    }
+}
+
+fn book() -> Book {
     Book::create_memory(
         BookKeys::for_development(71),
-        BookSpec {
-            book_id: Id128([71; 16]),
-            name: "Access checkpoint fixture".into(),
-            base_unit: units.lookup("USD").unwrap(),
-            calendar: FiscalCalendar::monthly("access-monthly", 1, 0).unwrap(),
-            time_zone_policy: None,
-            entities: Vec::new(),
-            opening_date: None,
-        },
+        spec(),
         Entropy::deterministic(71),
     )
     .unwrap()
+}
+
+#[test]
+fn reopened_book_acknowledges_the_checkpoint_it_published() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("fa-checkpoint-{}-{nonce}", std::process::id()));
+    let keys = BookKeys::for_development(71);
+    let mut book =
+        Book::create_dir(&dir, keys.clone(), spec(), Entropy::deterministic(71)).unwrap();
+    let read = Capability::embedded(PRINCIPAL, &["read", "produce"]).unwrap();
+    let receipt = book
+        .record_access(&access("statement", &read))
+        .unwrap()
+        .unwrap();
+    let through = receipt.recorded_at;
+    let trusted_key = book.checkpoint_public_key();
+    book.compact_storage().unwrap();
+    drop(book);
+
+    let mut book = Book::open_dir(&dir, keys.clone(), Entropy::deterministic(72)).unwrap();
+    assert_eq!(book.head().unwrap(), through);
+    assert!(!book.has_delta_since(receipt.observed_at).unwrap());
+    let witness = Capability::embedded(PRINCIPAL, &["witness"]).unwrap();
+    let acknowledgment = book.checkpoint(PRINCIPAL, &witness);
+    drop(book);
+
+    let reopened = Book::open_dir(&dir, keys, Entropy::deterministic(73)).unwrap();
+    let states = reopened.checkpoints().unwrap();
+    let [stored] = states.as_slice() else {
+        panic!("one checkpoint must survive reopen: {states:?}")
+    };
+    assert_eq!(stored.state.through_seq, through);
+    assert_eq!(stored.recorded_at, CommitSeq(through.0 + 1));
+    assert_eq!(reopened.head().unwrap(), stored.recorded_at);
+    let published = acknowledgment
+        .expect("durable checkpoint must be acknowledged")
+        .unwrap();
+    assert_eq!(&published.stored, stored);
+    let signed = fa_verify::verify_checkpoint(&published.checkpoint.bytes, &[trusted_key]).unwrap();
+    assert_eq!(signed.state_oid, stored.oid.0);
+    assert_eq!(
+        signed.checkpoint,
+        fa_verify::verify_state(&stored.bytes).unwrap().checkpoint
+    );
 }
 
 fn access(command: &str, capability: &Capability) -> AccessRecord {
