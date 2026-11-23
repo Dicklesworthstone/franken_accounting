@@ -1286,6 +1286,23 @@ is a sample of commands, not a percentage of the complete product delivered.
 
 #### Current-cut refresh (2026-11-23)
 
+At `68bae145` a fresh Cargo fetch selected all eight FastMCP 0.12 crates
+from the published upstream backport `1fd4b6c4`, with `url` 2.5.9 and
+one asupersync package. The ordinary dependency audit, all four production
+foundation checks, 17 negative controls and all 128 native MCP tests passed.
+An examiner can bind an ADS package to an independently supplied checkpoint,
+civil cutoff and optional account code. The standalone verifier made all
+17 expected decisions across six real packages and invalid selections.
+Chart labels are authenticated for a whole-prefix proof. A single-account
+index proof authenticates that account's population and leaves labels informational.
+
+At `4918b308` the CLI routes a post-only draft reversal to its owned-draft
+planner and reopens original bank evidence during procedure-certificate replay.
+The candidate passed the 31 CLI authority tests, 50 bank tests and 62 proof
+tests. Warehouse receipt coverage used the host connector subprocess fixture.
+The combined tree passed Tier 0. The first full-gate run on this tree passed
+formatting and 195 public-ledger tests before worker refusals.
+
 At `cec2e391c86a` the Linux CLI completed the 21-command README invoice in a
 fresh book. A reopened book returned the signed checkpoint it had published.
 After another posting, register verification agreed with a journal refold and
