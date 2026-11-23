@@ -4228,3 +4228,42 @@ snapshot or fixture operation. The repaired selftest exits 0 with the same
 also exits 0, with both sentinel refs and project note refs verified unchanged.
 Raw baseline and fixed sentinel material remains at
 `/home/ubuntu/.codex/artifacts/fa-health-git-sentinel-1110-azt0138s`.
+
+### 2026-11-23 — GOLDEN-CHANGE for chart and fiscal-year intent outcomes
+
+At `74861677` the ARM64 facade passed 897 of 898 tests. Genesis completed
+32 lab seeds, the seed-one rerun and four live restarts. All 36 certificate
+witnesses then disagreed with FA-ART-LAB-04. The cross-target fixture
+executed twice with identical results. Its three report certificates and
+checkpoint bundle differed from the saved values. The register fold and the
+trial balance, balance sheet and income statement bytes matched.
+
+The unchanged original assertions passed on both `bdaf63b6` and `7d6a592e`.
+The latter commit's immediate child `7c11206c` registers the fiscal year's
+IntentOutcome alongside its creating control. That changed all 36 witnesses,
+the three certificates and the bundle. The chart acquired the same atomic
+registration in `ac601451`. That revision and its parent had an unrelated
+draft-reversal borrow error, so neither supplied a native campaign verdict.
+
+Two private diagnostic builds of `74861677` isolate the persisted inputs.
+Omitting only the chart outcome write reproduced the intermediate
+`7c11206c` result for all 36 witnesses and all eight book vectors.
+Omitting both writes restored every original value and passed both
+unchanged native tests. For each diagnostic all 2,067 tracked blobs were
+compared with the original tree. Only the named journal write sites
+differed. Both experiments used one schedule class and the same seed
+manifest. The production journal retains both atomic writes.
+
+Native Linux x86-64 and macOS ARM64 at `74861677` produced identical
+values for all 36 witnesses and all eight book vectors. Against the old
+pins, Linux failed the single Genesis test and passed one of the two
+cross-target tests, the same result as macOS. With the corrected fixtures
+the complete macOS facade passed 898 of 898 tests and the cross-target
+binary passed both tests, including its planted perturbation.
+
+The updated fixture binds the 36 observed witnesses, their producer, the
+manifest digest, the three certificate digests and the bundle digest.
+The prior manifest, registry and cross-target fixture remain available as
+Git blobs `76bacd614cc0bb2e4875554b7d21eeb92544ef32`,
+`7d458606f1752762e958634f9b45d367ef5497eb` and
+`58bbcfc14d9fe898dcba4d506068905ce49a1d12`.

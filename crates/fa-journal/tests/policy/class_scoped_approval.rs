@@ -354,9 +354,9 @@ fn payload_bound_approval_cannot_bypass_the_requires_dry_run_caveat() {
 // cryptographic dependency. These fixtures model already-retained signed
 // approval records; the native consumer must still recheck their class.
 #[derive(Debug)]
-struct FixtureVerifier;
+pub(super) struct FixtureVerifier;
 
-fn fixture_signature(key: &[u8; 32], message: &[u8]) -> [u8; 64] {
+pub(super) fn fixture_signature(key: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let mut signature = [0; 64];
     signature[..32].copy_from_slice(&fa_model::domain_digest(
         b"class-approval-signature-a",
@@ -371,13 +371,19 @@ fn fixture_signature(key: &[u8; 32], message: &[u8]) -> [u8; 64] {
 
 impl SignatureVerifier for FixtureVerifier {
     fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
-        *signature == fixture_signature(public_key, message)
+        fixture_signature(public_key, message)
+            .iter()
+            .zip(signature)
+            .fold(0u8, |difference, (expected, observed)| {
+                difference | (expected ^ observed)
+            })
+            == 0
     }
 }
 
 /// Register through the native key protocol; the fixture verifier checks
 /// possession and rotation endorsement as well as approval messages.
-fn register_fixture_key(h: &mut Harness, principal: VId, public_key: [u8; 32]) -> u32 {
+pub(super) fn register_fixture_key(h: &mut Harness, principal: VId, public_key: [u8; 32]) -> u32 {
     let chain = read_principal_keys(&h.db, &h.book, principal).unwrap();
     let generation = u32::try_from(chain.len()).unwrap();
     let mut key = PrincipalKey {
@@ -988,8 +994,10 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
         else {
             panic!("fixture approval payload");
         };
-        let (mut body, signature) = Approval::decode_record(bytes.as_slice()).unwrap();
-        let mut changed = signature.unwrap();
+        let (mut body, mut signature) = Approval::decode_record(bytes.as_slice()).unwrap();
+        let changed = signature
+            .as_mut()
+            .expect("the fixture recorded a signature");
         match field {
             "scheme" => changed.scheme = 99,
             "generation" => {
@@ -1004,12 +1012,10 @@ fn retained_approval_signature_metadata_must_match_its_recorded_key() {
             "key" => changed.key_id = key_id(&[193; 32]),
             "signature" => changed.bytes[0] ^= 1,
             "body" => body.role = 1,
-            "unsigned" => {}
+            "unsigned" => signature = None,
             _ => unreachable!(),
         }
-        let rewritten = body
-            .record_bytes((field != "unsigned").then_some(&changed))
-            .unwrap();
+        let rewritten = body.record_bytes(signature.as_ref()).unwrap();
         let mut corruption = WriteBatch::new(relation::IN_BOOK);
         corruption.set_vertex_property(
             approval.approval_vid,

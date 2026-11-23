@@ -835,9 +835,12 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
         "trial balance canonical bytes digest drifted on {}",
         std::env::consts::ARCH
     );
+    // Fiscal-year and chart installation now create a durable retry
+    // record in the selected native snapshot. Omitting only those two
+    // writes restores all eight old vectors. See docs/NEGATIVE_EVIDENCE.md.
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "f530b6003b5d2ae096ec87194903f6897afd607c32daa318a7f798525f8aa0fd",
+        "4c66e335ce3a135b5a13f06a50ea979458bc16138aba5d191843dbba27b106c0",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -849,7 +852,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "55e1d9d6b76c1cde0affe85cf2359db92476b548f94c253dc3b3931c197e742e",
+        "bce4e5278ef10deea78b38abaf68acd267ac3c11e0e01933df2984eb998de9df",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -861,13 +864,13 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "c4d210cba33e021803e065553e486d391a43c18171e5ea0b78c0b892e1efbb39",
+        "d7c40dbff5924aa177a6045b7f74409293769d29f932eb959938b6e6c1c3cf57",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
         hex32(&book_run_1.bundle_digest),
-        "d3f3e55064493126ac7270e702c3781710fe5364cad4bd5ae0a5920e9baa6269",
+        "da2b4248297b57f06adddaa4d0bc9f8773a6a338003309fece4aa8201869937f",
         "evidence bundle (.fab) digest drifted on {}",
         std::env::consts::ARCH
     );

@@ -3940,36 +3940,11 @@ fn an_agent_capability_beyond_its_template_ceiling_is_refused() {
 }
 
 /// fa-0hs4.30 / Appendix A `Approval`: kernel-level recording, idempotency,
-/// Ed25519 signature binding, branch-caveat enforcement, and symmetric commit
+/// signed message binding, branch-caveat enforcement, and symmetric commit
 /// admission over v3 `effects_digest` + `target_coordinate`.
 #[test]
 fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
-    #[derive(Debug)]
-    struct TestVerifier;
-
-    fn test_sig(key: &[u8; 32], message: &[u8]) -> [u8; 64] {
-        let mut sig = [0u8; 64];
-        sig[..32].copy_from_slice(&fa_model::domain_digest(
-            b"scoped-v3-sig-a",
-            &[key, message],
-        ));
-        sig[32..].copy_from_slice(&fa_model::domain_digest(
-            b"scoped-v3-sig-b",
-            &[key, message],
-        ));
-        sig
-    }
-
-    impl fa_policy::SignatureVerifier for TestVerifier {
-        fn verify_ed25519(
-            &self,
-            public_key: &[u8; 32],
-            message: &[u8],
-            signature: &[u8; 64],
-        ) -> bool {
-            *signature == test_sig(public_key, message)
-        }
-    }
+    use class_scoped_approval::{FixtureVerifier, fixture_signature, register_fixture_key};
 
     let mut h = harness();
     let proposal_digest = [0x41; 32];
@@ -4062,33 +4037,8 @@ fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
 
     // 2. Signed v3 scoped approval by Bob with a registered principal key + issued branch caveat.
     let bob_pub = [0x77; 32];
-    let mut pk = fa_policy::PrincipalKey {
-        book_id: h.book.book_id,
-        principal: BOB,
-        generation: 0,
-        public_key: bob_pub,
-        possession: [0; 64],
-        endorsement: None,
-    };
-    pk.possession = test_sig(&bob_pub, &pk.message());
-    let ctx = h.ctx();
-    let desc = h.period_description();
-    h.runtime
-        .block_on(fa_journal::register_principal_key(
-            &mut h.db,
-            &ctx,
-            &h.book,
-            fa_journal::PrincipalKeyRequest {
-                capability: human(BOB, &["approve"]),
-                key: pk,
-                effective_date: DateDay::from_ymd(2026, 3, 1).unwrap(),
-                idempotency_key: b"bob-v3-key".to_vec(),
-                description: desc,
-                verifier: &TestVerifier,
-            },
-        ))
-        .unwrap()
-        .expect("register bob key");
+    let generation = register_fixture_key(&mut h, BOB, bob_pub);
+    assert_eq!(generation, 0);
 
     let steward_id = VId(99);
     let issuer = human(steward_id, &["approve", "issue_capability"]);
@@ -4116,9 +4066,9 @@ fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
     let bob_digest = bob_approval.digest().unwrap();
     let bob_sig = fa_policy::PrincipalSignature {
         scheme: fa_policy::principal_key::SCHEME_ED25519,
-        generation: 0,
+        generation,
         key_id: fa_policy::principal_key::key_id(&bob_pub),
-        bytes: test_sig(
+        bytes: fixture_signature(
             &bob_pub,
             &fa_policy::principal_key::approval_message(&bob_digest),
         ),
@@ -4140,8 +4090,8 @@ fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
             Some(effects),
             Some(other_branch),
             Some(SignedBy {
-                signature: bob_sig.clone(),
-                verifier: &TestVerifier,
+                signature: bob_sig,
+                verifier: &FixtureVerifier,
             }),
         ))
         .unwrap()
@@ -4171,8 +4121,8 @@ fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
             Some(wrong_effects),
             Some(branch),
             Some(SignedBy {
-                signature: bob_sig.clone(),
-                verifier: &TestVerifier,
+                signature: bob_sig,
+                verifier: &FixtureVerifier,
             }),
         ))
         .unwrap()
@@ -4199,7 +4149,7 @@ fn scoped_v3_approval_binds_effects_and_coordinate_at_commit() {
             Some(branch),
             Some(SignedBy {
                 signature: bob_sig,
-                verifier: &TestVerifier,
+                verifier: &FixtureVerifier,
             }),
         ))
         .unwrap()

@@ -1314,6 +1314,33 @@ the stored edges. Preserve that check when addressing `fa-0hs4.27`. The dependen
 gate independently found RUSTSEC-2026-0592 through both MCP parents, which pin
 `url` 2.5.8 exactly. The first fixed version is 2.5.9 (`fa-0hs4.26`).
 
+At `74861677` all 77 offline forensic procedure tests, nine engine
+reclassification tests and three reference reclassification tests passed
+on Linux x86-64 and macOS ARM64. All 19 standalone recipient decisions
+reproduced the retained invoice and public examination results. Beancount
+and hledger agreed with the native posted balances and gross activity on
+all seven registered demo books, covering 81 entries, 183 postings and
+72 account/unit cells. A separate reservation on a fresh book kept USD 5
+pending, posted USD 3 on capture and released a later USD 4 hold. Both
+external tools agreed at all four frontiers.
+
+The Linux reference differential exercised eight generated histories and
+131 combinations of entry class, period state and outcome. Its serial
+replay examined 320 races, including 119 conflicts. The planted mutation
+and two invalid serial histories were detected. A 50-seed macOS run reached
+147 distinct combinations and replayed 2,000 races. Of 951 contended races,
+794 conflicted and 253 retries were admitted. The native batch test also
+reopened after seven publication faults and checked all-or-none recovery
+and idempotent retry. These runs supply evidence for parts of G1-04 and
+G1-05. Their scoreboard rows still lack these executable probes.
+
+The corrected checkpoint meter exposed eight reads at 1,000 entries and
+ten at 10,000 against a ceiling of two. The native Genesis campaign also
+exposed a stale historical witness that the stored-artifact scoreboard
+accepted. The fiscal-year and chart outcome vertices account for the
+certificate changes. The original financial outputs and the two controlled
+diagnostics are recorded in [the negative evidence ledger](docs/NEGATIVE_EVIDENCE.md).
+
 #### Current-cut refresh (2026-11-22)
 
 **The journal-to-recipient workflow works on retained binaries. A new operator cannot build the CLI from the reviewed source.** Local `main` was `6683789e947d`, tree `10cca6a52e55`, seven commits ahead of published `main` and `master` at `adb8e10ddbcd`. The 34 intervening commits since the November 20 review added meaningful accounting behavior, including whole automatic-rule groups in drafts, explicit purchase-line coverage and bank-reconciliation requirements in close runs. The fresh-build failure sits at the junction of two of those changes. This entry updates the V01–V39 assessment below. The §19 exit criteria continue to govern qualification.
