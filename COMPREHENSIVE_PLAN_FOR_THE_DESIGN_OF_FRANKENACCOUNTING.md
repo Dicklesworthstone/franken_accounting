@@ -1303,6 +1303,17 @@ tests. Warehouse receipt coverage used the host connector subprocess fixture.
 The combined tree passed Tier 0. The first full-gate run on this tree passed
 formatting and 195 public-ledger tests before worker refusals.
 
+At `826f7e1e` the offline verifier accepts signed allocated receipts and
+payments whose cash leg names its own party. Substituting another registered
+party in the signed bytes fails the proposal digest check. At `af9b7c1f`
+the CLI exercised all 296 declared CLI events. A retention cut preview checks
+the caller's erase authority, the recorded subject, active holds and retention
+floors. An allowed preview leaves the journal head unchanged. Physical cuts
+remain unavailable. At `3d4c02f5` seven forensic reports replayed identically
+at their retained frontier after a later posting. The cash-flow catalog runs
+v5 and v6 and explicitly refuses a request to execute v4. Historical v4
+certificate framing has a separate verification test.
+
 At `cec2e391c86a` the Linux CLI completed the 21-command README invoice in a
 fresh book. A reopened book returned the signed checkpoint it had published.
 After another posting, register verification agreed with a journal refold and
