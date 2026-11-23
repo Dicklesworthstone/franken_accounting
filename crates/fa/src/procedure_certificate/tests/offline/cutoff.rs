@@ -34,8 +34,7 @@ fn refused(f: &mut Fixture, certificate: &ProcedureCertificate) -> Refusal {
             certificate,
         ))
         .unwrap()
-        .err()
-        .expect("incomplete calendar closure must refuse export");
+        .expect_err("incomplete calendar closure must refuse export");
     assert_eq!(f.head(), before);
     assert_eq!(refusal.code, fa_notary::code::SCOPE_UNSUPPORTED);
     refusal

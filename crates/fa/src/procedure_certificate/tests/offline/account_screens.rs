@@ -77,7 +77,7 @@ fn suspense_aging_portably_replays_settlement_residuals_zero_net_and_historical_
     assert_eq!(finding.statistic.value, 15);
     assert_eq!(finding.severity, Severity::High);
     assert!(finding.narrative.contains("net balance 0 in unit"));
-    let mut cited = vec![debit, credit];
+    let mut cited = [debit, credit];
     cited.sort_unstable();
     assert_eq!(
         finding.cites,
