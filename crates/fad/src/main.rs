@@ -805,7 +805,7 @@ mod tests {
         assert!(text.contains("asupersync@78b64636"), "{text}");
         assert!(text.contains("frankengraphdb@b323bd17"), "{text}");
         assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
-        assert!(text.contains("fastmcp-rust@=0.12.0"), "{text}");
+        assert!(text.contains("fastmcp-rust@1fd4b6c4"), "{text}");
         assert!(text.contains("frankensympy@bd1ad68a"), "{text}");
         assert!(text.contains("franken_markdown@7d0472b2"), "{text}");
         assert!(text.contains("registries: schema_v=1, epochs=15"), "{text}");
@@ -817,6 +817,18 @@ mod tests {
             .and_then(Json::as_arr)
             .expect("foundations array");
         assert_eq!(foundations.len(), 8);
+        let fastmcp = foundations
+            .iter()
+            .find(|entry| entry.get("name").and_then(Json::as_str) == Some("fastmcp-rust"))
+            .expect("FastMCP foundation");
+        assert_eq!(
+            fastmcp.get("rev").and_then(Json::as_str),
+            Some("1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6")
+        );
+        assert_eq!(
+            fastmcp.get("version").and_then(Json::as_str),
+            Some("=0.12.0")
+        );
         let epochs = meta
             .get("registry_epochs")
             .and_then(Json::as_arr)
