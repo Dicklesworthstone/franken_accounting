@@ -443,6 +443,27 @@ fn complete_purchase_matching_requires_exact_selection_and_current_launch_author
 }
 
 #[test]
+fn recon_post_usage_names_every_encodable_bridge_reason() {
+    let registry = fa_cli::verbs::registry().unwrap();
+    let recon = registry.verb("recon").unwrap();
+    let names = recon
+        .usage
+        .iter()
+        .find_map(|line| line.strip_prefix("recon post --reason-code <"))
+        .and_then(|line| line.split_once('>'))
+        .expect("recon post usage lists its reason codes")
+        .0;
+    let mut listed: Vec<_> = names.split('|').collect();
+    let mut encodable: Vec<_> = fa::BookToBookReasonCode::ALL
+        .iter()
+        .map(|reason| reason.as_str())
+        .collect();
+    listed.sort_unstable();
+    encodable.sort_unstable();
+    assert_eq!(listed, encodable);
+}
+
+#[test]
 fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
     static NEXT_CHAIN: AtomicU64 = AtomicU64::new(0);
     let dir = loop {
@@ -519,7 +540,7 @@ fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
         let mut args = if index == 0 {
             vec!["post"]
         } else {
-            vec!["recon", "post", "--reason-code", "STAT-RESERVE-BASIS"]
+            vec!["recon", "post", "--reason-code", "STAT-RECLASS"]
         };
         args.extend([
             "--intent",
@@ -527,6 +548,20 @@ fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
             "--evidence",
             documents[index].as_str(),
         ]);
+        if index == 1 {
+            let before = head(book);
+            let mut invalid = args.clone();
+            invalid[3] = "STAT-RESERVE-BASIS";
+            let (exit, error) = run(book, &invalid);
+            assert_eq!(exit, 2, "{}", error.render());
+            assert!(
+                text(data(&error), "message")
+                    .contains("unknown --reason-code `STAT-RESERVE-BASIS`"),
+                "{}",
+                error.render()
+            );
+            assert_eq!(head(book), before);
+        }
         ok(book, &args);
     }
     let primary = books[0].to_str().unwrap();
@@ -551,6 +586,9 @@ fn nested_adjustment_layers_replay_historical_ancestry_on_cli() {
     assert_eq!(text(cash, "parent_net"), "1120.00 USD");
     assert_eq!(text(cash, "adjustments_net"), "5.00 USD");
     assert_eq!(text(cash, "layered_net"), "1125.00 USD");
+    let explanations = cash.get("explanations").and_then(Json::as_arr).unwrap();
+    assert_eq!(explanations.len(), 1);
+    assert_eq!(text(&explanations[0], "reason_code"), "STAT-RECLASS");
     let ancestry = data(&first)
         .get("parent_ancestry")
         .and_then(Json::as_arr)
