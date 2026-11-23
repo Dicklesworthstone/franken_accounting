@@ -1999,17 +1999,17 @@ fa-verify prefix --proof acme.prefix --checkpoint acme.ckpt --key <checkpoint_pu
 # An evidence bundle: one account's month, a recomputed balance, a signed receipt.
 fa bundle produce --account 1000 --from 2026-03-01 --to 2026-03-31 \
   --balance 1000:USD:2026-03-31 --out cash.fab --receipt-out cash.receipt --book ./books/acme --json
-fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt --json
+fa-verify bundle cash.fab --key <checkpoint_public_key> --receipt cash.receipt \
+  --account <cash_account_vertex_id> --from 20513 --to 20543 --json
 ```
 
-`--key` (repeatable) is required for `scope` and `bundle`; run
-`fa-verify --help` for the grammar. Receiving a proof and its checkpoint together
-does not authenticate their origin. The verifier requires the trust anchor
-as a separate input and reports the exact predicate it checked: inclusion,
-tree extension, complete prefix envelopes, or posted debit/credit arithmetic
-for one account/unit through the optional date. Exact amounts are integer
-mantissa strings. It does not claim witness signatures, document receipts,
-FX conversion, financial-statement validity or full evidence-bundle replay.
+Obtain the book's trusted public key and the account vertex ID independently.
+Supply all three scope arguments to require that account and date interval.
+The inclusive day numbers 20513 and 20543 mean March 1 and March 31, 2026.
+A valid bundle for another account or interval returns exit 8. Omitting the
+three arguments verifies the bundle and reports the scope it actually covers.
+The checkpoint, completeness, receipt and requested scope each have their own
+result in the JSON. The verifier reports exact amounts as integer mantissa strings.
 
 `--out` creates a private raw binary file and refuses to overwrite an existing
 path. Without it, the `proof_exported` event includes complete hex bytes and

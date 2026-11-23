@@ -16,8 +16,8 @@
 //!                                                the claimed checkpoint extends the trusted one
 //!   doc-commit   <document> --kind N [--expect H]
 //!                                                a document's public commitment from its bytes
-//!   bundle       <bundle> --key K... [--receipt R]
-//!                                                an evidence bundle, every predicate graded
+//!   bundle       <bundle> --key K... [--receipt R] [--account A --from D --to D]
+//!                                                an evidence bundle and optional recipient interval
 //!   scenario     <bundle> --key K... --scenario-request Q [--receipt R] [--expect H]
 //!                                                conditional additive scenario mathematics;
 //!                                                historical admission and native markers unjudged
@@ -60,7 +60,7 @@ mod scenario;
 
 use crate::ads::{AdsReport, verify_ads};
 use crate::blake3::hex;
-use crate::bundle::{BundleReport, BundleScope, Grade, verify_bundle};
+use crate::bundle::{BundleReport, BundleScope, Completeness, Grade, verify_bundle};
 use crate::checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
 use crate::document::doc_commit;
 use crate::envelope::LeafEnvelope;
@@ -116,8 +116,10 @@ commands:
   consistency  <proof> --trusted C --claimed C ANCHOR
                                                 the claimed checkpoint extends the trusted one
   doc-commit   <document> --kind N [--expect H] a document's public commitment from its bytes
-  bundle       <bundle> --key K... [--receipt R]
+  bundle       <bundle> --key K... [--receipt R] [--account A --from D --to D]
                                                 an evidence bundle (.fab), every predicate graded
+                                                optional account and days require an exact match
+                                                against the checkpoint's signed scope index
   scenario     <bundle> --key K... --scenario-request Q [--receipt R] [--expect H]
                                                 conditional additive scenario mathematics;
                                                 historical admission and native markers unjudged
@@ -320,7 +322,8 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--unsigned-checkpoint",
         ],
         "doc-commit" => &["--kind", "--expect"],
-        "bundle" | "ads" | "saft" => &["--key", "--receipt"],
+        "bundle" => &["--key", "--receipt", "--account", "--from", "--to"],
+        "ads" | "saft" => &["--key", "--receipt"],
         "report" => &[
             "--key",
             "--receipt",
@@ -813,7 +816,9 @@ fn key(text: &str) -> Result<[u8; 32], Usage> {
 
 fn account(text: &str) -> Result<u128, Usage> {
     let parsed = match text.strip_prefix("0x") {
-        Some(h) if !h.is_empty() && h.len() <= 32 => u128::from_str_radix(h, 16).ok(),
+        Some(h) if h.len() <= 32 && h.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            u128::from_str_radix(h, 16).ok()
+        }
         Some(_) => None,
         None => text.parse::<u128>().ok(),
     };
@@ -822,6 +827,21 @@ fn account(text: &str) -> Result<u128, Usage> {
             format!("`--account {text}` is not an account vid"),
             "pass a decimal vid or 0x followed by up to 32 hex characters",
         )
+    })
+}
+
+fn account_interval(args: &Args) -> Result<ScopeClaim, Usage> {
+    let command = format!("`{}`", args.command);
+    let vid = args.one("--account").ok_or_else(|| {
+        usage(
+            format!("{command} needs `--account`"),
+            "pass the account vid you are asking about",
+        )
+    })?;
+    Ok(ScopeClaim {
+        account: account(vid)?,
+        from: int(args, "--from", &command)?,
+        to: int(args, "--to", &command)?,
     })
 }
 
@@ -1233,15 +1253,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ));
             }
             let claim = if cmd == "scope" {
-                let account = account(args.one("--account").ok_or_else(|| {
-                    usage(
-                        "`scope` needs `--account`",
-                        "pass the account vid you are asking about",
-                    )
-                })?)?;
-                let from = int::<i32>(args, "--from", "`scope`")?;
-                let to = int::<i32>(args, "--to", "`scope`")?;
-                Some(ScopeClaim { account, from, to })
+                Some(account_interval(args)?)
             } else {
                 None
             };
@@ -1452,6 +1464,21 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "bundle" => {
             let file = subject(args, "a bundle file")?;
+            let interval = if ["--account", "--from", "--to"]
+                .iter()
+                .any(|f| args.one(f).is_some())
+            {
+                let claim = account_interval(args)?;
+                if claim.from > claim.to {
+                    return Err(usage(
+                        "the recipient's account interval is reversed",
+                        "pass an inclusive --from day at or before --to",
+                    ));
+                }
+                Some(claim)
+            } else {
+                None
+            };
             let keys = args.all("--key");
             if keys.is_empty() {
                 return Err(usage(
@@ -1465,7 +1492,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Some(p) => Some(load(read, p, args.hex)?),
                 None => None,
             };
-            Ok(match verify_bundle(&bytes, &keys, receipt.as_deref()) {
+            let verified = verify_bundle(&bytes, &keys, receipt.as_deref());
+            let mut checks = match &verified {
                 Err(e) => vec![Check {
                     name: "bundle",
                     scope: "format",
@@ -1473,8 +1501,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     detail: Vec::new(),
                     reason: Some(e.to_string()),
                 }],
-                Ok(report) => bundle_checks(&report),
-            })
+                Ok(report) => bundle_checks(report),
+            };
+            if let Some(expected) = interval {
+                checks.push(recipient_bundle_scope(verified.as_ref().ok(), expected));
+            }
+            Ok(checks)
         }
         "report" => {
             let file = subject(args, "a report bundle file")?;
@@ -5257,6 +5289,47 @@ fn attestation_signatures_check(proof: &[u8], cp: &Checkpoint) -> Check {
     }
 }
 
+fn recipient_bundle_scope(report: Option<&BundleReport>, expected: ScopeClaim) -> Check {
+    let authenticated = report.filter(|report| {
+        ["manifest", "completeness", "entries"].iter().all(|name| {
+            report
+                .checks
+                .iter()
+                .any(|c| c.check == *name && c.grade == Grade::Pass)
+        })
+    });
+    let (verdict, reason) = match authenticated {
+        None => (
+            Verdict::Unrun,
+            Some("the manifest and its complete entry selection have not verified".into()),
+        ),
+        Some(r)
+            if r.manifest.scope == BundleScope::Account(expected)
+                && r.manifest.completeness == Completeness::ScopeIndexComplete =>
+        {
+            (Verdict::Pass, None)
+        }
+        Some(_) => (
+            Verdict::Fail,
+            Some(
+                "the authenticated bundle scope differs from the recipient's account interval"
+                    .into(),
+            ),
+        ),
+    };
+    Check {
+        name: "recipient_scope",
+        scope: Completeness::ScopeIndexComplete.label(),
+        verdict,
+        detail: vec![
+            ("account", s(format!("0x{:032x}", expected.account))),
+            ("from", Json::Int(i64::from(expected.from))),
+            ("to", Json::Int(i64::from(expected.to))),
+        ],
+        reason,
+    }
+}
+
 fn bundle_checks(report: &BundleReport) -> Vec<Check> {
     let m = &report.manifest;
     let scope = match &m.scope {
@@ -6513,6 +6586,116 @@ mod tests {
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
         };
         run(&args, &read)
+    }
+
+    #[test]
+    fn bundle_recipient_can_require_its_own_account_interval() {
+        let fs = files();
+        let key = key_hex();
+        // The frozen signed account vector selects account 16 over every i32 day.
+        let first = i32::MIN.to_string();
+        let last = i32::MAX.to_string();
+        let verify = |file, account, from, to, key: &str, extra: &[&str]| {
+            let mut args = vec![
+                "bundle",
+                file,
+                "--key",
+                key,
+                "--account",
+                account,
+                "--from",
+                from,
+                "--to",
+                to,
+                "--hex",
+                "--json",
+            ];
+            args.extend_from_slice(extra);
+            run_with(&args, &fs)
+        };
+        let grade = |output: &Output, name, scope, result| {
+            let clause = format!(r#""check":"{name}","scope":"{scope}","result":"{result}""#);
+            assert!(
+                output.stdout.contains(&clause),
+                "missing {clause}: {}",
+                output.stdout
+            );
+        };
+        let right = verify("bundle_account", "0x10", &first, &last, &key, &[]);
+        assert_eq!(right.exit, EXIT_VERIFIED, "{}", right.stdout);
+        grade(&right, "recipient_scope", "scope_index_complete", "pass");
+        assert!(right.stdout.contains(
+            r#""account":"0x00000000000000000000000000000010","from":-2147483648,"to":2147483647"#
+        ));
+
+        for (file, account, from, to) in [
+            ("bundle_account", "17", first.as_str(), last.as_str()),
+            ("bundle_account", "16", "0", last.as_str()),
+            ("bundle_account", "16", first.as_str(), "0"),
+            ("bundle_prefix", "16", first.as_str(), last.as_str()),
+            ("bundle_entries", "16", first.as_str(), last.as_str()),
+        ] {
+            let receipt = if file == "bundle_prefix" {
+                &["--receipt", "receipt"][..]
+            } else {
+                &[]
+            };
+            let wrong = verify(file, account, from, to, &key, receipt);
+            assert_eq!(wrong.exit, EXIT_FAILED, "{file}: {}", wrong.stdout);
+            grade(&wrong, "recipient_scope", "scope_index_complete", "fail");
+            assert_eq!(
+                wrong.stdout.matches(r#""result":"fail""#).count(),
+                1,
+                "{}",
+                wrong.stdout
+            );
+            grade(&wrong, "checkpoint", "signature", "pass");
+            grade(&wrong, "manifest", "manifest", "pass");
+            if file == "bundle_prefix" {
+                grade(&wrong, "production_receipt", "production", "pass");
+            }
+        }
+        let wrong_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let untrusted = verify("bundle_account", "16", &first, &last, wrong_key, &[]);
+        assert_eq!(untrusted.exit, EXIT_FAILED, "{}", untrusted.stdout);
+        grade(&untrusted, "checkpoint", "signature", "fail");
+        grade(
+            &untrusted,
+            "recipient_scope",
+            "scope_index_complete",
+            "unrun",
+        );
+        let legacy = run_with(
+            &["bundle", "bundle_account", "--hex", "--key", &key, "--json"],
+            &fs,
+        );
+        assert_eq!(legacy.exit, EXIT_VERIFIED, "{}", legacy.stdout);
+        assert!(!legacy.stdout.contains("recipient_scope"));
+
+        for options in [
+            &["--account", "16"][..],
+            &["--from", "0", "--to", "1"],
+            &["--account", "16", "--to", "1"],
+            &["--account", "16", "--from", "0"],
+            &["--account", "0x+1", "--from", "0", "--to", "1"],
+            &["--account", "16", "--from", "1", "--to", "0"],
+            &["--account", "16", "--from", "day", "--to", "1"],
+            &["--account", "16", "--from", "0", "--to", "2147483648"],
+            &["--account", "16", "--from", "0", "--to", "1", "--from=0"],
+        ] {
+            let mut args = vec![
+                "bundle",
+                "unopened",
+                "--key",
+                &key,
+                "--receipt",
+                "also-unopened",
+            ];
+            args.extend_from_slice(options);
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            let out = run(&args, &|file| panic!("usage read {file} for {options:?}"));
+            assert_eq!(out.exit, EXIT_USAGE, "{options:?}: {}", out.stderr);
+        }
     }
 
     #[test]

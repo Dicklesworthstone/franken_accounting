@@ -265,29 +265,38 @@ fn exercise_bundle() -> Result<()> {
         ],
         "bundle_produced",
     )?;
-    let mut verify = |bundle: &str, key: &str, expected| {
+    let from = DateDay::from_ymd(2026, 3, 1).unwrap().0.to_string();
+    let to = DateDay::from_ymd(2026, 3, 31).unwrap().0.to_string();
+    let wrong_scope = format!("0x{:032x}", account_vid(f.book_id, "4000").0);
+    let mut verify = |key: &str, requested: &str, end: &str, expected| {
         f.verify(
             &[
                 "bundle",
-                bundle,
+                "invoice.fab",
                 "--key",
                 key,
                 "--receipt",
                 "invoice.receipt",
+                "--account",
+                requested,
+                "--from",
+                &from,
+                "--to",
+                end,
             ],
             expected,
         )
     };
-    let positive = verify("invoice.fab", &book_key, 0)?;
+    let positive = verify(&book_key, &account, &to, 0)?;
     require_bundle(&positive, &state, &account)?;
-    let wrong = verify("invoice.fab", &other_key, 8)?;
+    check(&positive, "recipient_scope", "pass")?;
+    let wrong = verify(&other_key, &account, &to, 8)?;
     check(&wrong, "checkpoint", "fail")?;
-    let wrong_scope = format!("0x{:032x}", account_vid(f.book_id, "4000").0);
-    if require_bundle(&positive, &state, &wrong_scope).is_ok() {
-        return Err("accepted the bundle for another account".into());
+    for (requested, end) in [(&wrong_scope, &to), (&account, &from)] {
+        let mismatch = verify(&book_key, requested, end, 8)?;
+        require_bundle(&mismatch, &state, &account)?;
+        check(&mismatch, "recipient_scope", "fail")?;
     }
-    writeln!(f.trace, "March account 1200 ({account}) accepted; account 4000 ({wrong_scope}) rejected for the same verified bytes.")
-        .map_err(|e| e.to_string())?;
     // Change the human manifest alone, keeping the authentic book signature intact.
     let mut bytes = fs::read(f.dir.join("invoice.fab")).map_err(|e| e.to_string())?;
     let heading = b"# FrankenAccounting evidence bundle";
