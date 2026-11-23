@@ -4288,6 +4288,14 @@ writes, two vertex writes and one transaction at both sizes. Its next
 failure was `query_procedure`, with 9,187 reads against 1. The independent
 smoke command reached the same operation and measured 137 against 1.
 
+The scale test constructs both books before it checks the first result. A
+diagnostic run at `b746f8eb` printed both raw counters before that assertion.
+The 1,000-entry snapshot charged 9,187 read units and the 10,000-entry
+snapshot charged 90,227. Both exceeded the registered count of one. At
+`4918b308` the unmodified scale test again stopped on 9,187, and the
+standalone benchmark driver refused to proceed. To run the assertion, use
+`cargo test -p fa-bench --lib tests::kernel_op_witness_scales_invariantly_between_1k_and_10k_entries -- --exact`.
+
 The earlier warm-path regression required at least four lookups, including
 two for the new leaf. Its unchanged assertion failed on a measured two
 when the delta supplied that leaf. It now requires exactly the root and
