@@ -385,7 +385,7 @@ fn correction_history_rejects_resealed_missing_altered_and_extra_findings() {
         for &variant in variants {
             let mut forged = certified.certificate.clone();
             match variant {
-                "version" => forged.report.version = 1,
+                "version" => change_report_version(&mut forged, 1),
                 "cutoff" => forged.report.coordinate.effective_through = Some(day(31)),
                 "handle" => forged.report.inputs.push(("account".into(), "1000".into())),
                 "negative_minimum" => forged.report.parameters[0].1 = -1,
@@ -404,7 +404,11 @@ fn correction_history_rejects_resealed_missing_altered_and_extra_findings() {
                 verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
                     .unwrap_err()
                     .predicate,
-                "procedure_profile",
+                if variant == "handle" {
+                    "canonical_encoding"
+                } else {
+                    "procedure_profile"
+                },
                 "{id}: {variant}"
             );
         }

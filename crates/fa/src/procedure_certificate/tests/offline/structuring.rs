@@ -273,7 +273,11 @@ fn graph_structuring_rejects_resealed_findings_omitted_sources_and_unsupported_p
             verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
                 .unwrap_err()
                 .predicate,
-            "procedure_profile",
+            if variant == "handle" {
+                "canonical_encoding"
+            } else {
+                "procedure_profile"
+            },
             "{variant}"
         );
     }

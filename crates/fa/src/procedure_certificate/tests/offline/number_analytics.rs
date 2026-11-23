@@ -405,7 +405,7 @@ fn numeric_audit_bundles_reject_resealed_results_and_invalid_profiles() {
         for variant in ["version", "cutoff", "handle", "missing", "range"] {
             let mut forged = certified.certificate.clone();
             match variant {
-                "version" => forged.report.version = 2,
+                "version" => change_report_version(&mut forged, 2),
                 "cutoff" => forged.report.coordinate.effective_through = Some(day(31)),
                 "handle" => forged
                     .report

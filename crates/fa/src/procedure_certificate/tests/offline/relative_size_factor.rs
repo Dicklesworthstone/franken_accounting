@@ -303,12 +303,7 @@ fn relative_size_factor_rejects_resealed_results_and_unsupported_profiles() {
     ] {
         let mut forged = certified.certificate.clone();
         match variant {
-            "version" => {
-                forged.report.version = 2;
-                for finding in &mut forged.report.findings {
-                    finding.version = 2;
-                }
-            }
+            "version" => change_report_version(&mut forged, 2),
             "cutoff" => forged.report.coordinate.effective_through = Some(day(3)),
             "handles" => forged.report.inputs.push(("account".into(), "6000".into())),
             "negative" => forged.report.parameters[0].1 = -1,

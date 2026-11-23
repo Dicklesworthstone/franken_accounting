@@ -98,10 +98,13 @@ fn weekend_exports_original_document_dates_and_reversal_liveness_without_the_sou
                 "weekend.fab".into(),
                 "--key".into(),
                 key.iter().map(|byte| format!("{byte:02x}")).collect(),
+                "--receipt".into(),
+                "weekend.receipt".into(),
                 "--json".into(),
             ],
             &|path| match path {
                 "weekend.fab" => Ok(produced.bundle.bytes.clone()),
+                "weekend.receipt" => Ok(produced.receipt.clone()),
                 _ => Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "unexpected input",

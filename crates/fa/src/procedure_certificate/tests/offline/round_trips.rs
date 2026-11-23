@@ -279,7 +279,11 @@ fn graph_round_trips_reject_resealed_outputs_and_out_of_bounds_profiles() {
             verify_report_expected(&changed, &[key], None, None, Some(forged.digest()))
                 .unwrap_err()
                 .predicate,
-            "procedure_profile",
+            if variant == "handle" {
+                "canonical_encoding"
+            } else {
+                "procedure_profile"
+            },
             "{variant}"
         );
     }

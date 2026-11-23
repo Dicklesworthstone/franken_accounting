@@ -258,6 +258,27 @@ fn replace_certificate(bundle: &[u8], certificate: &ProcedureCertificate) -> Vec
     w.finish().unwrap()
 }
 
+/// Give the negative control a consistent run/finding version before asking a
+/// recipient to verify it. Native witnesses are specific to a procedure version.
+fn change_report_version(certificate: &mut ProcedureCertificate, version: u16) {
+    certificate.report.version = version;
+    for finding in &mut certificate.report.findings {
+        finding.version = version;
+    }
+    if !certificate.extended_inputs.is_empty()
+        && !extended::has_retained_closure(&certificate.report.procedure, version)
+    {
+        let refusal = extended::validate(certificate).unwrap_err();
+        assert_eq!(refusal.exit, 8);
+        assert!(
+            refusal
+                .message
+                .contains("unexpected extended native inputs")
+        );
+        certificate.extended_inputs.clear();
+    }
+}
+
 pub(super) fn reseal(certificate: &mut ProcedureCertificate) {
     let run = &mut certificate.report;
     let mut parameters = Writer::new();

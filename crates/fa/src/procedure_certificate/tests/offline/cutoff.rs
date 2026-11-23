@@ -102,22 +102,26 @@ fn cutoff_exports_dated_live_population_and_ignores_reversed_missing_years() {
         }
     );
     assert_eq!(procedure.findings[0].population, 2);
-    let json = fa_verify::cli::run(
-        &[
-            "report".into(),
-            "cutoff.fab".into(),
-            "--key".into(),
-            key.iter().map(|byte| format!("{byte:02x}")).collect(),
-            "--json".into(),
-        ],
-        &|path| match path {
-            "cutoff.fab" => Ok(produced.bundle.bytes.clone()),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "unexpected input",
-            )),
-        },
-    );
+    let read = |path: &str| match path {
+        "cutoff.fab" => Ok(produced.bundle.bytes.clone()),
+        "cutoff.receipt" => Ok(produced.receipt.clone()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "unexpected input",
+        )),
+    };
+    let mut args = vec![
+        "report".into(),
+        "cutoff.fab".into(),
+        "--key".into(),
+        key.iter().map(|byte| format!("{byte:02x}")).collect(),
+        "--json".into(),
+    ];
+    let unpinned = fa_verify::cli::run(&args, &read);
+    assert_eq!(unpinned.exit, 8, "{}", unpinned.stdout);
+    assert!(unpinned.stdout.contains("report_input_authority"));
+    args.extend(["--receipt".into(), "cutoff.receipt".into()]);
+    let json = fa_verify::cli::run(&args, &read);
     assert_eq!(json.exit, 0, "{}", json.stdout);
     for expected in [
         "\"statistic\":\"days_between_dates\"",
@@ -372,6 +376,13 @@ fn unrecorded_liabilities_v2_exports_period_end_windows_and_original_account_typ
             "obligations.fab".into(),
             "--key".into(),
             key.iter().map(|byte| format!("{byte:02x}")).collect(),
+            "--expect".into(),
+            certified
+                .certificate
+                .digest()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
             "--json".into(),
         ],
         &|path| match path {
