@@ -2026,9 +2026,8 @@ mod bound_tests {
         }
     }
 
-    /// Only the readers that judge the session's scope caveats through
-    /// `Book::read_scope` say so; every other command, writes included,
-    /// reaches the whole book on the bound route (fa-0x0).
+    /// Commands that judge their own reach use their typed reader or
+    /// owned-draft admission. Other modes use whole-book admission (fa-0x0).
     #[test]
     fn only_the_scope_judging_readers_are_judged() {
         let reg = Registry::parse(SOURCE).expect("the embedded registry");
@@ -2037,6 +2036,24 @@ mod bound_tests {
             reg.bound_rule(verb, sub, None, &present, &|_: &str| None::<String>)
                 .map(|(_, rule)| rule.judged)
         };
+        assert_eq!(judged("reverse", None, &["--draft"]), Some(true));
+        for other_mode in [
+            "--replace-with",
+            "--review",
+            "--review-only",
+            "--review-out",
+            "--digest",
+            "--approval",
+            "--reversal-approval",
+            "--dry-run",
+            "--plan-out",
+        ] {
+            assert_eq!(
+                judged("reverse", None, &["--draft", other_mode]),
+                Some(false),
+                "{other_mode}"
+            );
+        }
         for (verb, sub) in [
             ("tb", None),
             ("open-items", None),
@@ -2055,6 +2072,10 @@ mod bound_tests {
             ("statement", Some("equity-roll-forward")),
             ("sample", Some("mus")),
             ("sample", Some("evaluate")),
+            // A branch-bound reader can inspect its own draft container.
+            // The CLI checks whole-book reach for unbranched readers.
+            ("draft", Some("list")),
+            ("draft", Some("show")),
         ] {
             assert_eq!(judged(verb, sub, &[]), Some(true), "{verb} {sub:?}");
         }
@@ -2075,7 +2096,8 @@ mod bound_tests {
             ("document", Some("read"), &[][..]),
             ("verify", Some("periods"), &[][..]),
             ("post", None, &[][..]),
-            ("draft", Some("list"), &[][..]),
+            ("reverse", None, &[][..]),
+            ("scenario", Some("list"), &[][..]),
             ("statement", Some("issue"), &["--dry-run"][..]),
             ("statement", Some("issuances"), &[][..]),
         ] {
