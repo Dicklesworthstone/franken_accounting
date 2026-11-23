@@ -99,6 +99,64 @@ fn _selftest() {
     );
 }
 
+/// Minc's admitted runner evidence is the court's receipt-bound published
+/// figure. The signed FIFO exercise consumes that same case fact separately.
+#[test]
+fn minc() {
+    let o = outcome("minc");
+    let text = o.text();
+    assert!(o.ok, "{text}");
+    for check in ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR"] {
+        assert!(
+            o.lines.windows(2).any(|pair| {
+                pair[0].starts_with(&format!("CHECK minc {check} PASS "))
+                    && pair[1].contains("MINC-FIFO-RESULT")
+            }),
+            "{text}"
+        );
+    }
+    if std::env::var("FA_CASES_RENDER").is_ok_and(|v| v == "print") {
+        use fa_oracles::cases::render::{RunRecords, render_readme};
+        let case =
+            fa_oracles::cases::load(&fa_oracles::cases::embedded::MINC.case_files()).unwrap();
+        let records = RunRecords {
+            steps: &o.steps,
+            verdicts: &o.verdicts,
+            green: o.rows_ok,
+        };
+        let rendered = render_readme(&case, &records).unwrap();
+        println!("BEGIN README minc\n{rendered}END README minc");
+    }
+}
+
+#[test]
+fn minc_neg_changed_published_amount_disagrees_with_original_receipt() {
+    let changed = run_planted(
+        "minc",
+        &[
+            PlantedEdit {
+                file: "facts.toml",
+                old: "literal = \"$10,203.54\"",
+                new: "literal = \"$10,203.53\"",
+            },
+            PlantedEdit {
+                file: "facts.toml",
+                old: "value = \"1020354\"",
+                new: "value = \"1020353\"",
+            },
+        ],
+        HARNESS_VERBS,
+    )
+    .expect_err("the existing receipt binds a different published amount");
+    let text = changed.text();
+    assert!(
+        changed.lines.iter().any(|l| l.starts_with("FAIL K-BIND ")
+            && l.contains("MINC-FIFO-RESULT")
+            && l.contains("values_sha256 mismatch")),
+        "{text}"
+    );
+}
+
 /// A8 (§15): the WorldCom pilot on the native book. F2, F4, F9 and F12 post
 /// as the record describes them, and the claimed rows (W-D-01 and W-D-03,
 /// the detections; W-N-01, the no-finding with its mutation twin; W-P-02

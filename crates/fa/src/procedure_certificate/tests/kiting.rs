@@ -362,7 +362,7 @@ fn adding_kiting_preserves_the_preexisting_canonical_and_raw_registry_epochs() {
             .unwrap(),
         domain_digest(
             b"fa:procedure-registry:v1",
-            &[previous.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+            &[previous.as_bytes(), published_foundations()[0].as_bytes()],
         ),
     ] {
         let mut retained = certified.certificate.clone();
@@ -377,5 +377,64 @@ fn adding_kiting_preserves_the_preexisting_canonical_and_raw_registry_epochs() {
                 .unwrap(),
             certified.report
         );
+    }
+}
+
+#[test]
+fn foundation_upgrade_replays_kiting_on_its_published_registry() {
+    // Calculated from the exact kiting registry and lock git blobs before
+    // 68bae145, at 68bae145 and at 46e48c36 respectively.
+    let commitments = [
+        (
+            "d9720ae30e1bbdef9708b39608a3e9bd9926a3b9a6b1b9681f267b39a746728a",
+            "4ad3cdcfdffddbdf40da85c859e57a82d4445298aec348890e159fedcd327984",
+        ),
+        (
+            "24c8b4e050e4f3618e55be28dc9a9d3ca05c7dd19d9bcd6d334053991413ae1a",
+            "ed2f0b36eff4b186bbff8db30ea36ceeba529384c491d8399fd8100bcce0b32a",
+        ),
+        (
+            "930f3e08f1dd1d46c8c1f9a4043517568391fe2283a922d86eead71715ce9fce",
+            "fb7444aef592ad8022af175a4fcb1f130a7fc256740d4d58ebeffc89af5b3b75",
+        ),
+    ];
+    let mut f = Fixture::new(155);
+    kite(&mut f);
+    let certified = certify(&mut f, &request());
+    assert_eq!(certified.certificate.registry, registry_digest().unwrap());
+    let cx = f.cx();
+    for (foundations, (canonical_hex, raw_hex)) in
+        published_foundations().into_iter().zip(commitments)
+    {
+        let canonical =
+            canonical_procedure_closure(&current_procedure_document().unwrap(), foundations)
+                .unwrap();
+        let raw = raw_procedure_closure(PROCEDURE_REGISTRIES[0].1, foundations);
+        assert_eq!(fgdb_crypto::Digest(canonical).to_hex(), canonical_hex);
+        assert_eq!(fgdb_crypto::Digest(raw).to_hex(), raw_hex);
+        for registry in [canonical, raw] {
+            if registry == raw && foundations != published_foundations()[0] {
+                assert_eq!(registry_versions(&raw).unwrap(), None);
+                continue;
+            }
+            assert_ne!(registry, certified.certificate.registry);
+            let mut retained = certified.certificate.clone();
+            retained.registry = registry;
+            super::offline::reseal(&mut retained);
+            let decoded =
+                ProcedureCertificate::decode(&retained.canonical_bytes().unwrap()).unwrap();
+            assert_eq!(
+                f.runtime
+                    .block_on(f.book.replay_procedure_with_history(
+                        &cx,
+                        PRINCIPAL,
+                        &full(),
+                        &decoded
+                    ))
+                    .unwrap()
+                    .unwrap(),
+                certified.report
+            );
+        }
     }
 }

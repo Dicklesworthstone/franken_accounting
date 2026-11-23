@@ -3,13 +3,7 @@
 
 use super::*;
 
-const MOVEMENTS: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../fa-oracles/cases/minc/fifo-movements.tsv"
-));
 const PETITION: &str = "2024-09-19";
-// Opinion pp. 9–10, distinct from the gross movement inputs in the appendices.
-const COURT_OTHER_CENTS: i128 = 1_020_354;
 
 struct Movement<'a> {
     observed: &'a str,
@@ -235,10 +229,26 @@ fn verify_sources(
 
 #[test]
 fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
+    use fa_oracles::cases::{check, embedded::MINC};
+    let files = MINC.case_files();
+    let case = fa_oracles::cases::load(&files).unwrap();
+    let published = "MINC-FIFO-RESULT";
+    let binding = check::bind::check(&check::Context::new(&case));
+    assert_eq!(binding.verdict, check::Verdict::Pass, "{binding}");
+    assert!(binding.rows.iter().any(|id| id == published));
+    let values: Vec<_> = case.values.iter().filter(|v| v.fact == published).collect();
+    let [value] = values.as_slice() else {
+        panic!("expected one published FIFO result")
+    };
+    assert_eq!(value.unit, "USD");
+    // The receipt binds the court's numerical result on p. 10. Only the
+    // distinct gross movement transcription from its appendices enters a book.
+    let court_other_cents: i128 = value.value.parse().unwrap();
+    let movement_table = files.text("fifo-movements.tsv").unwrap();
     for (endpoint, expected_balance) in
         [("schedule-debit", 3_778_946), ("trustee-debit", 3_753_741)]
     {
-        let movements: Vec<_> = MOVEMENTS
+        let movements: Vec<_> = movement_table
             .lines()
             .filter(|line| !line.starts_with('#'))
             .map(|line| {
@@ -330,7 +340,7 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
         for year in ["2023", "2024"] {
             ok(&fixture.book, &["period", "create", "--fiscal-year", year]);
         }
-        let transcription = write(&fixture.dir, "fifo-movements.tsv", MOVEMENTS);
+        let transcription = write(&fixture.dir, "fifo-movements.tsv", movement_table);
         let doc = evidence(&fixture, &transcription);
         let mut sources = Vec::new();
         let mut open_periods = std::collections::BTreeSet::new();
@@ -371,20 +381,20 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             })
             .sum();
         assert_eq!(
-            other_remaining, COURT_OTHER_CENTS,
+            other_remaining, court_other_cents,
             "{endpoint}, opening Social Security"
         );
         assert_eq!(
             other_remaining + opening_remaining,
-            COURT_OTHER_CENTS,
+            court_other_cents,
             "{endpoint}, opening other"
         );
 
         let claims = verify_sources(&fixture, endpoint, &trusted_key, &sources);
         let (opening_claim, other_claims) = claims.split_first().unwrap();
         let recipient_other: i128 = other_claims.iter().map(|c| c.cents).sum();
-        assert_eq!(recipient_other, COURT_OTHER_CENTS);
-        assert_eq!(recipient_other + opening_claim.cents, COURT_OTHER_CENTS);
+        assert_eq!(recipient_other, court_other_cents);
+        assert_eq!(recipient_other + opening_claim.cents, court_other_cents);
 
         if endpoint == "schedule-debit" {
             // The hypotheses really differ before exhaustion: the April 25

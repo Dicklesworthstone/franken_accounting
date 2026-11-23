@@ -835,12 +835,12 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
         "trial balance canonical bytes digest drifted on {}",
         std::env::consts::ARCH
     );
-    // Fiscal-year and chart installation now create a durable retry
-    // record in the selected native snapshot. Omitting only those two
-    // writes restores all eight old vectors. See docs/NEGATIVE_EVIDENCE.md.
+    // The cb423209 foundations registry binds the adopted FastMCP, FrankenSymPy
+    // and FrankenGraphDB revisions. Reinstating the 74861677 lock reproduces
+    // all three previous certificates. See docs/NEGATIVE_EVIDENCE.md.
     assert_eq!(
         hex32(&book_run_1.tb_cert_digest),
-        "4c66e335ce3a135b5a13f06a50ea979458bc16138aba5d191843dbba27b106c0",
+        "b2fe8ceb629d4275339171e19a8e722035355af26c36d53ca0ad96ee4e48aeb5",
         "trial balance certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -852,7 +852,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.bs_cert_digest),
-        "bce4e5278ef10deea78b38abaf68acd267ac3c11e0e01933df2984eb998de9df",
+        "45e895783177dd653fe1419965189626e79cbad0dac572276aebc42b0d9ff02a",
         "balance sheet certificate digest drifted on {}",
         std::env::consts::ARCH
     );
@@ -864,7 +864,7 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     );
     assert_eq!(
         hex32(&book_run_1.is_cert_digest),
-        "d7c40dbff5924aa177a6045b7f74409293769d29f932eb959938b6e6c1c3cf57",
+        "f4749b6a512432da620d940dd090de2da8aecca2d159b19316beefb5237e0516",
         "income statement certificate digest drifted on {}",
         std::env::consts::ARCH
     );

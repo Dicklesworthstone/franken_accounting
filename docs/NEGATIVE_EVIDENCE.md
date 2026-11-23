@@ -4268,6 +4268,36 @@ Git blobs `76bacd614cc0bb2e4875554b7d21eeb92544ef32`,
 `7d458606f1752762e958634f9b45d367ef5497eb` and
 `58bbcfc14d9fe898dcba4d506068905ce49a1d12`.
 
+### 2026-11-23 — GOLDEN-CHANGE for report foundation provenance
+
+The FA-ART-LAB-04 record at `74861677` predates the FastMCP source
+change in `68bae145`, the FrankenSymPy pin in `38901d0e` and the
+FrankenGraphDB pin in `cb423209`. The four report registries include the
+complete foundation lock. Each of those revisions therefore has a distinct
+registry digest, including the FastMCP change confined to the MCP posture.
+
+The original assertions failed at `cb423209` on Darwin arm64. Returning
+only the FGDB pin to its former value reproduced the intermediate
+`38901d0e` registry digest and still failed. Running the same code with
+the exact `74861677` foundation lock restored all 36 original lab/live
+witnesses and all eight cross-target book vectors. Both original native
+test targets passed under that historical provenance.
+
+The retained canonical certificates give an independent prediction.
+Parsing the four registries at `cb423209` gives the new closure
+`ec4c97b2e5797affcb60894eade0f1022f681c96ba068ff893d22b988336e85a`.
+Replacing the 32-byte registry digest in each old certificate and sealing
+its body with the standalone verifier's BLAKE3 reproduces the full current
+wire bytes. This predicts every Genesis witness and the trial balance,
+balance sheet and income statement certificate digests. The 32 lab seeds,
+four live runs, schedule class, heads, folds, report payloads and verified
+bundle remain identical across these inputs.
+
+The original manifest, ledger and vector fixture are Git blobs
+`aa036dc05ecb098d53f621138555bb7cfc748bb1`,
+`82de6bd507e685321b4b51f1b3518815d217f320` and
+`cce3fc2990d53a1620fad4ca832c3e8f3bf3ac30`.
+
 ## 2026-11-23 — warm checkpoint reads grew with the number of predecessors
 
 At `38ad02c1`, six consecutive warm checkpoints needed 6, 7, 8, 9,

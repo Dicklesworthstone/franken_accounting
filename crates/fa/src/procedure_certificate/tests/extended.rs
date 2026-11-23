@@ -301,7 +301,7 @@ fn pre_layering_registry_keeps_unchanged_jet_versions_and_portable_documents() {
         };
         certificate.registry = domain_digest(
             b"fa:procedure-registry:v1",
-            &[text.as_bytes(), PROCEDURE_REGISTRIES[1].1.as_bytes()],
+            &[text.as_bytes(), published_foundations()[0].as_bytes()],
         );
         certificate.digest = domain_digest(CERTIFICATE_DOMAIN, &[&certificate.body().unwrap()]);
         let raw = ProcedureCertificate::decode(&certificate.canonical_bytes().unwrap()).unwrap();
@@ -1690,7 +1690,7 @@ fn cash_flow_v6_retains_v5_native_replay_and_binds_each_registry_interpretation(
         b"fa:procedure-registry:v1",
         &[
             pre_solvency_registry_text().unwrap().as_bytes(),
-            PROCEDURE_REGISTRIES[1].1.as_bytes(),
+            published_foundations()[0].as_bytes(),
         ],
     );
     super::offline::reseal(&mut raw_legacy);

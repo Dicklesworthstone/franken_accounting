@@ -75,6 +75,10 @@ pub fn render_readme(case: &Case, run: &RunRecords<'_>) -> Result<String, Render
     results(case, &rows, &mut out)?;
     runner_rows(case, &rows, &mut out);
     not_yet(case, &rows, &mut out);
+    if case.books.is_empty() && case.expectations.is_none() {
+        out.truncate(out.trim_end_matches('\n').len());
+        out.push('\n');
+    }
     let mut problems = lint::problems(&out);
     // §2.8: real people appear only as role labels. A failure names the
     // hash, never the token.
@@ -166,13 +170,22 @@ fn header(case: &Case, out: &mut String) {
     let _ = writeln!(
         out,
         "Case `{}` (letter {letter}), version {}. Scope: {}.\n",
-        h.id, h.version, h.scope
+        h.id,
+        h.version,
+        h.scope.trim_end_matches('.')
     );
-    let _ = writeln!(
-        out,
-        "Claimed rows: {}. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.\n",
-        ids(&h.claims)
-    );
+    if h.variants.is_empty() && h.claims.is_empty() {
+        let _ = writeln!(
+            out,
+            "The case runner catalogues the source record here. It has evaluated zero accounting claims. [Source ledger](sources.toml)\n"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Claimed rows: {}. A claimed row that stops passing fails the case, so every claimed row below passed in the run this document was rendered from.\n",
+            ids(&h.claims)
+        );
+    }
 }
 
 /// The registered scale of a unit, if any.
@@ -338,6 +351,9 @@ fn self_row(case: &Case, rows: &BTreeMap<&str, Vec<&VerdictRecord>>, book: &Book
 }
 
 fn books(case: &Case, rows: &BTreeMap<&str, Vec<&VerdictRecord>>, out: &mut String) {
+    if case.books.is_empty() {
+        return;
+    }
     let _ = writeln!(out, "## How this book was built\n");
     for variant in &case.header.variants {
         let Some(book) = case.books.get(variant) else {

@@ -22,6 +22,7 @@ pub const MINC: EmbeddedCase = EmbeddedCase {
     id: "minc",
     files: &[
         ("case.toml", include_str!("../../cases/minc/case.toml")),
+        ("README.md", include_str!("../../cases/minc/README.md")),
         (
             "fifo-movements.tsv",
             include_str!("../../cases/minc/fifo-movements.tsv"),

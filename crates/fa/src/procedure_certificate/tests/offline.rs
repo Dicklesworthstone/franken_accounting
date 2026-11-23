@@ -1229,6 +1229,93 @@ fn retained_registry_closures_match_the_published_baseline_and_replay_old_versio
 }
 
 #[test]
+fn portable_procedure_requires_the_exact_foundation_bound_by_both_closures() {
+    let mut f = Fixture::new(156);
+    f.post(31, "3000", "1000", 100_000, false);
+    let mut request = cutoff_request(&f, "jet.round_amounts", None);
+    request.version = Some(1);
+    let current = f.certify(&request).certificate;
+    let mut previous = current.clone();
+    previous.registry = retained_registry_digest().unwrap();
+    reseal(&mut previous);
+    assert_ne!(current.registry, previous.registry);
+    let mut unrelated = f
+        .certify(&cutoff_request(&f, "jet.weekend", None))
+        .certificate;
+    unrelated.registry = current.registry;
+    reseal(&mut unrelated);
+    assert!(unrelated.request().is_err());
+    assert!(unrelated.check_offline_profile().is_err());
+    let current_docs = crate::certificate::offline_report_registries(
+        current.source_certificate(),
+        &f.book.context().units,
+    )
+    .unwrap();
+    let mut previous_docs = current_docs.clone();
+    previous_docs[3].1 = fa_registry::toml::parse(published_foundations()[0])
+        .unwrap()
+        .canonical_bytes();
+    assert_ne!(current_docs[3], previous_docs[3]);
+    for (certificate, matching, wrong) in [
+        (&current, &current_docs, &previous_docs),
+        (&previous, &previous_docs, &current_docs),
+    ] {
+        let exported = certificate
+            .offline_registry_documents(matching.clone())
+            .unwrap();
+        assert_eq!(&exported[..4], matching);
+        assert_eq!(exported[4].1, retained_registry_document().unwrap());
+        let refusal = certificate
+            .offline_registry_documents(wrong.clone())
+            .unwrap_err();
+        assert!(refusal.message.contains("different foundation registries"));
+    }
+    // The pre-kiting algorithm inventory was never issued against the new foundation.
+    let mixed = canonical_procedure_closure(
+        &pre_kiting_registry_document().unwrap().canonical_bytes(),
+        PROCEDURE_REGISTRIES[1].1,
+    )
+    .unwrap();
+    assert_eq!(registry_versions(&mixed).unwrap(), None);
+}
+
+#[test]
+fn intermediate_foundations_admit_only_the_legacy_profiles_their_producers_issued() {
+    // Both 68bae145 and 38901d0e shipped exactly these six explicit version
+    // branches plus the then-current kiting catalog, covered by the kiting test.
+    let issued = [
+        retained_registry_document().unwrap(),
+        layering_v2_registry_document(false).unwrap(),
+        legacy_lookback_registry_document().unwrap(),
+        pre_lapping_registry_document().unwrap().canonical_bytes(),
+        pre_lapping_metering_registry_document()
+            .unwrap()
+            .canonical_bytes(),
+        pre_solvency_registry_document().unwrap().canonical_bytes(),
+    ];
+    for foundation in &published_foundations()[1..] {
+        for document in &issued {
+            let registry = canonical_procedure_closure(document, foundation).unwrap();
+            assert!(registry_versions(&registry).unwrap().is_some());
+            assert_eq!(
+                canonical_registry_document(&registry).unwrap().as_ref(),
+                Some(document)
+            );
+        }
+        for document in [
+            layering_v2_registry_document(true).unwrap(),
+            pre_kiting_registry_document().unwrap().canonical_bytes(),
+        ] {
+            let mixed = canonical_procedure_closure(&document, foundation).unwrap();
+            assert_eq!(registry_versions(&mixed).unwrap(), None);
+            assert_eq!(canonical_registry_document(&mixed).unwrap(), None);
+        }
+        let raw = raw_procedure_closure(&pre_solvency_registry_text().unwrap(), foundation);
+        assert_eq!(registry_versions(&raw).unwrap(), None);
+    }
+}
+
+#[test]
 fn effective_cutoffs_replay_before_reversal_liveness_at_the_original_known_at() {
     for (seed, id) in [(122, "jet.round_amounts"), (123, "jet.period_end_timing")] {
         let mut f = Fixture::new(seed);

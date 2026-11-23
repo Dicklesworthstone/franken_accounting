@@ -1,0 +1,166 @@
+# franken-stack.lock — source provenance of every foundation this workspace links
+# (plan §18.4; the eidetic_engine_cli / frankengit convention). Cargo.lock holds
+# the resolution; this file holds the *why*: which upstream commit each pin is,
+# when it was taken, and what re-verification a bump owes.
+#
+# A bump of one is a bump of all (asupersync is pinned transitively through
+# frankengraphdb, and franken_networkx through fgdb-prism). Bumping re-runs the
+# substrate behavior suite (plan §16.3) before the new lock lands.
+
+schema_version = 1
+taken_on = "2026-10-10"
+
+[[foundation]]
+name = "asupersync"
+package_patterns = ["asupersync", "asupersync-*", "franken-decision", "franken-evidence", "franken-kernel"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/asupersync"
+rev = "78b64636e99fea4ea2d868096576021dd3b8e519"
+version = "0.5.0"
+features = "default-features = false"
+role = "runtime: Cx, regions, lab runtime, RaptorQ, macaroons"
+pinned_by = "frankengraphdb crates/fgdb/Cargo.toml (same rev)"
+
+[[foundation]]
+name = "frankengraphdb"
+package_patterns = ["fgdb", "fgdb-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/frankengraphdb"
+rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf"
+version = "0.0.1 (unpublished, publish = false)"
+crates = ["fgdb", "fgdb-types", "fgdb-delta-types", "fgdb-gql", "fgdb-crypto", "fgdb-bigint", "fgdb-sim"]
+role = "substrate: Chronicle commit stream, bounded WriteTxn with point-read witnesses, native GQL, certified reads"
+status_checked = "2026-10-09 (plan Appendix H rows)"
+
+[[foundation]]
+name = "franken_networkx"
+package_patterns = ["fnx-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/franken_networkx"
+rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f"
+version = "0.2.0 at that rev"
+crates = ["fnx-classes", "fnx-algorithms"]
+role = "graph algorithms linked transitively through fgdb -> fgdb-prism; direct forensic use in Lantern is planned"
+pinned_by = "frankengraphdb crates/fgdb-prism/Cargo.toml (same rev)"
+
+[[foundation]]
+name = "fastmcp-rust"
+package_patterns = ["fastmcp-*"]
+production_postures = ["fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust"
+rev = "1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
+version = "=0.12.0"
+crates = ["fastmcp-rust", "fastmcp-core", "fastmcp-protocol", "fastmcp-transport", "fastmcp-server", "fastmcp-client", "fastmcp-derive", "fastmcp-console"]
+role = "MCP framework; linked by fa-mcp (fa-xex) only, together with [patch.crates-io] asupersync to the rev above so the graph holds one asupersync package id"
+transitive_confined = ["serde", "serde_json", "chrono (fastmcp-server)", "time (fastmcp-console -> rich_rust; asupersync tls -> x509-parser, asn1-rs)", "ring (fastmcp-protocol jose; rustls)", "cap-std, cap-fs-ext (fastmcp-server)", "num-rational, num-bigint (rich_rust; der-parser)"]
+verification = "fa-mcp parity test (every verb a tool or a registered exclusion), the stdio end-to-end test against the CLI's data, cargo deny bans/licenses with the wrapper rows; rerun all on pin changes"
+
+[[foundation]]
+name = "frankensympy"
+package_patterns = ["fsym-*"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/frankensympy"
+rev = "9fd3a317ab1ca9225559e130a4ef7bd907fbe3be"
+version = "0.1.0 (unpublished)"
+crates = ["fsym-bigint", "fsym-rational", "fsym-budget"]
+transitive_suite_crates = ["fsym-modular"]
+transitive_arithmetic = ["num-bigint 0.4.8", "num-integer 0.1.47", "num-rational 0.4.2", "num-traits", "serde"]
+role = "fa-money arbitrary-size nonnegative Rate, exact conversion intermediates, cancellation-first work metering; no CAS runtime"
+verification = "independent fgdb-bigint rounding differential, canonical rate bytes, resource and cancellation refusals; rerun all on pin changes"
+
+[[foundation]]
+name = "franken_markdown"
+package_patterns = ["fmd-font"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = ["bundled-faces"]
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.4.0"
+crates = ["fmd-font"]
+transitive_suite_crates = []
+role = "Bundled OFL TrueType font programs and integer metrics for fa-statements PDF embedding"
+verification = "Font descriptors, Unicode mapping, exact PDF text positions, native statement/CLI tests, external PDF/A validation and deterministic bytes on pin changes"
+
+[[foundation]]
+name = "franken_markdown-icc"
+package_patterns = ["franken_markdown"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = []
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.7.0"
+crates = ["franken_markdown"]
+role = "Pure compact RGB ICC profile builder only; no Markdown/PDF renderer, CLI, networking or runtime API is called"
+verification = "Complete ICC tags and bounds, honest compact-profile identity, native rendering, external PDF/A and warning-free client profile parsing"
+
+[[foundation]]
+name = "franken_markdown-math"
+package_patterns = ["fmd-math"]
+production_postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+production_features = ["default", "bundled-faces"]
+source = "git+https://github.com/Dicklesworthstone/franken_markdown"
+rev = "7d0472b240372922384b9e19765f5c785d78ae3a"
+version = "0.3.0"
+crates = ["fmd-math"]
+role = "First-party transitive implementation dependency of franken_markdown; no accounting math delegates to it"
+verification = "Resolved production closure and feature ceilings; no unrelated third-party dependency"
+
+# Resolved-production gate (fa-lbh / fa-c23). Each posture is resolved alone
+# with its default features, normal + build edges, on the current host.
+# These are intentional feature ceilings, not workspace metadata's feature
+# union. New features require an explicit policy review; dev-only features
+# do not enter these ceilings. cargo deny still owns third-party wrapper paths.
+[production_gate]
+postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+required_singletons = ["asupersync", "fgdb-types", "fnx-classes"]
+forbidden_packages = ["fgdb-sim", "fsci-stats"]
+
+# fnx-runtime's empty default feature is enabled by fnx-algorithms at the
+# pinned revision. Its optional asupersync/ftui integrations are not admitted.
+[[production_feature]]
+packages = ["fnx-runtime"]
+postures = ["fa", "fa-cli", "fad", "fa-mcp"]
+allowed = ["default"]
+
+# fastmcp 0.12 defaults select legacy protocol + tasks. Its client enables
+# TLS/webpki and its normal runtime edges enable asupersync's default macros
+# and nightly Outcome support. Embedded, CLI and local-RPC fad stay empty.
+[[production_feature]]
+packages = ["asupersync"]
+postures = ["fa-mcp"]
+allowed = ["default", "nightly-outcome-try", "proc-macros", "tls", "tls-webpki-roots"]
+
+[[production_feature]]
+packages = ["fastmcp-rust"]
+postures = ["fa-mcp"]
+allowed = ["default", "fastmcp-console", "legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-client", "fastmcp-server"]
+postures = ["fa-mcp"]
+allowed = ["legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-console"]
+postures = ["fa-mcp"]
+allowed = ["default", "legacy-2024-11-05", "renderers", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-protocol"]
+postures = ["fa-mcp"]
+allowed = ["default", "jose", "legacy-2024-11-05", "tasks"]
+
+[[production_feature]]
+packages = ["fastmcp-transport"]
+postures = ["fa-mcp"]
+allowed = ["legacy-2024-11-05"]
+
+[[production_feature]]
+packages = ["fastmcp-derive"]
+postures = ["fa-mcp"]
+allowed = ["tasks"]
