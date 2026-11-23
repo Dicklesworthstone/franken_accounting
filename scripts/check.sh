@@ -544,20 +544,30 @@ cargo_test_jobs() {
   fi
   local job args job_log rc attempt planned count=0
   planned="$(awk 'NF { count++ } END { print count + 0 }' "$jobs")"
-  local -a argv budget failed=() unrun=() stale=()
+  local -a argv budget source_args failed=() unrun=() stale=()
   while IFS=$'\t' read -r job args; do
     [ -n "$job" ] || continue
     count=$((count + 1))
     job_log="$job_dir/$job.log"
     read -r -a argv <<<"$args"
     budget=()
+    source_args=()
+    if [[ "$job" == fa-cli.test.scoreboard* ]]; then
+      # Ordinary RCH mirrors omit .beads/. A clean Git archive carries the
+      # public issues.jsonl without including the local database or recovery files.
+      local source_commit source_status
+      if source_commit="$(git -C "$ROOT" rev-parse --verify HEAD)" &&
+         source_status="$(git -C "$ROOT" status --porcelain)" && [[ -z "$source_status" ]]; then
+        source_args=(--base "$source_commit" --clean-overlay --no-overlay)
+      fi
+    fi
     [[ "$job" == *.isolated.* ]] && budget=("RCH_TEST_TIMEOUT_SEC=$CHECK_ISOLATED_TIMEOUT_SEC")
     [ -n "${test_worker[${job%%.*}]:-}" ] && budget+=("RCH_WORKER=${test_worker[${job%%.*}]}")
     attempt=0
     while :; do
       attempt=$((attempt + 1))
       env "${budget[@]}" RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 \
-        rch exec -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${CHECK_TEST_CONFIG_ARGS[@]}" "${argv[@]}" </dev/null >"$job_log" 2>&1
+        rch exec "${source_args[@]}" -- cargo test -j "$CHECK_JOBS" --no-fail-fast "${CHECK_TEST_CONFIG_ARGS[@]}" "${argv[@]}" </dev/null >"$job_log" 2>&1
       rc=$?
       if [ "$rc" -ne 0 ] && is_rch_offloader_unrun "$rc" "$job_log" && [ "$attempt" -lt "$CHECK_TEST_ATTEMPTS" ]; then
         { printf '==== test job %s: cargo test %s (attempt %s not run by the offloader, exit %s; retrying)\n' \

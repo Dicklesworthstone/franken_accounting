@@ -201,17 +201,28 @@ def parse_acceptance_block(text):
         seen.add(item)
     return ("tests", entries)
 
-def load_beads(repo):
+def load_beads(repo, require_graph=False):
     jsonl = pathlib.Path(repo) / ".beads" / "issues.jsonl"
     if not jsonl.is_file():
+        if require_graph:
+            die(f"missing Beads graph: {jsonl}")
         return {}
     beads = {}
-    for line in jsonl.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(jsonl.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         row = json.loads(line)
+        if require_graph:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"].strip():
+                die(f"{jsonl}:{lineno}: missing bead id")
+            if not isinstance(row.get("status"), str) or not row["status"].strip():
+                die(f"{jsonl}:{lineno}: missing status for {row['id']}")
+            if row["id"] in beads:
+                die(f"{jsonl}:{lineno}: duplicate bead {row['id']}")
         if "id" in row:
             beads[row["id"]] = row
+    if require_graph and not beads:
+        die(f"empty Beads graph: {jsonl}")
     return beads
 
 def load_verdict_inventory(repo, verdict_spec, for_close=False):
@@ -455,7 +466,7 @@ if cmd == "parse-block":
 
 if cmd == "closure-debt":
     repo, verdict_spec, as_json = sys.argv[2], sys.argv[3], int(sys.argv[4])
-    beads = load_beads(repo)
+    beads = load_beads(repo, require_graph=True)
     inv = None
     if verdict_spec:
         try:
@@ -498,8 +509,39 @@ if cmd == "closure-debt":
         elif not has_citation:
             debt_beads.append(bid)
 
+    # Replay the ordinary close verifier before certifying a zero. Citation
+    # strings alone cannot authenticate a note, its tree or its test inventory.
+    zero_verified = not debt_beads
+    if zero_verified:
+        for bid, row in beads.items():
+            if row["status"] != "closed":
+                continue
+            reason = row.get("close_reason") or ""
+            citation = re.search(r"\[verdict_note: ([0-9a-f]{12,40}) commit=([0-9a-f]{12,40}) tree=([0-9a-f]{12,40})\]$", reason)
+            if not citation:
+                zero_verified = False
+                break
+            script = pathlib.Path(os.environ["FA_CLOSE_VERIFIER"]).with_name("close_bead.sh")
+            args = ["bash", str(script), bid, "--repository", repo, "--reason", "read-only closure audit"]
+            process = re.search(r"\[process-closure: (.+)\] \[verdict_note:", reason, re.S)
+            if process:
+                args.extend(["--no-tests", process[1]])
+            for evidence in dict.fromkeys(filter(None, [citation[1], verdict_spec])):
+                result = subprocess.run(args + ["--verdict", evidence],
+                                        env={**os.environ, "FA_CLOSE_BEAD_DRY_RUN": "1"},
+                                        capture_output=True, text=True)
+                fields = dict(word.split("=", 1) for word in result.stdout.split() if "=" in word)
+                if not result.returncode and fields.get("bead") == bid and all(
+                    fields.get(key, "").startswith(prefix)
+                    for key, prefix in zip(("note_id", "commit", "tree"), citation.groups())
+                ):
+                    break
+            else:
+                zero_verified = False
+                break
     report = {
         "closed_total": closed_total,
+        "zero_debt_verified": zero_verified,
         "verdict_cited_closures": verdict_cited,
         "process_closures": process_closures,
         "closure_debt_count": len(debt_beads),

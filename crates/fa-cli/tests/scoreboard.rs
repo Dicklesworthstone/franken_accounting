@@ -145,52 +145,40 @@ fn run_cli_probe(argv: &[String]) -> ProbeOutcome {
     }
 }
 
-/// Count `(unbacked_closed, total_closed)` in a `.beads/issues.jsonl` payload (`fa-8jcr` / `fa-ubl0`).
-/// A closed bead is backed only if it carries an `acceptance-tests` fenced block and a
-/// recorded `verdict_note:` or `--no-tests:` closure audit token.
-fn count_unbacked_closures_in_jsonl(jsonl_text: &str) -> (usize, usize) {
-    let mut unbacked = 0usize;
-    let mut total_closed = 0usize;
-    for line in jsonl_text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+/// A missing graph cannot establish even an expected absence. A citation in a
+/// close reason is insufficient to certify zero debt for a nonempty cohort.
+fn closure_debt_probe(root: &Path) -> ProbeOutcome {
+    let check = || -> Result<(), String> {
+        let audit = std::process::Command::new("bash")
+            .arg(workspace_root().join("scripts/close_bead.sh"))
+            .args(["--closure-debt", "--json", "--repository"])
+            .arg(root)
+            .output()
+            .map_err(|e| format!("UNRUN closure audit: {e}"))?;
+        if !audit.status.success() {
+            return Err(format!(
+                "UNRUN closure audit: {}",
+                String::from_utf8_lossy(&audit.stderr).trim()
+            ));
         }
-        let Ok(obj) = json::parse(trimmed) else {
-            continue;
-        };
-        if obj.get("status").and_then(Json::as_str) != Some("closed") {
-            continue;
+        let report = json::parse(&String::from_utf8_lossy(&audit.stdout))
+            .map_err(|e| format!("UNRUN invalid closure audit report: {e}"))?;
+        match (report.get("closure_debt_count"), report.get("closed_total")) {
+            (Some(Json::Int(0)), Some(Json::Int(n)))
+                if *n >= 0 && report.get("zero_debt_verified") == Some(&Json::Bool(true)) =>
+            {
+                Ok(())
+            }
+            (Some(Json::Int(0)), Some(Json::Int(n))) if *n > 0 => Err(format!(
+                "UNRUN zero debt requires authenticated closure evidence for all {n} closed beads"
+            )),
+            (Some(Json::Int(debt)), Some(Json::Int(total))) if *debt > 0 && debt <= total => Err(
+                format!("closure_debt={debt} identified by the audit out of {total} closed beads"),
+            ),
+            _ => Err("UNRUN invalid closure audit counts".into()),
         }
-        total_closed += 1;
-        let desc = obj.get("description").and_then(Json::as_str).unwrap_or("");
-        let notes = obj.get("notes").and_then(Json::as_str).unwrap_or("");
-        let close_reason = obj.get("close_reason").and_then(Json::as_str).unwrap_or("");
-        let has_block =
-            desc.contains("```acceptance-tests") || notes.contains("```acceptance-tests");
-        let has_verdict_token =
-            close_reason.contains("verdict_note:") || close_reason.contains("--no-tests:");
-        if !(has_block && has_verdict_token) {
-            unbacked += 1;
-        }
-    }
-    (unbacked, total_closed)
-}
-
-fn count_workspace_unbacked_closures(root: &Path) -> (usize, usize) {
-    let jsonl_path = root.join(".beads/issues.jsonl");
-    if let Ok(text) = std::fs::read_to_string(&jsonl_path) {
-        return count_unbacked_closures_in_jsonl(&text);
-    }
-    // On remote `rch` workers `.beads/issues.jsonl` is not transferred; consult
-    // `docs/NEGATIVE_EVIDENCE.md`, which records the pre-`fa-8jcr` unbacked closures.
-    let neg_path = root.join("docs/NEGATIVE_EVIDENCE.md");
-    if let Ok(text) = std::fs::read_to_string(&neg_path)
-        && text.contains("False closures found by the 10-20 check")
-    {
-        return (15, 190);
-    }
-    (1, 1)
+    };
+    ProbeOutcome::from_check(check(), "registry_ok")
 }
 
 fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
@@ -409,16 +397,7 @@ fn run_registry_probe(probe_name: &str) -> ProbeOutcome {
                 ProbeOutcome::err("dormant clauses remain before G4")
             }
         }
-        "closure_debt_zero" => {
-            let (unbacked, total_closed) = count_workspace_unbacked_closures(&root);
-            if unbacked == 0 && total_closed > 0 {
-                ProbeOutcome::ok("registry_ok")
-            } else {
-                ProbeOutcome::err(format!(
-                    "closure_debt={unbacked} unbacked closed beads out of {total_closed} total closed"
-                ))
-            }
-        }
+        "closure_debt_zero" => closure_debt_probe(&root),
         // GOV-02 and GOV-03 are claims about git notes and per-checkout hooks,
         // which no test can observe. These probes once passed on a README
         // marker and script files alone (fa-ygj2, fa-0hs4.3). They stay unmet
@@ -1579,26 +1558,49 @@ fn closure_debt_row_counts_unbacked_closures() {
         }
     );
 
-    // 1. Synthetic JSONL with 2 unbacked closed beads and 1 backed closed bead reports debt = 2.
+    let root = tmp_dir("closure-debt");
+    let graph = root.join(".beads/issues.jsonl");
+    std::fs::create_dir(graph.parent().unwrap()).unwrap();
+    let assert_unrun = || {
+        let outcome = closure_debt_probe(&root);
+        assert_eq!(outcome.event, "unrun", "{}", outcome.raw_stderr);
+        assert!(check_expectation("GOV-01", &gov.expected, 2, "unrun", &outcome).is_err());
+    };
+    assert_unrun(); // missing graph
+    for damaged in [
+        "",
+        "{",
+        "{}",
+        r#"{"id":"a"}"#,
+        "{\"id\":\"a\",\"status\":\"open\"}\n{\"id\":\"a\",\"status\":\"closed\"}",
+    ] {
+        std::fs::write(&graph, damaged).unwrap();
+        assert_unrun();
+    }
+
+    // Both closed test beads lack evidence, including the one with a plausible citation.
     let sample_jsonl = concat!(
         r#"{"id":"fa-old1","status":"closed","description":"legacy","close_reason":"Done"}"#,
         "\n",
-        r#"{"id":"fa-old2","status":"closed","description":"```acceptance-tests\nfa::t\n```","close_reason":"Closed without verdict note"}"#,
+        r#"{"id":"fa-doc","status":"closed","description":"```acceptance-tests\nnone: documentation\n```","close_reason":"Documentation"}"#,
         "\n",
         r#"{"id":"fa-good","status":"closed","description":"```acceptance-tests\nfa::t\n```","close_reason":"Verified [verdict_note: ea8e3f2512ef commit=d5b6e2b113c4 tree=2689caa8b914]"}"#,
         "\n",
         r#"{"id":"fa-open","status":"open","description":"still open"}"#,
         "\n"
     );
-    let (unbacked, total_closed) = count_unbacked_closures_in_jsonl(sample_jsonl);
-    assert_eq!(total_closed, 3);
-    assert_eq!(unbacked, 2);
+    std::fs::write(&graph, sample_jsonl).unwrap();
+    let debt = closure_debt_probe(&root);
+    assert_eq!(debt.event, "error");
+    assert_eq!(
+        debt.raw_stderr,
+        "closure_debt=2 identified by the audit out of 3 closed beads"
+    );
 
-    // 2. Synthetic JSONL where every closed bead is backed reports debt = 0.
-    let zero_debt_jsonl = r#"{"id":"fa-good","status":"closed","description":"```acceptance-tests\nfa::t\n```","close_reason":"Verified [verdict_note: ea8e3f2512ef commit=d5b6e2b113c4 tree=2689caa8b914]"}"#;
-    let (unbacked_zero, total_zero) = count_unbacked_closures_in_jsonl(zero_debt_jsonl);
-    assert_eq!(total_zero, 1);
-    assert_eq!(unbacked_zero, 0);
+    std::fs::write(&graph, r#"{"id":"fa-forged","status":"closed","close_reason":"[verdict_note: ea8e3f2512ef commit=d5b6e2b113c4 tree=2689caa8b914]"}"#).unwrap();
+    assert_unrun();
+    std::fs::write(&graph, r#"{"id":"fa-open","status":"open"}"#).unwrap();
+    assert_eq!(closure_debt_probe(&root).event, "registry_ok");
 
     // 3. Live workspace probe reports non-zero unbacked closures and exits 2 (`absent`).
     let outcome = run_registry_probe("closure_debt_zero");

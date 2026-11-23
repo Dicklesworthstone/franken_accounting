@@ -385,7 +385,7 @@ process_closure_and_regression_checks() {
 
   local debt_json
   debt_json="$(bash scripts/close_bead.sh --closure-debt --verdict "$pass_proof" --repository "$fixture" --json)"
-  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["closed_total"]==3 and d["verdict_cited_closures"]==2 and d["process_closures"]==1 and d["closure_debt_count"]==0, d' "$debt_json" \
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["closed_total"]==3 and d["verdict_cited_closures"]==2 and d["process_closures"]==1 and d["closure_debt_count"]==0 and d["zero_debt_verified"], d' "$debt_json" \
     || fail "process_closure: unexpected closure-debt report ($debt_json)"
 
   bash scripts/close_bead.sh --regression-check --days 30 --verdict "$pass_proof" --repository "$fixture" >/dev/null \
