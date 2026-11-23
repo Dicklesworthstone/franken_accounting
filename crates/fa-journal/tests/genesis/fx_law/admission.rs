@@ -1033,7 +1033,10 @@ fn a_retained_adjustment_can_reverse_later_using_its_original_translation_quote(
     }
 }
 
-fn install_foreign_reclassification_accounts(h: &mut Harness, accounts: &[(&str, u8, u8)]) {
+fn install_foreign_reclassification_accounts(
+    h: &mut Harness,
+    accounts: &[(&str, u8, u8)],
+) -> fa_journal::genesis::ChartInstalled {
     let foreign = h.book.units.lookup("EUR").unwrap();
     let accounts = accounts
         .iter()
@@ -1066,7 +1069,7 @@ fn install_foreign_reclassification_accounts(h: &mut Harness, accounts: &[(&str,
             &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .unwrap()
-        .unwrap();
+        .unwrap()
 }
 
 fn native_foreign_reclassification(h: &Harness, target: EntryRef, key: &[u8]) -> EntryPayload {
@@ -1173,9 +1176,22 @@ fn base_currency_reclassification_and_retained_foreign_outcomes_keep_their_seman
     // Retain the actual earlier native writer's entries, rather than
     // weakening fresh admission or editing an immutable modern outcome.
     let mut h = harness_legacy();
-    install_foreign_reclassification_accounts(
-        &mut h,
+    let mut producer = harness();
+    let chart = install_foreign_reclassification_accounts(
+        &mut producer,
         &[("1288", 1, 0), ("1388", 1, 0), ("4088", 4, 1)],
+    );
+    chart_outcome_keys::copy_legacy_installation(
+        &mut h,
+        &producer,
+        chart.control_entry,
+        Vec::new(),
+        None,
+    );
+    assert!(
+        h.db.vertex(fa_journal::outcome::coverage_vid(h.book.book_id))
+            .unwrap()
+            .is_none()
     );
     let amount = Amount::new(h.book.units.lookup("EUR").unwrap(), 100);
     let original = h.proposal(
@@ -1195,8 +1211,14 @@ fn base_currency_reclassification_and_retained_foreign_outcomes_keep_their_seman
         proposal
     );
     assert!(verify(&h, head).is_green());
+    let mut changed = proposal.clone();
+    changed.supersession[0].reason_code += 1;
     let repeated = h.post(h.request(proposal, &["post"])).unwrap();
     assert!(matches!(repeated, Posted::AlreadyRecorded { .. }));
     assert_eq!(repeated.entry_ref(), entry);
+    assert_eq!(
+        h.post(h.request(changed, &["post"])).unwrap_err().code,
+        code::IDEMPOTENCY_CONFLICT
+    );
     assert_eq!(h.db.frontier().unwrap(), head);
 }

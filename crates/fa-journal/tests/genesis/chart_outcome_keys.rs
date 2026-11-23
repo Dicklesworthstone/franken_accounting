@@ -664,8 +664,18 @@ fn write_legacy_installation(
 ) -> fa_journal::genesis::ChartInstalled {
     let mut producer = harness();
     let produced = install_admitted(&mut producer, request).unwrap();
-    let (batches, recorded) =
-        legacy_chart_batches(&producer, produced.control_entry, approvals, plan);
+    copy_legacy_installation(h, &producer, produced.control_entry, approvals, plan)
+}
+
+pub(super) fn copy_legacy_installation(
+    h: &mut Harness,
+    producer: &Harness,
+    target: VId,
+    approvals: Vec<ApprovalRef>,
+    plan: Option<Oid>,
+) -> fa_journal::genesis::ChartInstalled {
+    assert_eq!(producer.book.book_id, h.book.book_id);
+    let (batches, recorded) = legacy_chart_batches(producer, target, approvals, plan);
     let ctx = h.ctx();
     publish_legacy_chart(&h.runtime, &mut h.db, &ctx, batches, recorded)
 }

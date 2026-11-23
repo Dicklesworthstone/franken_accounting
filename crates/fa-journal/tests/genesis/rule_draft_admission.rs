@@ -3,13 +3,13 @@
 
 use super::*;
 
-fn synthetic_rule(h: &Harness, key: &[u8]) -> fa_intents::PostIntent {
+fn synthetic_rule(h: &Harness, event_ref: VId, key: &[u8]) -> fa_intents::PostIntent {
     let mut p = h.proposal(h.rent_legs(100), key, EntryClass::ORIGINAL);
     let inputs = vec![0; 4];
     p.schema_minor = fa_model::entry::EXTENSIONS_MINOR;
     p.origin = EntryOrigin::Rule {
         rule_version_oid: Oid([91; 32]),
-        event_ref: VId(92),
+        event_ref,
         inputs_digest: fa_model::domain_digest(b"fa:canon-inputs:v1", &[&inputs]),
     };
     p.extensions = vec![(fa_model::entry::RULE_INPUTS_EXTENSION, inputs)];
@@ -34,7 +34,7 @@ fn decoded_explicit_rule_draft_profile_cannot_post_plan_or_confirm_on_trunk() {
     let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
     let batch = fa_intents::PostBatch::for_draft(
         b"draft-profile".to_vec(),
-        vec![synthetic_rule(&h, b"draft-profile-member")],
+        vec![synthetic_rule(&h, VId(92), b"draft-profile-member")],
     )
     .unwrap();
     let decoded = fa_intents::PostBatch::decode(&batch.canonical_bytes().unwrap()).unwrap();
@@ -114,35 +114,78 @@ fn automatic_rule_group_refuses_unrecorded_sources_without_appending() {
     let capability = Capability::embedded(PRINCIPAL, &["read", "post"]).unwrap();
     h.open_draft(capability.clone(), "unrecorded-automatic-sources")
         .unwrap();
+    let event = fa_model::EventSpec {
+        code: "automatic-draft-sale".into(),
+        kind: fa_model::EventKind::Sale,
+        occurred_on: h.day(),
+        description: h.statement("Source sale", 93),
+        participants: Vec::new(),
+        resources: Vec::new(),
+        evidence: h.evidence.clone(),
+        external_ids: Vec::new(),
+    };
+    let event_ref = fa_model::event_vid(h.book.book_id, &event.code);
     let batch = fa_intents::PostBatch::automatic_rules(
-        VId(92),
+        event_ref,
         b"automatic-draft-attempt".to_vec(),
-        vec![synthetic_rule(&h, b"automatic-draft-member")],
+        vec![synthetic_rule(&h, event_ref, b"automatic-draft-member")],
     )
     .unwrap();
-    let request = h.draft_request(capability);
     let ctx = h.ctx();
-    let head = h.db.frontier().unwrap();
-    let vertices = h.db.vertices().unwrap();
-    let refusal = h
+    let check_refusal = |h: &mut Harness, expected_code, reason: &str| {
+        let request = h.draft_request(capability.clone());
+        let head = h.db.frontier().unwrap();
+        let vertices = h.db.vertices().unwrap();
+        let edges = h.db.edges().unwrap();
+        let refusal = h
+            .runtime
+            .block_on(fa_journal::plan_batch_into_draft(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                "unrecorded-automatic-sources",
+                batch.clone(),
+                request,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (expected_code, refusal::exit::REFUSAL),
+            "{refusal}"
+        );
+        assert!(refusal.message.contains("batch member 0"), "{refusal}");
+        assert!(refusal.message.contains(reason), "{refusal}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), vertices);
+        assert_eq!(h.db.edges().unwrap(), edges);
+        assert!(h.draft("unrecorded-automatic-sources").intents.is_empty());
+    };
+
+    check_refusal(
+        &mut h,
+        refusal::code::EVIDENCE_MINIMUM,
+        "which does not exist in this book",
+    );
+    let recorded = h
         .runtime
-        .block_on(fa_journal::plan_batch_into_draft(
+        .block_on(fa_journal::rea::record_event(
             &mut h.db,
             &ctx,
             &h.book,
-            "unrecorded-automatic-sources",
-            batch,
-            request,
+            &event,
+            PRINCIPAL,
+            event.occurred_on,
+            event.code.as_bytes(),
+            event.description.clone(),
+            &Capability::embedded(PRINCIPAL, &["schema_change"]).unwrap(),
         ))
         .unwrap()
-        .unwrap_err();
-    assert_eq!(
-        (refusal.code, refusal.exit),
-        (refusal::code::CANON_RULE, refusal::exit::REFUSAL),
-        "{refusal}"
+        .unwrap();
+    assert_eq!(recorded.target_vid, event_ref);
+    check_refusal(
+        &mut h,
+        refusal::code::CANON_RULE,
+        "which this book does not hold",
     );
-    assert!(refusal.to_string().contains("batch member 0"), "{refusal}");
-    assert_eq!(h.db.frontier().unwrap(), head);
-    assert_eq!(h.db.vertices().unwrap(), vertices);
-    assert!(h.draft("unrecorded-automatic-sources").intents.is_empty());
 }
