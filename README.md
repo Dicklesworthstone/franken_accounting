@@ -2156,16 +2156,18 @@ Writes need `produce`, which the Auditor profile holds, and an
 Agent-profile capability makes none of them. The summary's comparisons are
 mechanical; whether a misstatement is material is the auditor's call.
 
-What the summary does not do yet:
+Two details affect how to read the summary.
 
 - **Carried items need closing routes for their lines.** Per statement
   line, a turned-around item is reversed on the income statement, and a
   still-uncorrected item is on the balance sheet with its income legs on
   the equity account the book's closing routes (`fa close map`) send them
   to. That income is in opening retained earnings by now. Without a route
-  for such an account the lines are refused, naming it. A carry-forward is
-  not chained: the prior engagement's own carry-forward does not come
-  along.
+  for such an account the lines are refused, naming it. Unresolved items
+  carry through successive engagements with their original proposal identities.
+  For an inherited item, use `--turned-around-source <engagement>:<n>` or
+  `--corrected-source <engagement>:<n>`. A later change to an ancestor's
+  disposition can require the descendant engagement to review its carry-forward.
 - **No foreign-currency conversion.** Legs in other units are listed, never
   converted.
 
@@ -2446,9 +2448,11 @@ bind both read and post authority. Agent-profile plans remain rehearsals; a
 Human must independently prepare and review a plan before trunk publication.
 
 The dedicated `AutomaticRules` profile admits only the complete same-event set
-of Rule-origin Original or Adjusting entries. Ordinary user-authored batches,
-replacement reviews and scenario containers retain their Intent-origin
-restrictions; automatic-rule batches cannot be placed in drafts. Unsupported
+of Rule-origin Original or Adjusting entries. To retain the complete group
+in an owned draft, run `fa rule derive --event <event> --draft <name> --json`.
+Rehearsal and promotion recheck the matching rules and their effects.
+Ordinary user-authored batches, replacement reviews and scenario containers
+retain their Intent-origin restrictions. Unsupported
 dry-run and plan options refuse before a rule handler can write.
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
@@ -2844,13 +2848,20 @@ What it is **not**: an ERP, a payments processor, a UI, a tax engine or GAAP int
 
 ## Installation
 
-There are no releases or installers yet. When Gate G1 lands, the quick start will be:
+The repository includes an installer for `fa`, `fad`, `fa-mcp` and
+`fa-verify`. Binary release archives are pending. To build and install
+from a checkout with the pinned Rust toolchain, run:
 
 ```bash
 git clone https://github.com/Dicklesworthstone/franken_accounting
 cd franken_accounting
-cargo run -p fa-cli -- demo init --scenario retail --seed 7
+bash install.sh --from-source --verify
+fa demo init --scenario retail --seed 7 --book ./books/retail
 ```
+
+Run Cargo from the checkout so it loads the pinned nightly's binary-artifact
+configuration. From outside the checkout, pass `-Z bindeps` when invoking
+Cargo with this workspace's `--manifest-path`.
 
 Releases will ship through the suite's self-releaser (`dsr`), never GitHub Actions.
 
