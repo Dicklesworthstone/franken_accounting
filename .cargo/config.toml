@@ -1,0 +1,3 @@
+# Build the fa-cli integration tests' fa-verify binary with the pinned nightly.
+[unstable]
+bindeps = true

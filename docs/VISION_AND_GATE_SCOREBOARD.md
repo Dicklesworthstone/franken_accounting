@@ -90,9 +90,9 @@
 | `GEN-02` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `period_explained` | `—` | install the chart and calendar as journaled schema effects |
 | `GEN-03` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `entry` | `—` | post a balanced two-leg entry via `PostEntry` through admit/resolve/laws/plan/commit |
 | `GEN-04` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `projections_verified` | `—` | the derived legs exist and equal the payload |
-| `GEN-05` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `balance_explained` | `—` | the register maintainer advances and `balance = fold` |
+| `GEN-05` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `registers_refolded` | `—` | the register maintainer advances and `balance = fold` |
 | `GEN-06` | `Genesis` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-02` | `works` | `0` | `lab_campaign_ok` | `—` | crash at every barrier (between plan and commit, commit and ack, delta consumption and watermark) and recover |
-| `GEN-07` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | `fa tb --json` returns the certified trial balance |
+| `GEN-07` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance_replayed` | `—` | `fa tb --json` returns the certified trial balance |
 | `GEN-08` | `Genesis` | `cli` | `cli` | `—` | `works` | `0` | `registers_verified` | `—` | `fa verify registers` is green |
 | `GEN-09` | `Genesis` | `cli` | `cli` | `—` | `refused` | `3` | `error` (`FA-REF-001`) | `fa-lm7` | an unbalanced proposal is refused with exit `3` and the per-unit imbalance |
 | `GEN-10` | `Genesis` | `cli` | `cli` | `—` | `refused` | `7` | `error` (`FA-REF-010`) | `fa-lm7` | a post into a `Closed` period is refused with exit `7` and the matrix cell |
@@ -103,13 +103,13 @@
 | `G1-04` | `G1` | `lab-campaign` | `lab-campaign` | `—` | `absent` | `2` | `error` | `fa-nl7` | idempotency and batches under crash |
 | `G1-05` | `G1` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-2ihd` | the reference differential over model-generated histories |
 | `G1-06` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `polish_bar_ok` | `—` | the robot-mode envelope and `fa triage`, `fa post`, `fa tb`, `fa explain balance`, `fa doctor` at the Polish Bar |
-| `G1-07` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `bundle_produced` | `—` | `fa-verify` verifies a produced bundle of the Genesis book |
+| `G1-07` | `G1` | `cli` | `cli` | `—` | `works` | `0` | `genesis_bundle_verified` | `—` | `fa-verify` verifies a produced bundle of the Genesis book |
 | `G2-01` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-01` | `works` | `0` | `lab_campaign_ok` | `—` | period state machine, admissibility matrix, and witness-resolved post-vs-close races proven in both orders |
 | `G2-02` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `trial_balance` | `—` | selectors including `AS ORIGINALLY REPORTED` and `AS REPORTED IN` |
 | `G2-03` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `restatement_cases_ok` | `—` | supersession netting and restatement cases with diff certificates |
 | `G2-04` | `G2` | `lab-campaign` | `lab-campaign` | `FA-ART-LAB-03` | `works` | `0` | `lab_campaign_ok` | `—` | two-phase entries with expiry sweeps under lab |
 | `G2-05` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `evidence_explained` | `—` | documents, custody, attestations, balance assertions |
-| `G2-06` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `accumulator_verified` | `—` | accumulator continuity and witnessed checkpoints |
+| `G2-06` | `G2` | `cli` | `cli` | `—` | `works` | `0` | `witnessed_extension_verified` | `—` | accumulator continuity and witnessed checkpoints |
 | `G2-07` | `G2` | `registry` | `registry` | `—` | `absent` | `2` | `error` | `fa-0x0` | FA-INV-03/07/08/10/14 live |
 | `G2-08` | `G2` | `external-oracle` | `external-oracle` | `—` | `absent` | `2` | `error` | `fa-sa4w` | the Beancount/hledger differential green on all fixtures |
 | `G2-09` | `G2` | `differential` | `differential` | `—` | `absent` | `2` | `error` | `fa-c34` | Canon rules with golden corpora and backtests |

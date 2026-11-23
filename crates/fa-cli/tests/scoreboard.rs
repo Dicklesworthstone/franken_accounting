@@ -39,6 +39,11 @@ use fa_registry::scoreboard::{
 use fa_registry::threat_model::ThreatModel;
 use fa_registry::{Admissibility, CapabilityCaveats, EntryClasses, ExitCodes, Registries};
 
+#[path = "scoreboard/genesis.rs"]
+mod genesis;
+#[path = "scoreboard/recipient.rs"]
+mod recipient;
+
 const SCOREBOARD_DOC: &str = include_str!("../../../docs/VISION_AND_GATE_SCOREBOARD.md");
 const SCOREBOARD_TOML: &str = include_str!("../../../registries/scoreboard.toml");
 const PLAN_MD: &str =
@@ -97,6 +102,17 @@ impl ProbeOutcome {
             refusal_id: None,
             raw_stdout: String::new(),
             raw_stderr: reason.into(),
+        }
+    }
+
+    fn from_check(result: Result<(), String>, success: &str) -> Self {
+        match result {
+            Ok(()) => Self::ok(success),
+            Err(reason) if reason.starts_with("UNRUN ") => Self {
+                event: "unrun".into(),
+                ..Self::err(reason)
+            },
+            Err(reason) => Self::err(reason),
         }
     }
 }
@@ -935,21 +951,19 @@ fn run_typed_probe(
 ) -> ProbeOutcome {
     let root = workspace_root();
     match probe_kind {
-        EvidenceClass::Cli => {
-            if argv[0] == "g1_polish_bar_suite" {
-                return polish_bar_suite(&argv[1..]);
+        EvidenceClass::Cli => match argv[0].as_str() {
+            "genesis_advanced_registers" => genesis::registers(),
+            "genesis_certified_trial_balance" => genesis::certified_trial_balance(),
+            "g1_genesis_bundle" => recipient::genesis_bundle(),
+            "g2_witnessed_extension" => recipient::witnessed_extension(),
+            "g1_polish_bar_suite" => polish_bar_suite(&argv[1..]),
+            "g2_restatement_cases_with_diff_certificates" => restatement_cases_suite(),
+            "g3_ads_saft_exports_with_proofs" => exports_with_proofs_suite(),
+            name if argv.len() == 1 && name.starts_with('g') && name.contains('_') => {
+                ProbeOutcome::err(format!("absent CLI gate suite `{name}`"))
             }
-            if argv[0] == "g3_ads_saft_exports_with_proofs" {
-                return exports_with_proofs_suite();
-            }
-            if argv[0] == "g2_restatement_cases_with_diff_certificates" {
-                return restatement_cases_suite();
-            }
-            if argv.len() == 1 && argv[0].starts_with('g') && argv[0].contains('_') {
-                return ProbeOutcome::err(format!("absent CLI gate suite `{}`", argv[0]));
-            }
-            run_cli_probe(argv)
-        }
+            _ => run_cli_probe(argv),
+        },
         EvidenceClass::Registry => run_registry_probe(&argv[0]),
         EvidenceClass::Differential => match argv[0].as_str() {
             "g1_registers_verified_every_fixture" => {
@@ -1068,6 +1082,9 @@ fn check_expectation(
     expected_event: &str,
     outcome: &ProbeOutcome,
 ) -> Result<(), String> {
+    if outcome.event == "unrun" {
+        return Err(format!("{id}: {}", outcome.raw_stderr));
+    }
     match expected {
         StepExpectation::Works => {
             if outcome.exit != 0 || outcome.event != expected_event {
@@ -1636,4 +1653,17 @@ fn planted_scoreboard_drift_fails_in_both_directions() {
     )
     .expect_err("an absent step that now succeeds must fail to force a scoreboard update");
     assert!(err.contains("UNRECORDED PROGRESS"), "{err}");
+
+    let missing = ProbeOutcome::from_check(Err("UNRUN missing recipient".into()), "verified");
+    for expectation in [
+        StepExpectation::Works,
+        StepExpectation::Absent {
+            bead: "fa-ubl0.1".into(),
+        },
+    ] {
+        assert_eq!(
+            check_expectation("G1-07", &expectation, 2, "unrun", &missing).unwrap_err(),
+            "G1-07: UNRUN missing recipient"
+        );
+    }
 }

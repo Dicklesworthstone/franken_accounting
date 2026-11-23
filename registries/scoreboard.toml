@@ -642,10 +642,10 @@ gate = "Genesis"
 criterion = "the register maintainer advances and `balance = fold`"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["explain", "balance", "1200", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+argv = ["genesis_advanced_registers"]
 expected = "works"
 expected_exit = 0
-expected_event = "balance_explained"
+expected_event = "registers_refolded"
 
 [[gate_criterion]]
 id = "GEN-06"
@@ -665,10 +665,10 @@ gate = "Genesis"
 criterion = "`fa tb --json` returns the certified trial balance"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["tb", "--period", "FY2026-P03", "--book", "{book}", "--json"]
+argv = ["genesis_certified_trial_balance"]
 expected = "works"
 expected_exit = 0
-expected_event = "trial_balance"
+expected_event = "trial_balance_replayed"
 
 [[gate_criterion]]
 id = "GEN-08"
@@ -795,10 +795,10 @@ gate = "G1"
 criterion = "`fa-verify` verifies a produced bundle of the Genesis book"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["bundle", "produce", "--account", "1200", "--from", "2026-03-01", "--to", "2026-03-31", "--grant", "produce", "--book", "{book}", "--json"]
+argv = ["g1_genesis_bundle"]
 expected = "works"
 expected_exit = 0
-expected_event = "bundle_produced"
+expected_event = "genesis_bundle_verified"
 
 # ---- Gate G2 (10 clauses) ---------------------------------------------------
 
@@ -865,10 +865,10 @@ gate = "G2"
 criterion = "accumulator continuity and witnessed checkpoints"
 evidence_class = "cli"
 probe_kind = "cli"
-argv = ["verify", "accumulator", "--book", "{book}", "--json"]
+argv = ["g2_witnessed_extension"]
 expected = "works"
 expected_exit = 0
-expected_event = "accumulator_verified"
+expected_event = "witnessed_extension_verified"
 
 [[gate_criterion]]
 id = "G2-07"
