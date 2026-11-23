@@ -42,6 +42,37 @@ fn statement(args: &Args) -> Result<&str, Fail> {
     }
 }
 
+fn retains_certificate(args: &Args, profiled: &fa::ProfiledQuery) -> bool {
+    profiled.certify || args.switch("--certify") || args.flag("--certificate-out").is_some()
+}
+
+fn native_observation(args: &Args, profiled: &fa::ProfiledQuery) -> fa_policy::Observes {
+    if let QueryKnownAt::Seq(seq) = profiled.known_at
+        && matches!(profiled.selection, QuerySelection::Native(_))
+        && !retains_certificate(args, profiled)
+        && profiled
+            .branch
+            .as_deref()
+            .is_none_or(|branch| branch == "trunk")
+        && args.flag("--branch").is_none_or(|branch| branch == "trunk")
+    {
+        return fa_policy::Observes::At(CommitSeq(seq));
+    }
+    fa_policy::Observes::Head
+}
+
+/// Only an explicit recorded sequence on a native trunk read can be admitted
+/// historically before opening the book. Resolving other selectors needs HEAD.
+pub(crate) fn bound_observation(args: &Args) -> fa_policy::Observes {
+    if let [verb, text] = args.positional.as_slice()
+        && verb == "query"
+        && let Ok(profiled) = fa::compile_query(text)
+    {
+        return native_observation(args, &profiled);
+    }
+    fa_policy::Observes::Head
+}
+
 /// Pure command translation shared by pre-open admission and execution.
 /// Standalone Lantern and access-log CALLs have their direct command's
 /// authority and certificate family; their query spelling changes neither.
@@ -158,8 +189,7 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             return crate::access::access_cmd(ctx, &read);
         }
     };
-    let certify =
-        profiled.certify || args.switch("--certify") || args.flag("--certificate-out").is_some();
+    let certify = retains_certificate(args, &profiled);
     if args.flag_all("--certificate-out").len() > 1 {
         return Err(usage(
             "--certificate-out may be supplied only once",
@@ -187,9 +217,7 @@ pub(crate) fn query_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             )
         } else {
             let mut reach = fa_policy::Reach::whole_book(true);
-            if let QueryKnownAt::Seq(seq) = &profiled.known_at {
-                reach.observes = fa_policy::Observes::At(CommitSeq(*seq));
-            }
+            reach.observes = native_observation(args, &profiled);
             fa_policy::admit_read(&capability, capability.holder(), book.context().book_id)
                 .and_then(|()| fa_policy::reach(&capability, &reach, None))
                 .map_err(|denial| Fail::Refusal(fa_journal::policy::refusal(&denial)))?;

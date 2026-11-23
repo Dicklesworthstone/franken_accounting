@@ -2506,16 +2506,16 @@ pub(crate) fn bound_command_rule(
 }
 
 /// A bound command that reads a book and does not judge its own reach
-/// reaches the whole book at the head (doctrine 8, fa-0x0), so a token
-/// carrying a coordinate caveat is refused before the book is opened, never
-/// answered with a filtered result. An actual payload class known from the
-/// command is judged separately without narrowing any other coordinate.
+/// reaches the whole book (doctrine 8, fa-0x0). Admission uses HEAD unless
+/// a native read selects an explicit recorded sequence. Coordinate caveats
+/// and any known payload class are judged before opening the book.
 fn bound_scope_refusal(
     capability: &Capability,
     ops: &[fa_policy::Op],
     judged: bool,
     class: Option<EntryClass>,
     command: &str,
+    args: &Args,
 ) -> Result<(), Refusal> {
     if ops.is_empty() {
         return Ok(());
@@ -2537,7 +2537,10 @@ fn bound_scope_refusal(
             return Ok(());
         }
     }
-    let reach = fa_policy::Reach::whole_book(true);
+    let mut reach = fa_policy::Reach::whole_book(true);
+    if capability.known_at_pin().is_some() {
+        reach.observes = crate::query::bound_observation(args);
+    }
     let admission = match class {
         Some(class) => fa_policy::reach_class(capability, &reach, None, class),
         None => fa_policy::reach(capability, &reach, None),
@@ -2557,11 +2560,12 @@ fn bound_scope_refusal(
                     .collect()
             })
             .unwrap_or_default();
-        refusal.message = format!(
-            "`{command}` reaches the whole book at its head: {}",
-            refusal.message
-        );
-        if !known_class_refusal {
+        let frontier = match reach.observes {
+            fa_policy::Observes::Head => "its head".to_string(),
+            fa_policy::Observes::At(seq) => format!("recorded sequence {}", seq.0),
+        };
+        refusal.message = format!("`{command}` reaches the whole book at {frontier}: {}", refusal.message);
+        if !known_class_refusal && reach.observes == fa_policy::Observes::Head {
             refusal.fix = format!(
                 "a scoped capability runs only the commands that judge their own reach (fa {}); ask the book's steward for a capability without scope caveats to run `{command}`",
                 judging.into_iter().collect::<Vec<_>>().join(", fa ")
@@ -2703,6 +2707,7 @@ pub fn bound_command_admissible(
         judged,
         bound_payload_class(verb, args),
         &command_name(verb, sub),
+        args,
     ) {
         return Err(format!("{} ({})", refusal.message, refusal.code));
     }
@@ -2836,6 +2841,7 @@ fn admit_bound_command(ctx: &Ctx<'_>, verb: &Verb, args: &Args) -> Result<(), Fa
         judged,
         bound_payload_class(&verb.name, args),
         &command_name(&verb.name, sub),
+        args,
     )?;
     Ok(())
 }
@@ -11517,6 +11523,7 @@ fn approve_any_review_bytes(
             false,
             None,
             "approve",
+            args,
         )?;
     }
     if bytes.starts_with(b"FA-BAL-REVIEW\0") || bytes.starts_with(b"FA-ALLOC-REVIEW\0") {
