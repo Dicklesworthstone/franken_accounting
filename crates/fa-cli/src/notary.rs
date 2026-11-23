@@ -47,15 +47,8 @@ fn certificate_invalid(message: impl Into<String>) -> Fail {
     ).into()
 }
 
-/// A comparison or trace may reach earlier sources than its final displayed
-/// coordinate. Prepare that actual retained prefix, never a sentinel cutoff.
-pub(crate) fn prepare_artifact_history(
-    book: &mut Book,
-    principal: VId,
-    capability: &Capability,
-    artifact: &ReportArtifact,
-    bytes: &[u8],
-) -> Result<(), Fail> {
+pub(crate) fn decode_book_artifact(book: &Book, bytes: &[u8]) -> Result<ReportArtifact, Fail> {
+    let artifact = ReportArtifact::decode(bytes)?;
     // Another book's prefix means nothing here: refuse the certificate as
     // another book's before selecting any prefix of this one.
     if artifact.book_id() != book.context().book_id {
@@ -63,6 +56,18 @@ pub(crate) fn prepare_artifact_history(
             "report artifact belongs to another book",
         ));
     }
+    Ok(artifact)
+}
+
+/// Resident-only entrypoints need the earliest actual source of a comparison
+/// or trace. The `with_history` entrypoints prepare their own sources.
+fn prepare_artifact_history(
+    book: &mut Book,
+    principal: VId,
+    capability: &Capability,
+    artifact: &ReportArtifact,
+    bytes: &[u8],
+) -> Result<(), Fail> {
     if artifact.uses_functional_valuations() {
         // Functional verification checks immutable Entry births and carrying
         // sources even when the supplied file selects HEAD. A compacted book
@@ -79,15 +84,6 @@ pub(crate) fn prepare_artifact_history(
     if artifact.family() == ReportArtifactFamily::ExternalFeed {
         book.prepare_external_feed_history(principal, capability, Some(artifact.known_at()))??;
         return Ok(());
-    }
-    if artifact.family() == ReportArtifactFamily::Procedure {
-        let certificate = fa::ProcedureCertificate::decode(bytes)?;
-        book.prepare_procedure_history(
-            principal,
-            capability,
-            &certificate.report().procedure,
-            false,
-        )??;
     }
     let known_at = match artifact.family() {
         ReportArtifactFamily::EquityRollForwardDiff => {
@@ -344,7 +340,7 @@ pub(crate) fn retain_report_artifact_for(
                 "use --certify to receive the complete certificate as hex on stdout",
             ));
         }
-        book.replay_report_artifact_for(
+        book.replay_report_artifact_for_with_history(
             capability.holder(),
             capability,
             &bytes,
@@ -909,8 +905,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         principal,
         &capability,
     )?;
-    let artifact = ReportArtifact::decode(&bytes)?;
-    prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
+    let artifact = decode_book_artifact(&book, &bytes)?;
+    if matches!(
+        artifact.family(),
+        ReportArtifactFamily::CloseRunRehearsal
+            | ReportArtifactFamily::DraftDiff
+            | ReportArtifactFamily::ScenarioDiff
+    ) {
+        prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
+    }
     if let Some(view) = view
         && artifact.family() != ReportArtifactFamily::RollForward
     {
@@ -1023,7 +1026,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let digest = hex(artifact.digest());
         return crate::scenario::render_scenario_diff(&ctx.out, &book, &diff, Some(&digest));
     }
-    let replayed = book.replay_report_artifact_for(
+    let replayed = book.replay_report_artifact_for_with_history(
         principal,
         &capability,
         &bytes,
@@ -1501,8 +1504,10 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
         principal,
         &capability,
     )?;
-    let artifact = ReportArtifact::decode(&bytes)?;
-    prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
+    let artifact = decode_book_artifact(&book, &bytes)?;
+    if artifact.family() != ReportArtifactFamily::Procedure {
+        prepare_artifact_history(&mut book, principal, &capability, &artifact, &bytes)?;
+    }
     // Status is meaningful only after the WHOLE artifact verifies. For a
     // comparison or trace, relevance starts at its final statement frontier;
     // a scenario diff is superseded only by Plan records its scenario gained
@@ -1575,7 +1580,11 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
                     .effective_through
                     .map_or_else(|| "all".into(), |day| format!("through:{}", day.render())),
             );
-            match book.procedure_certificate_status(principal, &capability, &certificate)?? {
+            match book.procedure_certificate_status_with_history(
+                principal,
+                &capability,
+                &certificate,
+            )?? {
                 fa::ProcedureCertificateStatus::Current { checked_at } => {
                     ("Current", checked_at, Vec::new(), Vec::new())
                 }

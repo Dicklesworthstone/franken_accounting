@@ -3,8 +3,7 @@
 
 use super::*;
 
-#[test]
-fn graph_kiting_runs_and_records_a_source_backed_two_bank_cycle() {
+pub(super) fn matched_two_bank_cycle() -> Fixture {
     let f = Fixture::with_chart(
         r#"{"accounts":[{"code":"1000","name":"First bank","type":"Asset","unit":"USD"},{"code":"1010","name":"Second bank","type":"Asset","unit":"USD"}]}"#,
     );
@@ -49,6 +48,12 @@ fn graph_kiting_runs_and_records_a_source_backed_two_bank_cycle() {
         }
     }
 
+    f
+}
+
+#[test]
+fn graph_kiting_runs_and_records_a_source_backed_two_bank_cycle() {
+    let f = matched_two_bank_cycle();
     let before = head(&f.book);
     let report = ok_privileged(
         &f.book,
@@ -77,9 +82,55 @@ fn graph_kiting_runs_and_records_a_source_backed_two_bank_cycle() {
         ],
     );
     assert_eq!(rows(data(&listed), "findings").len(), 1);
+    let recorded_head = head(&f.book);
+    for grant in ["reconcile", "privileged"] {
+        let (exit, refused) = run(&f.book, &["replay", certificate, "--grant", grant]);
+        assert_eq!(exit, 7, "{refused:?}");
+        let refusal = data(&refused).get("refusal").unwrap();
+        assert_eq!(text(refusal, "code"), "FA-REF-011");
+        assert!(!refused.render().contains("Private bank customer"));
+    }
     let replayed = ok_privileged(&f.book, &["replay", certificate, "--grant", "reconcile"]);
     assert_eq!(
         data(&replayed).get("findings"),
+        data(&report).get("findings")
+    );
+    let status = ok_privileged(
+        &f.book,
+        &["certificate", "status", certificate, "--grant", "reconcile"],
+    );
+    assert_eq!(text(data(&status), "status"), "Current");
+    assert_eq!(head(&f.book), recorded_head);
+
+    let path = f.dir.join("kiting.cert");
+    let path = path.to_str().unwrap();
+    let events = certified_events(
+        &f.book,
+        &[
+            "procedure",
+            "run",
+            "graph.kiting@1",
+            "--certificate-out",
+            path,
+            "--grant",
+            "reconcile",
+            "--grant",
+            "privileged",
+        ],
+    );
+    let saved = events
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    let file = fa::ProcedureCertificate::decode(&bytes).unwrap();
+    assert_eq!(
+        text(data(saved), "oid"),
+        fa_verify::blake3::hex(file.digest())
+    );
+    let file_replay = ok_privileged(&f.book, &["replay", path, "--grant", "reconcile"]);
+    assert_eq!(
+        data(&file_replay).get("findings"),
         data(&report).get("findings")
     );
 }

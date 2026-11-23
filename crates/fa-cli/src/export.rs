@@ -844,6 +844,29 @@ const VERIFY_EXAMPLE: &str = "fa verify export ads|saft|csv-gl|beancount|hledger
 const VERIFY_FIX: &str = "export again with fa export at the coordinate you need and verify that file; an edited export is not the book's";
 const VERIFY_CITE: &str = "plan §16 (export then import is the identity on folds) and the export's coordinate certificate (content_digest over the canonical journal, certificate_digest over its coordinate)";
 
+fn replay_warehouse_report(
+    book: &mut fa::Book,
+    capability: &fa_policy::Capability,
+    bytes: &[u8],
+) -> Result<fa::ReportArtifact, Fail> {
+    let artifact = crate::notary::decode_book_artifact(book, bytes)?;
+    let principal = capability.holder();
+    if artifact.family() == fa::ReportArtifactFamily::ScenarioDiff {
+        let certificate = fa::ScenarioDiffCertificate::decode(bytes)?;
+        book.prepare_report_history(principal, capability, Some(artifact.known_at()))??;
+        book.replay_scenario_diff(principal, capability, &certificate)??;
+    } else {
+        book.replay_report_artifact_for_with_history(
+            principal,
+            capability,
+            bytes,
+            Some(artifact.digest()),
+            fa::ReportArtifactExpectation::AsSupplied,
+        )??;
+    }
+    Ok(artifact)
+}
+
 /// `fa export warehouse` (plan §5.7, §15; beads fa-ff6, fa-lzrn): invoke the
 /// host's `fwc` connector (`snowflake`, `bigquery`, `s3`) as a supervised
 /// subprocess over a verified report certificate or journal coordinate, and
@@ -945,26 +968,7 @@ fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 principal,
                 &capability,
             )?;
-            let artifact = fa::ReportArtifact::decode(&cert_bytes)?;
-            crate::notary::prepare_artifact_history(
-                book,
-                principal,
-                &capability,
-                &artifact,
-                &cert_bytes,
-            )?;
-            if artifact.family() == fa::ReportArtifactFamily::ScenarioDiff {
-                let certificate = fa::ScenarioDiffCertificate::decode(&cert_bytes)?;
-                book.replay_scenario_diff(principal, &capability, &certificate)??;
-            } else {
-                book.replay_report_artifact_for(
-                    principal,
-                    &capability,
-                    &cert_bytes,
-                    Some(artifact.digest()),
-                    fa::ReportArtifactExpectation::AsSupplied,
-                )??;
-            }
+            let artifact = replay_warehouse_report(book, &capability, &cert_bytes)?;
             let seq = artifact.known_at();
             let through = book
                 .periods()?
@@ -1685,26 +1689,7 @@ fn verify_warehouse_export(ctx: &mut Ctx<'_>, args: &Args, path: &str) -> Result
                     &receipt.report_certificate_digest,
                 )??
                 .canonical_bytes()?;
-            let artifact = fa::ReportArtifact::decode(&cert_bytes)?;
-            crate::notary::prepare_artifact_history(
-                book,
-                capability.holder(),
-                &capability,
-                &artifact,
-                &cert_bytes,
-            )?;
-            if artifact.family() == fa::ReportArtifactFamily::ScenarioDiff {
-                let certificate = fa::ScenarioDiffCertificate::decode(&cert_bytes)?;
-                book.replay_scenario_diff(capability.holder(), &capability, &certificate)??;
-            } else {
-                book.replay_report_artifact_for(
-                    capability.holder(),
-                    &capability,
-                    &cert_bytes,
-                    Some(artifact.digest()),
-                    fa::ReportArtifactExpectation::AsSupplied,
-                )??;
-            }
+            replay_warehouse_report(book, &capability, &cert_bytes)?;
         }
         selected = Some(journal);
         Ok(())

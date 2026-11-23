@@ -4428,7 +4428,7 @@ fn bank_fetch_runs_the_hosts_fwc_and_retains_its_payload() {
 #[test]
 fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
     use std::os::unix::fs::PermissionsExt;
-    let f = Fixture::new();
+    let f = kiting::matched_two_bank_cycle();
     let tb_events = certified_events(&f.book, &["tb", "--period", "FY2026-P03", "--certify"]);
     let tb = &tb_events[0];
     let cert_oid = text(tb, "certificate").to_string();
@@ -4446,12 +4446,15 @@ fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     };
-    fake(
-        &bin,
-        &format!(
-            "#!/bin/sh\nPATH=/usr/bin:/bin\n[ \"$*\" = 'robot export --connector snowflake --destination analytics.gl.tb --certificate {cert_oid}' ] || exit 9\nprintf '{{\"robot_schema_version\":\"fwc.robot.v1\",\"connector\":\"snowflake\",\"receipt_hash\":\"{receipt_hash}\"}}\\n'\n"
-        ),
-    );
+    let receipt_adapter = |dir: &Path, digest: &str, destination: &str| {
+        fake(
+            dir,
+            &format!(
+                "#!/bin/sh\nPATH=/usr/bin:/bin\n[ \"$*\" = 'robot export --connector snowflake --destination {destination} --certificate {digest}' ] || exit 9\nprintf '{{\"robot_schema_version\":\"fwc.robot.v1\",\"connector\":\"snowflake\",\"receipt_hash\":\"{receipt_hash}\"}}\\n'\n"
+            ),
+        );
+    };
+    receipt_adapter(&bin, &cert_oid, "analytics.gl.tb");
     fake(
         &failing,
         "#!/bin/sh\necho 'snowflake: warehouse suspended' >&2\nexit 3\n",
@@ -4465,6 +4468,7 @@ fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
 
     let run_wh = |path: &Path, args: &[&str]| -> (i32, Json) {
         let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .current_dir(&f.dir)
             .arg("--book")
             .arg(&f.book)
             .args(args)
@@ -4554,6 +4558,82 @@ fn warehouse_export_runs_the_hosts_fwc_and_verifies_its_receipt() {
     std::fs::write(&tampered_path, tampered).unwrap();
     let (t_code, t_out) = run_wh(&bin, &["verify", "export", "warehouse", tampered_str]);
     assert_eq!(t_code, 8, "{}", t_out.render());
+
+    let recorded = ok_privileged(
+        &f.book,
+        &["finding", "record", "graph.kiting", "--grant", "reconcile"],
+    );
+    assert_eq!(integer(data(&recorded), "finding_count"), 1);
+    let digest = text(data(&recorded), "certificate");
+    let kiting_bin = f.dir.join("wh-kiting");
+    std::fs::create_dir(&kiting_bin).unwrap();
+    receipt_adapter(&kiting_bin, digest, "analytics.gl.kiting");
+    let kiting_path = f.dir.join("warehouse-kiting.toml");
+    let mut export = vec![
+        "export",
+        "warehouse",
+        "--connector",
+        "snowflake",
+        "--destination",
+        "analytics.gl.kiting",
+        "--report",
+        digest,
+        "--out",
+        kiting_path.to_str().unwrap(),
+        "--grant",
+        "reconcile",
+    ];
+    let (code, denied) = run_wh(&kiting_bin, &export);
+    assert_eq!(code, 7, "{denied:?}");
+    assert!(!kiting_path.exists());
+    export.extend(["--grant", "privileged"]);
+    let (code, exported) = run_wh(&kiting_bin, &export);
+    assert_eq!(code, 0, "{exported:?}");
+    assert_eq!(text(data(&exported), "certificate_digest"), digest);
+    let verify_as = |holder, ops: &[&str]| {
+        let token = f.dir.join(format!("{holder}.token"));
+        let token_path = token.to_str().unwrap();
+        let mut issue = vec![
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            "human",
+            "--grant",
+            "issue_capability",
+            "--out",
+            token_path,
+        ];
+        for op in ops {
+            issue.extend(["--op", op, "--grant", op]);
+        }
+        ok(&f.book, &issue);
+        run_wh(
+            &kiting_bin,
+            &[
+                "--token",
+                token_path,
+                "verify",
+                "export",
+                "warehouse",
+                "warehouse-kiting.toml",
+            ],
+        )
+    };
+    let (code, denied) = verify_as("limited", &["read", "verify", "privileged"]);
+    assert_eq!(code, 7, "{denied:?}");
+    assert_eq!(
+        text(data(&denied).get("refusal").unwrap(), "code"),
+        "FA-REF-011"
+    );
+    let (code, verified) = verify_as("examiner", &["read", "verify", "reconcile", "privileged"]);
+    assert_eq!(code, 0, "{verified:?}");
+    assert_eq!(text(data(&verified), "certificate_digest"), digest);
+    assert_eq!(
+        text(data(&verified), "content_digest"),
+        text(data(&exported), "content_digest")
+    );
 }
 
 #[path = "bank/csv_layout.rs"]
