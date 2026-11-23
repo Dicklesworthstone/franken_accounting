@@ -27,6 +27,8 @@
 //! their immutable pre-claim records remain valid read-only retry anchors.
 //! Draft lifecycle records use that same reservation, including ordered batch
 //! and correction plans and the promotion control beside its monetary batch.
+//! Import runs reserve their caller's key with their documents and custody;
+//! inline, external and bank intake share the same admission and claim.
 //! Existing normal-key controls are checked before a posting takes their key.
 
 mod keys;
@@ -811,6 +813,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         || crate::case::is_lifecycle_control(entry, vid)
         || crate::scenario::is_lifecycle_control(entry, vid)
         || crate::draft::is_lifecycle_control(entry, vid)
+        || crate::import::is_import_control(entry, vid)
         || crate::engagement::is_lifecycle_control(entry, vid))
         && vid
             == fa_model::entry_vid(

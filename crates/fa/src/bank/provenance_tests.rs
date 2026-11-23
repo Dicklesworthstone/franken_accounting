@@ -372,7 +372,8 @@ fn bank_import_projects_native_sources_in_one_counted_publication() {
     assert_eq!(imported.receipt.receipt.document_count, 4);
     assert_eq!(
         h.book.db.vertices_at(after).unwrap().len() - vertices_before,
-        9
+        10,
+        "four documents and receipts, one ImportControl, and its atomic outcome claim"
     );
     assert_eq!(h.book.db.edges_at(after).unwrap().len() - edges_before, 13);
 
@@ -435,6 +436,113 @@ fn bank_import_projects_native_sources_in_one_counted_publication() {
     assert_eq!(replay.manifest, imported.manifest);
     assert_eq!(replay.lines.len(), 2);
     assert_eq!(h.head(), after, "replaying native sources stays read-only");
+}
+
+#[test]
+fn bank_import_dedup_refuses_a_deleted_modern_outcome_claim() {
+    for linked in [false, true] {
+        let mut h = Harness::new(if linked { 167 } else { 166 });
+        let previous = linked.then(|| h.import(PRINCIPAL).manifest_oid);
+        let raw = if linked { NEXT_CSV } else { CSV };
+        let imported = import_selected(&mut h, raw, previous).unwrap().unwrap();
+        let recorded_at = h.head();
+        let same = import_selected(&mut h, raw, previous).unwrap().unwrap();
+        assert!(same.receipt.already_recorded);
+        assert_eq!(same.receipt.receipt, imported.receipt.receipt);
+        assert_eq!(h.head(), recorded_at);
+
+        let run = imported.receipt.receipt.run;
+        let row = h.book.db.vertex(run).unwrap().unwrap();
+        let entry = fa_model::Entry::decode(
+            &fa_journal::rows::bytes(
+                &row,
+                fa_model::symbols::property::FA_PAYLOAD,
+                "bank ImportControl payload",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let claim = fa_model::intent_outcome_vid(
+            entry.proposal.book_id,
+            &entry.proposal.principal_ref.0.to_le_bytes(),
+            &entry.proposal.idempotency_key,
+        );
+        let original_claim = h.book.db.vertex(claim).unwrap().unwrap();
+        assert_eq!(row.created_at, recorded_at);
+        assert_eq!(original_claim.created_at, recorded_at);
+        if linked {
+            let binding = fa_journal::import::read_bank_statement_link_with_manifest(
+                &h.book.db,
+                h.book.context().book_id,
+                &imported.manifest,
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            assert_eq!(binding.receipt, imported.receipt.receipt);
+        }
+
+        // Removing a modern claim must never turn the surviving receipt into
+        // a claim-free legacy retry anchor, including the native-link shortcut.
+        let cx = h.cx();
+        let mut change = fgdb::WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+        change.delete_vertex(claim);
+        h.runtime
+            .block_on(h.book.db.write(&cx.commit(), change))
+            .unwrap();
+        let after_tamper = h.head();
+        assert_eq!(after_tamper.0, recorded_at.0 + 1);
+        let vertices = h.book.db.vertices_at(after_tamper).unwrap().len();
+        let edges = h.book.db.edges_at(after_tamper).unwrap().len();
+        assert!(matches!(
+            fa_journal::import::read_run(&h.book.db, run),
+            Err(KernelError::Corrupt(message))
+                if message.contains("original control or atomic outcome claim")
+        ));
+        for principal in [PRINCIPAL, VId(718)] {
+            let error = h
+                .runtime
+                .block_on(h.book.import_bank_statement(
+                    &cx,
+                    &privileged_cap(principal),
+                    BankImportRequest {
+                        account: imported.manifest.account,
+                        format: BankFormat::Csv,
+                        bytes: raw.as_bytes().to_vec(),
+                        previous_manifest: previous,
+                    },
+                ))
+                .unwrap_err();
+            assert!(
+                matches!(&error, BookError::Kernel(KernelError::Corrupt(message))
+                    if message.contains("original control or atomic outcome claim")),
+                "linked={linked}, principal={principal:?}: {error}"
+            );
+            assert_eq!(h.head(), after_tamper);
+        }
+        if linked {
+            let refusal = fa_journal::import::read_bank_statement_link_with_manifest(
+                &h.book.db,
+                h.book.context().book_id,
+                &imported.manifest,
+            )
+            .unwrap()
+            .unwrap_err();
+            assert_eq!((refusal.code, refusal.exit), (code::DOCUMENT_DRIFT, 8));
+        }
+        assert_eq!(h.head(), after_tamper);
+        assert_eq!(h.book.db.vertices_at(after_tamper).unwrap().len(), vertices);
+        assert_eq!(h.book.db.edges_at(after_tamper).unwrap().len(), edges);
+        assert!(h.book.db.vertex(claim).unwrap().is_none());
+        assert_eq!(h.book.db.vertex(run).unwrap().unwrap(), row);
+        let historical = h.book.db.vertex_at(claim, recorded_at).unwrap().unwrap();
+        assert_eq!(historical.created_at, original_claim.created_at);
+        assert_eq!(historical.labels, original_claim.labels);
+        assert_eq!(
+            historical.props, original_claim.props,
+            "the original atomic claim remains historical evidence"
+        );
+    }
 }
 
 #[test]

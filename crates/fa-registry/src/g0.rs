@@ -833,7 +833,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 43] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 45] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -845,6 +845,8 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 43] = [
     "release_only_resolution",
     "effect_manifest_closure",
     "draft_promotion",
+    "draft_lifecycle",
+    "scenario_lifecycle",
     "period_creation",
     "period_transition",
     "time_evidence_tick",
@@ -2911,7 +2913,7 @@ mod tests {
 
         let op_costs = OperationCosts::embedded().expect("operation_costs.toml");
         assert_eq!(op_costs.hot_object_exceptions.len(), 2);
-        assert_eq!(op_costs.classes.len(), 43);
+        assert_eq!(op_costs.classes.len(), 45);
         assert_eq!(op_costs.kernel_op_witnesses.len(), 9);
 
         let slo = SloRegistry::embedded(&op_costs).expect("slo.toml");
@@ -3121,6 +3123,14 @@ mod tests {
             "1 for a new statement; 0 for an exact retry"
         );
         assert!(bank.hot_object_exceptions.is_empty());
+
+        for id in ["draft_lifecycle", "scenario_lifecycle"] {
+            let lifecycle = op_costs.class(id).expect("native lifecycle cost contract");
+            assert_eq!(lifecycle.today_transactions, 1);
+            assert_eq!(lifecycle.barrier_count, 2);
+            assert_eq!(lifecycle.today_barrier_count, 2);
+            assert!(lifecycle.hot_object_exceptions.is_empty());
+        }
 
         let matching = op_costs
             .class("three_way_document_match")

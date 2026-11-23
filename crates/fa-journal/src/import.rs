@@ -341,6 +341,57 @@ fn receipt_of(entry: &Entry, run: VId, recorded_at: CommitSeq) -> Option<RunRece
     }
 }
 
+/// Only the canonical ImportRun writer's shape may use the normal-key
+/// control protocol, including its immutable claim-free legacy exception.
+pub(crate) fn is_import_control(entry: &Entry, vid: VId) -> bool {
+    let p = &entry.proposal;
+    if p.class != EntryClass::IMPORT_CONTROL
+        || p.branch_id != Id128::TRUNK
+        || p.document_date.is_some()
+        || p.effective_period.is_some()
+        || !p.legs.is_empty()
+        || !p.unit_totals.is_empty()
+        || p.base_totals.is_some()
+        || p.session_ref.is_some()
+        || !p.evidence.is_empty()
+        || !p.supersession.is_empty()
+        || p.pending.is_some()
+        || !p.external_ids.is_empty()
+        || !p.extensions.is_empty()
+        || !p.tags.is_empty()
+        || !entry.approvals.is_empty()
+        || entry.plan_certificate.is_some()
+        || vid
+            != entry_vid(
+                p.book_id,
+                &p.principal_ref.0.to_le_bytes(),
+                &p.idempotency_key,
+            )
+    {
+        return false;
+    }
+    let EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::IMPORT_RUN,
+        spec_body_digest,
+    } = &p.origin
+    else {
+        return false;
+    };
+    let Some(receipt) = receipt_of(entry, vid, CommitSeq(0)) else {
+        return false;
+    };
+    *spec_body_digest == receipt.receipt_hash
+        && receipt_hash(
+            p.book_id,
+            vid,
+            &receipt.source,
+            receipt.document_count,
+            receipt.byte_count,
+            &receipt.oids_root,
+        )
+        .is_ok_and(|digest| digest == receipt.receipt_hash)
+}
+
 fn stored_entry(row: &VertexRow) -> Result<Entry, KernelError> {
     match prop(row, fa_model::symbols::property::FA_PAYLOAD) {
         Some(CanonicalScalar::Bytes(b)) => Ok(Entry::decode(b.as_slice())?),
@@ -359,7 +410,15 @@ pub fn read_run<V: asupersync::fs::Vfs + Clone>(
         return Ok(None);
     };
     let entry = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
-    Ok(receipt_of(&entry, run, row.created_at))
+    let Some(receipt) = receipt_of(&entry, run, row.created_at) else {
+        return Ok(None);
+    };
+    if !crate::outcome::verify_control_recorded(db, &row, &entry)? {
+        return Err(KernelError::Corrupt(
+            "an import run lacks its original control or atomic outcome claim".into(),
+        ));
+    }
+    Ok(Some(receipt))
 }
 
 fn mismatch(receipt: &RunReceipt, what: String) -> Refusal {
@@ -465,6 +524,9 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(crate::outcome::key_conflict()));
     }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+        return Ok(Err(crate::outcome::key_conflict()));
+    }
     let same = &stored.proposal_digest == digest
         || matches!(
             (
