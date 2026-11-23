@@ -1662,6 +1662,14 @@ fn carried_sources_remain_distinct_and_resolve_after_multiple_engagements() {
     // one another. A source already resolved in May cannot be selected in June.
     for flags in [
         vec!["--turned-around", "1", "--corrected-source", "april:1"],
+        vec!["--turned-around", "1", "--turned-around", "1"],
+        vec!["--corrected", "1", "--corrected", "1"],
+        vec![
+            "--corrected-source",
+            "april:1",
+            "--corrected-source",
+            "april:1",
+        ],
         vec![
             "--turned-around-source",
             "march:1",

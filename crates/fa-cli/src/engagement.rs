@@ -75,10 +75,7 @@ fn carry_forward(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .collect::<Result<Vec<_>, Fail>>()?;
         numbers.sort_unstable();
         if numbers.windows(2).any(|w| w[0] == w[1]) {
-            return Err(usage(
-                format!("{flag} names a proposal twice"),
-                CARRY_FORWARD_EXAMPLE,
-            ));
+            return Err(duplicate_proposal(flag));
         }
         Ok(numbers)
     };
@@ -159,6 +156,17 @@ fn ordinals_json(ordinals: &[u32]) -> Json {
     Json::Arr(ordinals.iter().map(|n| Json::Int(i128::from(*n))).collect())
 }
 
+fn duplicate_proposal(flag: &str) -> Fail {
+    Refusal::new(
+        code::STRUCTURE,
+        exit::USAGE,
+        format!("{flag} names a source proposal twice"),
+        "plan §11.12 (engagement carry-forward dispositions)",
+        "name each source proposal once across the turned-around and corrected selections",
+    )
+    .into()
+}
+
 fn qualified_sources(
     args: &Args,
     flag: &str,
@@ -197,10 +205,7 @@ fn qualified_sources(
         .collect::<Result<Vec<_>, Fail>>()?;
     sources.sort_unstable();
     if sources.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(usage(
-            format!("{flag} names a source proposal twice"),
-            CARRY_FORWARD_EXAMPLE,
-        ));
+        return Err(duplicate_proposal(flag));
     }
     Ok(sources)
 }
