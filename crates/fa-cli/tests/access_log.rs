@@ -817,6 +817,7 @@ fn a_query_over_the_runtime_graph_lists_the_callers_own_session() {
 fn certified_historical_access_logs_replay_their_original_interval_after_later_reads() {
     let f = Fixture::new();
     let (auditor, _) = f.issue("historical-auditor", &["read"]);
+    let (producer, commitment) = f.issue("historical-producer", &["read", "produce"]);
     f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
     let selected = f.head();
     let prefix = selected.to_string();
@@ -824,6 +825,8 @@ fn certified_historical_access_logs_replay_their_original_interval_after_later_r
     f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
     let accounting = data(&f.ok(&["tb", "--period", "FY2026-P03"])).clone();
     let (exit, events) = f.run_many(&[
+        "--token",
+        &producer,
         "access",
         "log",
         "--through",
@@ -831,8 +834,6 @@ fn certified_historical_access_logs_replay_their_original_interval_after_later_r
         "--certify",
         "--certificate-out",
         "historical-access.cert",
-        "--grant",
-        "produce",
     ]);
     assert_eq!(exit, 0, "{events:?}");
     assert_eq!(events.len(), 2, "{events:?}");
@@ -848,7 +849,10 @@ fn certified_historical_access_logs_replay_their_original_interval_after_later_r
         text(receipt, "replay_scope"),
         "fa-access-log-over-retained-prefix"
     );
-    assert!(text(receipt, "authority").starts_with("capability:"));
+    assert_eq!(
+        text(receipt, "authority"),
+        format!("capability:{commitment}")
+    );
     let digest = format!("C:{}", text(receipt, "oid"));
     let replay = f.ok(&["replay", &digest]);
     assert_eq!(data(&replay), &original);
@@ -861,11 +865,36 @@ fn certified_historical_access_logs_replay_their_original_interval_after_later_r
     f.ok(&["--token", &auditor, "tb", "--period", "FY2026-P03"]);
     let status = f.ok(&["certificate", "status", &digest]);
     assert_eq!(text(data(&status), "status"), "Current");
-    assert_eq!(data(&f.ok(&["tb", "--period", "FY2026-P03"])), &accounting);
+    let before = number(&accounting, "known_at");
+    let after = f.head();
+    assert!(
+        after > before,
+        "access receipts and certificate retention advance the book"
+    );
+    assert_eq!(
+        data(&f.ok(&[
+            "tb",
+            "--period",
+            "FY2026-P03",
+            "--as-known-at",
+            &before.to_string()
+        ])),
+        &accounting,
+    );
+    let mut expected = accounting;
+    let Json::Obj(fields) = &mut expected else {
+        panic!("trial balance object")
+    };
+    fields
+        .iter_mut()
+        .find(|(name, _)| name == "known_at")
+        .unwrap()
+        .1 = Json::Int(after);
+    assert_eq!(data(&f.ok(&["tb", "--period", "FY2026-P03"])), &expected);
 
     // The CALL surface carries the same original-prefix certificate family.
     let statement = format!("EXPLAIN (CERTIFICATE) CALL fa.access_log AS KNOWN AT {selected}");
-    let (exit, called) = f.run_many(&["query", &statement, "--grant", "produce"]);
+    let (exit, called) = f.run_many(&["--token", &producer, "query", &statement]);
     assert_eq!(exit, 0, "{called:?}");
     assert_eq!(data(&called[0]), &original);
     assert_eq!(text(data(&called[1]), "oid"), text(receipt, "oid"));
