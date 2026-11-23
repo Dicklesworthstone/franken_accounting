@@ -30,7 +30,7 @@ use fgdb_crypto::Hasher;
 use fgdb_gql::{GqlParameters, GqlQueryPolicy};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CommitSeq, VId};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub const PROCEDURE_CERTIFICATE_FORMAT: &[u8] = b"fa:procedure-certificate:v1";
 pub const EXTENDED_PROCEDURE_CERTIFICATE_FORMAT: &[u8] = extended::FORMAT;
@@ -1414,53 +1414,63 @@ fn authorize<V: Vfs + Clone, B: Vfs + Clone>(
 }
 
 /// Approval objects are immutable, outside the posting Entry accumulator.
-/// Their historical payload is also required to remain unchanged at HEAD.
+/// Each visible version must already exist at its earliest cited entry,
+/// bind every citation to the same proposal and remain unchanged at HEAD.
 fn unchanged_approvals<V: Vfs + Clone>(db: &Database<V>, snapshot: &Snapshot) -> Outcome<()> {
     use fa_journal::rows::bytes;
     let head = db.frontier().map_err(KernelError::from)?;
-    let mut seen = BTreeSet::new();
+    let mut bindings = BTreeMap::new();
     for entry in &snapshot.entries {
         for cited in &entry.entry.approvals {
-            if !seen.insert(cited.approval_vid) {
-                continue;
-            }
-            let Some(old) = db
-                .vertex_at(cited.approval_vid, snapshot.coordinate.known_at)
-                .map_err(KernelError::from)?
-            else {
-                return Ok(Err(invalid("historical procedure approval is missing")));
-            };
-            let Some(now) = db
-                .vertex_at(cited.approval_vid, head)
-                .map_err(KernelError::from)?
-            else {
-                return Ok(Err(invalid("procedure approval was retired")));
-            };
-            let old_payload = bytes(&old, property::FA_PAYLOAD, "approval payload")?;
-            let old_digest = bytes(&old, property::FA_DIGEST, "approval digest")?;
-            let approval = fa_policy::Approval::decode(&old_payload)
-                .map_err(|e| BookError::Kernel(KernelError::Model(e.into())))?;
-            let digest = approval
-                .digest()
-                .map_err(|e| BookError::Kernel(KernelError::Model(e.into())))?;
-            if !old.labels.contains(&label::APPROVAL)
-                || now.labels != old.labels
-                || now.created_at != old.created_at
-                || approval.book_id != snapshot.coordinate.book_id
-                || old_digest.as_slice() != digest
-                || approval.approved_proposal_digest != cited.approved_digest
-                || fa_journal::policy::approval_vid(
-                    approval.book_id,
-                    approval.principal,
-                    &approval.approved_proposal_digest,
-                    approval.security_policy_epoch,
-                ) != cited.approval_vid
-                || bytes(&now, property::FA_PAYLOAD, "current approval payload")? != old_payload
-                || bytes(&now, property::FA_DIGEST, "current approval digest")? != old_digest
-            {
+            let (digest, first_use) = bindings
+                .entry(cited.approval_vid)
+                .or_insert((cited.approved_digest, entry.recorded_at));
+            if *digest != cited.approved_digest {
                 return Ok(Err(invalid(
-                    "a procedure approval was rebound or rewritten",
+                    "entries disagree on a cited approval's proposal digest",
                 )));
+            }
+            *first_use = (*first_use).min(entry.recorded_at);
+        }
+    }
+    for (vid, (approved_digest, first_use)) in bindings {
+        let Some(old) = fa_journal::op_witness::vertex_at(db, vid, snapshot.coordinate.known_at)
+            .map_err(KernelError::from)?
+        else {
+            return Ok(Err(invalid("historical procedure approval is missing")));
+        };
+        let old_payload = bytes(&old, property::FA_PAYLOAD, "approval payload")?;
+        let old_digest = bytes(&old, property::FA_DIGEST, "approval digest")?;
+        let approval = fa_policy::Approval::decode(&old_payload)
+            .map_err(|e| BookError::Kernel(KernelError::Model(e.into())))?;
+        let digest = approval
+            .digest()
+            .map_err(|e| BookError::Kernel(KernelError::Model(e.into())))?;
+        if !old.labels.contains(&label::APPROVAL)
+            || old.created_at > first_use
+            || approval.book_id != snapshot.coordinate.book_id
+            || old_digest.as_slice() != digest
+            || approval.approved_proposal_digest != approved_digest
+            || fa_journal::policy::approval_vid(
+                approval.book_id,
+                approval.principal,
+                &approval.approved_proposal_digest,
+                approval.security_policy_epoch,
+            ) != vid
+        {
+            return Ok(Err(invalid(
+                "a procedure approval was rebound or rewritten",
+            )));
+        }
+        if snapshot.coordinate.known_at != head {
+            match fa_journal::op_witness::vertex_at(db, vid, head).map_err(KernelError::from)? {
+                None => return Ok(Err(invalid("procedure approval was retired"))),
+                Some(now) if now != old => {
+                    return Ok(Err(invalid(
+                        "a procedure approval was rebound or rewritten",
+                    )));
+                }
+                Some(_) => {}
             }
         }
     }

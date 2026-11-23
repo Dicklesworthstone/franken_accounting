@@ -179,13 +179,14 @@ impl Snapshot {
             let mut approvals = Vec::with_capacity(entry.approvals.len());
             for a in &entry.approvals {
                 checkpoint(cx)?;
-                let Some(row) = db.vertex_at(a.approval_vid, seq)? else {
+                // vertices_at returns the complete historical prefix in VId order.
+                let Ok(index) = rows.binary_search_by_key(&a.approval_vid, |row| row.vid) else {
                     return Err(KernelError::Corrupt(
                         "an entry cites an approval the book does not hold".into(),
                     )
                     .into());
                 };
-                let payload = bytes(&row, property::FA_PAYLOAD, "approval.payload")?;
+                let payload = bytes(&rows[index], property::FA_PAYLOAD, "approval.payload")?;
                 approvals.push((
                     a.approval_vid,
                     fa_policy::Approval::decode(&payload)?.principal,

@@ -9,6 +9,7 @@ use fa_model::{
 use fa_money::{Amount, Side, UnitId, UnitRegistry};
 use fa_time::{FiscalCalendar, PeriodTransition};
 use fgdb::MemVfs;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 const PRINCIPAL: VId = VId(73);
@@ -248,10 +249,11 @@ impl Fixture {
             ))
             .unwrap()
             .unwrap();
-        match posted {
-            Posted::Committed { entry_ref, .. } => (entry_ref.vid, approval),
-            _ => panic!("fresh posting"),
-        }
+        assert!(
+            matches!(posted, Posted::Committed { .. }),
+            "expected a fresh posting, got {posted:?}"
+        );
+        (posted.entry_ref().vid, approval)
     }
     fn request(&self, id: &str, source: VId) -> ProcedureRequest {
         let row = fa_lantern::bind(id).unwrap();
@@ -628,6 +630,45 @@ fn truncation_unknown_format_wrong_epoch_and_mixed_native_snapshots_are_refused(
         mixed.body().is_err(),
         "never mix native input snapshots even after repairing outer hashes"
     );
+}
+
+#[test]
+fn every_procedure_approval_citation_binds_the_proposal_and_its_recorded_prefix() {
+    let mut f = Fixture::new(87);
+    let (source, approval) = f.post(1, "3000", "1000", 100, true);
+    let vid = approval.expect("recorded approval");
+    let cx = f.cx();
+    let db = &f.book.db;
+    let mut snapshot = Snapshot::read(db, &cx.query(), f.book.context(), None, None).unwrap();
+    let entry = snapshot
+        .entries
+        .iter()
+        .find(|e| e.vid == source)
+        .unwrap()
+        .clone();
+    let birth = db.vertex_at(vid, f.head()).unwrap().unwrap().created_at;
+
+    // Several uses of one authenticated approval can share its storage read.
+    snapshot.entries = vec![entry.clone(), entry];
+    let reads = fa_journal::op_witness::begin();
+    unchanged_approvals(db, &snapshot).unwrap().unwrap();
+    let head_reads = reads.finish().point_reads;
+
+    snapshot.entries[1].entry.approvals[0].approved_digest[0] ^= 1;
+    let refusal = unchanged_approvals(db, &snapshot).unwrap().unwrap_err();
+    assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+    snapshot.entries[1].entry.approvals[0].approved_digest[0] ^= 1;
+
+    // The approval is already visible at its creating publication.
+    snapshot.entries[1].recorded_at = birth;
+    unchanged_approvals(db, &snapshot).unwrap().unwrap();
+    snapshot.entries[1].recorded_at = CommitSeq(birth.0.checked_sub(1).unwrap());
+    for _ in 0..2 {
+        let refusal = unchanged_approvals(db, &snapshot).unwrap().unwrap_err();
+        assert_eq!(refusal.code, crate::certificate::code::CERTIFICATE_INVALID);
+        snapshot.entries.reverse();
+    }
+    assert_eq!(head_reads, 1);
 }
 
 #[test]
