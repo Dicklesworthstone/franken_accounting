@@ -7602,6 +7602,19 @@ impl Book {
         ))
     }
 
+    /// Recipient-bound due-date aging and exact control tie-out as bounded JSONL.
+    pub fn due_date_aging_reconciliation_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DueDateAgingReconciliationCertificate,
+        expected: &crate::AgingReconciliationRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.due_date_aging_reconciliation_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
     /// Reconcile every selected posting leaf (or all of them) at ONE coordinate
     /// under current whole-book read authority; unselected leaves stay explicit.
     pub fn reconcile_aging_portfolio(

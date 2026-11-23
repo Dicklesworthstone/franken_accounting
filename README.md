@@ -1159,6 +1159,14 @@ explicit reasons and separate totals. All amounts and counters are exact decimal
 strings, with historical account and currency metadata. MCP `fa_read_replay`
 accepts the same independent `expect` JSON and `workpaper: true`.
 
+The due-date reconciliation certificate also exports a workpaper through its
+retained replay command, with kind `due-date-aging-reconciliation` in `--expect`.
+It includes the complete due-date schedule followed by each native unit's exact
+posted, pending and open balances, original open-item count and net difference.
+The conclusion identifies both source certificates at the same recorded prefix;
+fully paid control units remain visible even when the aging has no open items.
+This is a native accounting tie-out, with no external subledger attestation.
+
 For plain effective-date or due-date aging, `bundle produce --expect '<request
 JSON>'` checks the independently retained request before exporting. A different
 basis, account, cutoff, recorded prefix or set of buckets is refused before

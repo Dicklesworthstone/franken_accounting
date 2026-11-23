@@ -151,6 +151,18 @@ impl Harness {
         terms: Option<(ObligationStatus, Vec<(&str, i128)>)>,
         settles: Option<EntryRef>,
     ) -> EntryRef {
+        self.post_class(key, date, amount, terms, settles, EntryClass::ORIGINAL)
+    }
+
+    fn post_class(
+        &mut self,
+        key: &str,
+        date: &str,
+        amount: i128,
+        terms: Option<(ObligationStatus, Vec<(&str, i128)>)>,
+        settles: Option<EntryRef>,
+        class: EntryClass,
+    ) -> EntryRef {
         let cx = self.cx();
         let (debit, credit) = if self.receivable {
             if settles.is_some() {
@@ -214,7 +226,7 @@ impl Harness {
             },
             book_id: BOOK,
             branch_id: Id128::TRUNK,
-            class: EntryClass::ORIGINAL,
+            class,
             effective_date: day(date),
             document_date: None,
             description: self.book.seal_text(&cx, key).unwrap(),
@@ -232,7 +244,11 @@ impl Harness {
             session_ref: None,
             evidence: vec![self.evidence],
             supersession: Vec::new(),
-            pending: None,
+            pending: (class == EntryClass::PENDING).then_some(fa_model::Pending {
+                timeout_ns: None,
+                resolution_of: None,
+                disposition: None,
+            }),
             external_ids: Vec::new(),
             extensions,
             tags: Vec::new(),
@@ -620,6 +636,222 @@ fn due_date_reconciliation_includes_all_terms_and_counts_original_items_once() {
 }
 
 #[test]
+fn due_date_reconciliation_workpapers_tie_all_obligations_to_the_historical_control() {
+    for receivable in [false, true] {
+        let mut h = Harness::with_receivable(receivable);
+        let invoice = h.invoice();
+        h.post("workpaper-partial", "2026-03-20", 250, None, Some(invoice));
+        for (key, amount, terms) in [
+            ("no-terms", 100, None),
+            (
+                "missing",
+                200,
+                Some((ObligationStatus::MissingMaturity, vec![])),
+            ),
+            (
+                "disputed",
+                300,
+                Some((ObligationStatus::Disputed { reason_code: 7 }, vec![])),
+            ),
+        ] {
+            h.post(key, "2026-03-02", amount, terms, None);
+        }
+        h.post_class(
+            "unresolved-hold",
+            "2026-03-10",
+            37,
+            None,
+            None,
+            EntryClass::PENDING,
+        );
+        let request = crate::AgingReconciliationRequest {
+            account: account_vid(BOOK, if receivable { "ar" } else { "ap" }),
+            effective_through: day("2026-04-01"),
+            known_at: Some(h.head()),
+            buckets: AgingBuckets::thirty_day(),
+        };
+        let certificate = h
+            .book
+            .certify_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &request,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate;
+        let export = |h: &Harness| {
+            h.book
+                .due_date_aging_reconciliation_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &certificate,
+                    &request,
+                )
+                .unwrap()
+                .unwrap()
+        };
+        let text = export(&h);
+        let source = h
+            .book
+            .due_date_aging_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                certificate.aging_source(),
+                &certificate.aging_source().request().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            text.starts_with(&source),
+            "the full original due-date workpaper remains byte-identical"
+        );
+        let rows = |event: &str| -> Vec<&str> {
+            let prefix = format!("{{\"event\":\"{event}\",");
+            text.lines()
+                .filter(|line| line.starts_with(&prefix))
+                .collect()
+        };
+        assert_eq!(rows("aging_open_item").len(), 4);
+        assert_eq!(rows("aging_application").len(), 1);
+        assert_eq!(rows("due_date_aging_installment").len(), 2);
+        assert_eq!(rows("due_date_aging_unscheduled").len(), 3);
+        let control = rows("aging_control_row");
+        assert_eq!(control.len(), 1);
+        let (debits, credits, pending_debits, pending_credits, open_debits, open_credits, net) =
+            if receivable {
+                (1600, 250, 37, 0, 1350, 0, 1350)
+            } else {
+                (250, 1600, 0, 37, 0, 1350, -1350)
+            };
+        assert_eq!(
+            control[0],
+            format!(
+                "{{\"event\":\"aging_control_row\",\"account\":\"{:032x}\",\"unit_id\":\"{}\",\"posted_debits\":\"{debits}\",\"posted_credits\":\"{credits}\",\"pending_debits\":\"{pending_debits}\",\"pending_credits\":\"{pending_credits}\",\"open_debits\":\"{open_debits}\",\"open_credits\":\"{open_credits}\",\"open_item_count\":\"4\",\"posted_net\":\"{net}\",\"open_net\":\"{net}\",\"difference\":\"0\"}}",
+                request.account.0, h.usd.0,
+            )
+        );
+        let footer = rows("aging_control_reconciliation");
+        assert_eq!(footer.len(), 1);
+        assert!(footer[0].contains("\"format\":\"fa:due-date-aging-reconciliation-workpaper:v1\""));
+        assert!(footer[0].contains("\"reconciled\":true"));
+        assert!(footer[0].contains("\"unit_count\":\"1\""));
+        assert!(footer[0].contains("\"signatures\":\"unsigned\""));
+        assert!(footer[0].contains("\"external_subledger_attestation\":false"));
+        for (field, digest) in [
+            ("certificate_digest", certificate.digest()),
+            ("aging_digest", certificate.aging_source().digest()),
+            ("control_digest", &certificate.control_source().digest),
+        ] {
+            let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert!(footer[0].contains(&format!("\"{field}\":\"{hex}\"")));
+        }
+        let head = h.head();
+        assert_eq!(export(&h), text);
+        assert_eq!(h.head(), head, "workpaper export does not publish");
+        h.post("later-backdated", "2026-03-15", 25, None, None);
+        let h = h.reopen();
+        assert_eq!(
+            export(&h),
+            text,
+            "reopening never substitutes current totals"
+        );
+    }
+}
+
+#[test]
+fn due_date_reconciliation_workpapers_preserve_empty_and_control_only_units_exactly() {
+    let mut h = Harness::new();
+    let export = |h: &Harness| {
+        let request = crate::AgingReconciliationRequest {
+            account: account_vid(BOOK, "ap"),
+            effective_through: day("2026-04-01"),
+            known_at: Some(h.head()),
+            buckets: AgingBuckets::thirty_day(),
+        };
+        let certificate = h
+            .book
+            .certify_due_date_aging_reconciliation(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &request,
+            )
+            .unwrap()
+            .unwrap()
+            .certificate;
+        h.book
+            .due_date_aging_reconciliation_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &certificate,
+                &request,
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let empty = export(&h);
+    assert!(empty.contains("\"unit_count\":\"0\",\"reconciled\":true"));
+    assert!(!empty.contains("\"event\":\"aging_control_row\""));
+    assert!(!empty.contains("\"event\":\"aging_control_unit\""));
+    let invoice = h.invoice();
+    h.post("fully-paid", "2026-03-20", 1000, None, Some(invoice));
+    let usd = h.usd;
+    let eur = UnitRegistry::embedded().unwrap().lookup("EUR").unwrap();
+    h.usd = eur;
+    let exact = (1_i128 << 90) + 1;
+    h.post("eur-unscheduled", "2026-03-02", exact, None, None);
+    let text = export(&h);
+    let rows: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("{\"event\":\"aging_control_row\","))
+        .collect();
+    assert_eq!(rows.len(), 2, "native units never net against each other");
+    let usd_row = rows
+        .iter()
+        .find(|line| line.contains(&format!("\"unit_id\":\"{}\"", usd.0)))
+        .unwrap();
+    assert!(usd_row.contains("\"posted_debits\":\"1000\",\"posted_credits\":\"1000\""));
+    assert!(
+        usd_row.contains("\"open_debits\":\"0\",\"open_credits\":\"0\",\"open_item_count\":\"0\"")
+    );
+    assert!(usd_row.contains("\"posted_net\":\"0\",\"open_net\":\"0\",\"difference\":\"0\""));
+    let eur_row = rows
+        .iter()
+        .find(|line| line.contains(&format!("\"unit_id\":\"{}\"", eur.0)))
+        .unwrap();
+    assert!(eur_row.contains(&format!("\"open_credits\":\"{exact}\"")));
+    assert!(eur_row.contains(&format!(
+        "\"posted_net\":\"-{}\",\"open_net\":\"-{}\",\"difference\":\"0\"",
+        exact, exact
+    )));
+    assert!(text.contains("\"unit_count\":\"2\",\"reconciled\":true"));
+    let control_units: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("{\"event\":\"aging_control_unit\","))
+        .collect();
+    assert_eq!(control_units.len(), 2);
+    for code in ["USD", "EUR"] {
+        assert!(
+            control_units
+                .iter()
+                .any(|line| line.contains(&format!("\"code\":\"{code}\"")))
+        );
+    }
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.starts_with("{\"event\":\"aging_unit\",")
+                && line.contains("\"code\":\"USD\"")),
+        "the control export supplies the unit absent from the fully paid aging"
+    );
+}
+
+#[test]
 fn due_date_reconciliation_rejects_repaired_comparisons_and_wrong_fixed_questions() {
     let mut h = Harness::new();
     h.invoice();
@@ -684,6 +916,21 @@ fn due_date_reconciliation_rejects_repaired_comparisons_and_wrong_fixed_question
             .exit,
         exit::VERIFICATION
     );
+    assert_eq!(
+        h.book
+            .due_date_aging_reconciliation_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                &forged,
+                &request,
+            )
+            .unwrap()
+            .unwrap_err()
+            .exit,
+        exit::VERIFICATION,
+        "a repaired comparison digest cannot produce a workpaper"
+    );
     let mut wrong = Vec::new();
     let mut altered = request.clone();
     altered.account = account_vid(BOOK, "expense");
@@ -712,6 +959,20 @@ fn due_date_reconciliation_rejects_repaired_comparisons_and_wrong_fixed_question
                     &h.cx(),
                     PRINCIPAL,
                     &cap(&["read"]),
+                    certificate,
+                    &expected,
+                )
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            expected_exit
+        );
+        assert_eq!(
+            h.book
+                .due_date_aging_reconciliation_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
                     certificate,
                     &expected,
                 )
@@ -1230,6 +1491,15 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
                 )
                 .map(|result| result.map(|_| ())),
             h.book
+                .due_date_aging_reconciliation_jsonl(
+                    &cx,
+                    PRINCIPAL,
+                    &capability,
+                    &reconciliation,
+                    &reconciliation_request,
+                )
+                .map(|result| result.map(|_| ())),
+            h.book
                 .certify_due_date_aging_reconciliation_from_sources(
                     &cx,
                     PRINCIPAL,
@@ -1295,6 +1565,21 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
                 .exit,
             exit::SAFETY,
             "read+produce is checked before observing corrupted history"
+        );
+        assert_eq!(
+            h.book
+                .due_date_aging_reconciliation_jsonl(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(ops),
+                    &reconciliation,
+                    &reconciliation_request,
+                )
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            exit::SAFETY,
+            "the reconciliation checks read+produce before corrupted history"
         );
     }
     assert!(

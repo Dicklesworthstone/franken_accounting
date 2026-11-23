@@ -628,6 +628,7 @@ fn has_workpaper(
         }
         ReportArtifactFamily::CashFlow
         | ReportArtifactFamily::AgingReconciliation
+        | ReportArtifactFamily::DueDateAgingReconciliation
         | ReportArtifactFamily::AgingPortfolio
         | ReportArtifactFamily::StatementDiff
         | ReportArtifactFamily::StatementTrace => true,
@@ -653,7 +654,7 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
     };
     usage(
         message,
-        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date or due-date aging (with its basis-specific --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
+        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date or due-date aging and their reconciliations (with the family's independent --expect), cash-flow, aging-portfolio, statement-diff and statement-trace certificates",
     )
 }
 
@@ -699,6 +700,16 @@ fn workpaper_jsonl(
                 &fa::AgingReconciliationCertificate::decode(bytes)?,
                 request,
             )??,
+        (
+            ReportArtifactFamily::DueDateAgingReconciliation,
+            Expected::DueDateReconciliation(request),
+            _,
+        ) => book.due_date_aging_reconciliation_jsonl(
+            principal,
+            capability,
+            &fa::DueDateAgingReconciliationCertificate::decode(bytes)?,
+            request,
+        )??,
         (ReportArtifactFamily::AgingPortfolio, Expected::Portfolio(request), _) => book
             .aging_portfolio_jsonl(
                 principal,

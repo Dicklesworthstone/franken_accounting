@@ -51,14 +51,24 @@ impl From<BookError> for ExportError {
     }
 }
 
+struct Comparison<'a> {
+    account: VId,
+    known_at: CommitSeq,
+    effective_through: DateDay,
+    rows: &'a [AgingReconciliationRow],
+    format: &'static str,
+    certificate_digest: &'a [u8; 32],
+    aging_digest: &'a [u8; 32],
+    control_digest: &'a [u8; 32],
+}
+
 fn finish(
     mut text: String,
-    report: &AgingReconciliation,
-    certificate: &AgingReconciliationCertificate,
+    comparison: Comparison<'_>,
     units: &UnitRegistry,
     query: &QueryCx,
 ) -> Result<String, ExportError> {
-    for row in report.rows() {
+    for row in comparison.rows {
         query.checkpoint().map_err(BookError::Context)?;
         let unit = units
             .get(UnitId(row.unit_id))
@@ -84,7 +94,7 @@ fn finish(
             &mut text,
             &format!(
                 "{{\"event\":\"aging_control_row\",\"account\":\"{:032x}\",\"unit_id\":\"{}\",\"posted_debits\":\"{}\",\"posted_credits\":\"{}\",\"pending_debits\":\"{}\",\"pending_credits\":\"{}\",\"open_debits\":\"{}\",\"open_credits\":\"{}\",\"open_item_count\":\"{}\",\"posted_net\":\"{}\",\"open_net\":\"{}\",\"difference\":\"{}\"}}\n",
-                report.account().vid.0,
+                comparison.account.0,
                 row.unit_id,
                 row.posted_debits,
                 row.posted_credits,
@@ -103,15 +113,16 @@ fn finish(
     append(
         &mut text,
         &format!(
-            "{{\"event\":\"aging_control_reconciliation\",\"format\":\"fa:aging-reconciliation-workpaper:v1\",\"scope\":\"selected_account_native_unit_net_balances\",\"account\":\"{:032x}\",\"known_at\":\"{}\",\"effective_through\":\"{}\",\"unit_count\":\"{}\",\"reconciled\":{},\"certificate_digest\":\"{}\",\"aging_digest\":\"{}\",\"control_digest\":\"{}\",\"signatures\":\"unsigned\",\"external_subledger_attestation\":false}}\n",
-            report.account().vid.0,
-            report.known_at().0,
-            report.effective_through(),
-            report.rows().len(),
-            report.is_reconciled(),
-            hex(certificate.digest()),
-            hex(certificate.aging_source().digest()),
-            hex(&certificate.control_source().digest)
+            "{{\"event\":\"aging_control_reconciliation\",\"format\":\"{}\",\"scope\":\"selected_account_native_unit_net_balances\",\"account\":\"{:032x}\",\"known_at\":\"{}\",\"effective_through\":\"{}\",\"unit_count\":\"{}\",\"reconciled\":{},\"certificate_digest\":\"{}\",\"aging_digest\":\"{}\",\"control_digest\":\"{}\",\"signatures\":\"unsigned\",\"external_subledger_attestation\":false}}\n",
+            comparison.format,
+            comparison.account.0,
+            comparison.known_at.0,
+            comparison.effective_through,
+            comparison.rows.len(),
+            comparison.rows.iter().all(|row| row.difference == 0),
+            hex(comparison.certificate_digest),
+            hex(comparison.aging_digest),
+            hex(comparison.control_digest)
         ),
     )?;
     query.checkpoint().map_err(BookError::Context)?;
@@ -163,8 +174,80 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         match finish(
             text,
-            &report,
+            Comparison {
+                account: report.account().vid,
+                known_at: report.known_at(),
+                effective_through: report.effective_through(),
+                rows: report.rows(),
+                format: "fa:aging-reconciliation-workpaper:v1",
+                certificate_digest: certificate.digest(),
+                aging_digest: certificate.aging_source().digest(),
+                control_digest: &certificate.control_source().digest,
+            },
+            &self.context().units,
+            &cx.query(),
+        ) {
+            Ok(text) => Ok(Ok(text)),
+            Err(ExportError::Refusal(r)) => Ok(Err(r)),
+            Err(ExportError::Book(e)) => Err(e),
+        }
+    }
+
+    /// Export the complete contractual aging and its native control tie-out.
+    /// Both retained sources and the independently fixed question must replay
+    /// under current read+produce authority. Scheduled and unscheduled balances
+    /// remain distinct, while control rows count each original open item once.
+    /// Pending balances and control-only units stay explicit. The complete
+    /// UTF-8 result is bounded to 64 MiB; failure returns no partial workpaper.
+    pub fn due_date_aging_reconciliation_jsonl(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &crate::DueDateAgingReconciliationCertificate,
+        expected: &AgingReconciliationRequest,
+    ) -> Outcome<String> {
+        if let Err(r) = authorize(self, cx, principal, capability, true)? {
+            return Ok(Err(r));
+        }
+        let report = match self.replay_due_date_aging_reconciliation(
+            cx,
+            principal,
+            capability,
             certificate,
+            expected,
+        )? {
+            Ok(report) => report,
+            Err(r) => return Ok(Err(r)),
+        };
+        let request = AgingRequest {
+            account: Some(expected.account),
+            effective_through: expected.effective_through,
+            known_at: expected.known_at,
+            buckets: expected.buckets.clone(),
+        };
+        let text = match self.due_date_aging_jsonl(
+            cx,
+            principal,
+            capability,
+            certificate.aging_source(),
+            &request,
+        )? {
+            Ok(text) => text,
+            Err(r) => return Ok(Err(r)),
+        };
+        match finish(
+            text,
+            Comparison {
+                account: report.account().vid,
+                known_at: report.known_at(),
+                effective_through: report.effective_through(),
+                rows: report.rows(),
+                format: "fa:due-date-aging-reconciliation-workpaper:v1",
+                certificate_digest: certificate.digest(),
+                aging_digest: certificate.aging_source().digest(),
+                control_digest: &certificate.control_source().digest,
+            },
             &self.context().units,
             &cx.query(),
         ) {
