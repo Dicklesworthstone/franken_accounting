@@ -6,49 +6,25 @@
   between CallerResolve(h, "Posts") and SweepExpire(h) to double-release hold `h`
   and violate `SingleResolutionPerHold`.
 *)
-EXTENDS Naturals, FiniteSets
+EXTENDS Naturals
 
-Holds == {1, 2}
-ExpiryTick == 2
-MaxTick == 3
-
-VARIABLES
-  tick,
-  resolutions
-
+VARIABLES tick, resolutions
+Base == INSTANCE TwoPhaseWithExpiry
 vars == <<tick, resolutions>>
-
-ResolvedHolds == { r[1] : r \in resolutions }
-
-Init ==
-  /\ tick = 0
-  /\ resolutions = {}
-
-AdvanceTimeTick ==
-  /\ tick < MaxTick
-  /\ tick' = tick + 1
-  /\ UNCHANGED resolutions
-
-CallerResolve(h, disp) ==
-  /\ disp \in {"Posts", "Voids"}
-  /\ h \notin ResolvedHolds
-  /\ resolutions' = resolutions \cup {<<h, disp>>}
-  /\ UNCHANGED tick
 
 \* PLANTED DEFECT: missing `h \notin ResolvedHolds` identity-uniqueness guard!
 SweepExpireBuggy(h) ==
-  /\ tick >= ExpiryTick
+  /\ tick >= Base!ExpiryTick
   /\ resolutions' = resolutions \cup {<<h, "Expires">>}
   /\ UNCHANGED tick
 
 Next ==
-  \/ AdvanceTimeTick
-  \/ \E h \in Holds, d \in {"Posts", "Voids"} : CallerResolve(h, d)
-  \/ \E h \in Holds : SweepExpireBuggy(h)
+  \/ Base!Next
+  \/ \E h \in Base!Holds : SweepExpireBuggy(h)
 
-Spec == Init /\ [][Next]_vars
+Spec == Base!Init /\ [][Next]_vars
 
-SingleResolutionPerHold ==
-  \A h \in Holds : Cardinality({ r \in resolutions : r[1] = h }) <= 1
+SingleResolutionPerHold == Base!SingleResolutionPerHold
+ExpiryRespectsTimeEvidence == Base!ExpiryRespectsTimeEvidence
 
 =============================================================================

@@ -48,6 +48,7 @@
 # Usage: bash scripts/check.sh            # everything
 #        bash scripts/check.sh --quick    # fmt, check, clippy, ubs (no tests, no deny)
 #        bash scripts/check.sh --bench    # smoke benchmarks + manifest/witness checks (fa-tu58)
+#        TLA2TOOLS_JAR=/path/to/tla2tools.jar bash scripts/check.sh --tlc-models  # Tier 2
 #        CHECK_LOG_DIR=<dir> keeps the per-step logs somewhere other than a temp dir.
 # =============================================================================
 set -u
@@ -61,6 +62,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 # shellcheck source=lib/gate_verdict.sh
 . "$ROOT/scripts/lib/gate_verdict.sh"
+
+if [ "$#" -eq 1 ] && [ "$1" = "--tlc-models" ]; then
+  exec python3 -B "$ROOT/scripts/tlc_models.py"
+fi
 
 QUICK=0
 BENCH_ONLY=0

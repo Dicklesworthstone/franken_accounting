@@ -6,8 +6,8 @@
 //! 3. Each TLA+ spec in `formal/tla/` declares a specification, and an in-test Rust model of
 //!    the two-phase hold explores its reachable states and catches a missing identity guard.
 //!
-//! What they do not check (fa-2lsv): no Lean file is compiled or proof-checked here (that is
-//! fa-09q8), and TLC never runs (fa-dj6j). A text search for `sorry` is not a proof, so
+//! Tool execution is separate (fa-2lsv). Lean builds under `formal/lean` (fa-09q8), and
+//! `scripts/check.sh --tlc-models` runs TLC and its planted faults (fa-dj6j).
 //! FA-INV-06.proofs is dormant until a real Lean build backs it. An earlier `.olean` "gate
 //! verifier" in this file returned a hard-coded pass without running any tool; it was removed.
 

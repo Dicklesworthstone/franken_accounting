@@ -2990,6 +2990,13 @@ docs/                  negative evidence, ADRs, threat & trust model
 templates/             chart-of-accounts and statement-definition templates (data)
 ```
 
+To check the five bounded TLA+ specifications, set `TLA2TOOLS_JAR` to a
+local copy of `tla2tools.jar` and run `bash scripts/check.sh --tlc-models`
+with Java on your path. The command retains each TLC transcript, state counts,
+search depth and a counterexample for each planted fault. The merge-train
+specification describes the legacy workflow. These checks cover the models
+at their declared bounds. The Rust implementation has separate tests.
+
 ---
 
 ## License
