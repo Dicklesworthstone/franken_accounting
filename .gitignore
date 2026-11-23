@@ -161,3 +161,8 @@ __pycache__/
 # Durable test/crashpack artifact root pinned by .cargo/config.toml so
 # asupersync lab-test crashpacks survive `cargo clean`; bundles stay untracked.
 /artifacts/
+
+# Lake compiles the package declaration and Lean modules into these paths.
+/formal/lean/.lake/lakefile.olean
+/formal/lean/.lake/lakefile.olean.trace
+/formal/lean/.lake/build/
