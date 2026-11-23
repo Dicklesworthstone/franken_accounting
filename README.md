@@ -1483,6 +1483,39 @@ commitment still includes the complete population at the chosen recorded
 sequence, including controls and entries beyond the cutoff. Explicit `@1`
 reproduces the original algorithm, which takes no effective cutoff.
 
+`jet.weekend` v1 exports the Saturday/Sunday screen for standalone replay.
+The verifier uses each live entry's original document date when present,
+otherwise its effective date, including document years outside the declared
+fiscal calendar. It reconstructs reversal and replacement liveness at the
+saved recorded frontier. This profile takes no parameters or effective cutoff.
+
+`jet.suspense_aging` v3 independently reconstructs settlement residuals on
+accounts holding the historical `suspense` role. Fully cleared items do not
+contribute age or citations; opposing unapplied items remain open even when
+their net balance is zero. Its inclusive `--effective-through` date is optional:
+omitting it uses the latest live posting date. `max_age_days` defaults to 7.
+The verifier reproduces findings, citations and the work charged for the full
+source and residual fold, including payments and reversals outside the cutoff.
+
+`expense.capitalization` v2 exports entries that debit a historical `fixed_asset`
+account and credit an Expense account or an account with the `accrued_expense`
+role. It reproduces the selected asset amount, unit, scale and account citations
+from authenticated original legs and chart controls. It requires an assigned
+`fixed_asset` role and takes no parameters or effective cutoff. Both role-based
+screens replay assignments at the original recorded frontier, so a later role
+change cannot reinterpret a retained result; suspense aging refuses when no
+account held its required role.
+
+```bash
+fa procedure run jet.weekend@1 --certificate-out weekend.cert \
+  --book acme.fabook --json
+fa procedure run jet.suspense_aging@3 --param max_age_days=7 \
+  --effective-through 2026-03-31 --certificate-out suspense-aging.cert \
+  --book acme.fabook --json
+fa procedure run expense.capitalization@2 --certificate-out capitalization.cert \
+  --book acme.fabook --json
+```
+
 `jet.unusual_accounts` v2 also exports for standalone replay. The verifier
 reconstructs rare debit/credit account pairs from the authenticated chart and
 live postings, counting a pair once per entry even when legs are split or the

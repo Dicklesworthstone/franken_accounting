@@ -10,6 +10,12 @@
 //! one currency, side and optional account type from the all-date population,
 //! with exact fixed-point statistics. Round-amount density v1 compares each
 //! account's nonzero legs with the book's rate using exact integer thresholds.
+//! Weekend v1 uses the literal document date when present and the effective
+//! date otherwise, including dates outside a declared fiscal calendar.
+//! Suspense aging v3 reconstructs unsettled items at an optional effective
+//! cutoff and uses the account roles declared at the recorded frontier.
+//! Capitalization v2 screens live fixed-asset debits against expense and
+//! accrued-expense credits using the same historical chart and role controls.
 //! Post-closing v1
 //! reconstructs the first journaled close of each period and compares it with
 //! each live posting's recording sequence. Unusual-accounts v2 independently
@@ -48,6 +54,7 @@ use super::{MAX_REPORT_BUNDLE_BYTES, ReportError, failed, text};
 use crate::blake3::hash_parts;
 use crate::codec::{Reader, Writer};
 
+mod account_screens;
 mod aging;
 mod benford;
 mod benford_digits;
@@ -55,6 +62,7 @@ mod correction_history;
 mod cutoff;
 mod different_dates;
 mod jet;
+mod journal_metadata;
 mod libr;
 mod number_analytics;
 mod ordered;
@@ -85,6 +93,12 @@ pub enum VerifiedProcedureParameters {
         window_days: u32,
     },
     PostClosing,
+    /// Literal document date, or effective date when no document date exists.
+    Weekend,
+    SuspenseAging {
+        max_age_days: u32,
+    },
+    ExpenseCapitalization,
     /// Document and effective dates resolved only from authenticated periods.
     PeriodBoundary,
     UnrecordedLiabilities {
@@ -205,6 +219,9 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "jet.round_amounts",
             Self::PeriodEndTiming { .. } => "jet.period_end_timing",
             Self::PostClosing => "jet.post_closing",
+            Self::Weekend => "jet.weekend",
+            Self::SuspenseAging { .. } => "jet.suspense_aging",
+            Self::ExpenseCapitalization => "expense.capitalization",
             Self::PeriodBoundary => "cutoff.period_boundary",
             Self::UnrecordedLiabilities { .. } => "completeness.unrecorded_liabilities",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
@@ -236,6 +253,9 @@ impl VerifiedProcedureParameters {
             Self::RoundAmounts { .. } => "FA-EVID-L01",
             Self::PeriodEndTiming { .. } => "FA-EVID-L02",
             Self::PostClosing => "FA-EVID-L03",
+            Self::Weekend => "FA-EVID-L04",
+            Self::SuspenseAging { .. } => "FA-EVID-L28",
+            Self::ExpenseCapitalization => "FA-EVID-L48",
             Self::PeriodBoundary => "FA-EVID-L11",
             Self::UnrecordedLiabilities { .. } => "FA-EVID-L44",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
@@ -272,6 +292,8 @@ impl VerifiedProcedureParameters {
                 vec![("window_days", window_days)]
             }
             Self::PostClosing
+            | Self::Weekend
+            | Self::ExpenseCapitalization
             | Self::PeriodBoundary
             | Self::ReversalPatterns
             | Self::SameSameSame => Vec::new(),
@@ -280,6 +302,7 @@ impl VerifiedProcedureParameters {
                 ("bucket_2", edges[1]),
                 ("bucket_3", edges[2]),
             ],
+            Self::SuspenseAging { max_age_days } => vec![("max_age_days", max_age_days)],
             Self::UnusualAccounts {
                 max_pair_count,
                 min_population,
@@ -453,10 +476,13 @@ impl VerifiedProcedureParameters {
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::UnrecordedLiabilities { .. } => &[("window_days", 45)],
             Self::PostClosing
+            | Self::Weekend
+            | Self::ExpenseCapitalization
             | Self::PeriodBoundary
             | Self::ReversalPatterns
             | Self::SameSameSame => &[],
             Self::OpenItemsAging { .. } => &aging::DEFAULTS,
+            Self::SuspenseAging { .. } => &account_screens::SUSPENSE_DEFAULTS,
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::UnusualPreparers { .. } => &jet::PREPARER_DEFAULTS,
             Self::ManualVsRule { .. } => &jet::MANUAL_DEFAULTS,
@@ -478,6 +504,7 @@ impl VerifiedProcedureParameters {
 
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
         matches!(self, Self::OpenItemsAging { .. }) && version == 1
+            || matches!(self, Self::SuspenseAging { .. }) && version == 3
             || version == 2
                 && (self.is_trace()
                     || matches!(
@@ -531,17 +558,28 @@ impl VerifiedProcedureParameters {
         matches!(self, Self::ReversalPatterns | Self::SubsequentEvents { .. })
     }
 
+    pub(crate) fn is_account_screen(self) -> bool {
+        matches!(
+            self,
+            Self::SuspenseAging { .. } | Self::ExpenseCapitalization
+        )
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
-            Self::PeriodEndTiming { .. } | Self::PeriodBoundary => "O(entries)",
+            Self::PeriodEndTiming { .. } | Self::PeriodBoundary | Self::Weekend => "O(entries)",
             Self::PostClosing => "O(entries + transitions)",
             Self::SubsequentEvents { .. } => {
                 "O(entries log entries + legs + periods log periods + entries × periods)"
             }
             Self::OpenItemsAging { .. } => "O(open items)",
+            Self::SuspenseAging { .. } => {
+                "O((entries + legs + applications) log (entries + legs + applications))"
+            }
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
+            | Self::ExpenseCapitalization
             | Self::UnrecordedLiabilities { .. }
             | Self::SameSameDifferent { .. }
             | Self::UnusualPreparers { .. }
@@ -636,6 +674,23 @@ pub enum VerifiedProcedureStatistic {
     CommitsAfterClose {
         period: String,
         commits: u64,
+    },
+    /// ISO weekday of the authenticated document/effective date (6 or 7).
+    IsoWeekday {
+        iso: u8,
+    },
+    /// Age of uncleared suspense items; opposing residuals are not settlements.
+    SuspenseAge {
+        account: u128,
+        age: u64,
+        entries: Vec<u128>,
+    },
+    CapitalizedExpense {
+        capital_asset: u128,
+        cost_accounts: Vec<u128>,
+        unit: u32,
+        amount: i128,
+        scale: u8,
     },
     /// The rarest undirected debit/credit pair in this entry, counted once
     /// per live posting. A self-pair has only one account citation.
@@ -768,6 +823,9 @@ impl VerifiedProcedureStatistic {
             Self::UnrecordedLiabilityAmount { .. } => "unrecorded_liability_amount",
             Self::TracedAmount { .. } => "traced_mantissa",
             Self::CommitsAfterClose { .. } => "commits_after_close",
+            Self::IsoWeekday { .. } => "iso_weekday",
+            Self::SuspenseAge { .. } => "age_days",
+            Self::CapitalizedExpense { .. } => "capitalized_expense_amount",
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
             Self::PreparerAccountPostings { .. } => "preparer_account_postings",
             Self::RuleShare { .. } => "rule_share_bps",
@@ -795,6 +853,9 @@ impl VerifiedProcedureStatistic {
             Self::DaysBetweenPeriods { days, .. } => i128::from(*days),
             Self::UnrecordedLiabilityAmount { amount, .. } => *amount,
             Self::CommitsAfterClose { commits, .. } => i128::from(*commits),
+            Self::IsoWeekday { iso } => i128::from(*iso),
+            Self::SuspenseAge { age, .. } => i128::from(*age),
+            Self::CapitalizedExpense { amount, .. } => *amount,
             Self::AccountPairOccurrences { count, .. } => i128::from(*count),
             Self::PreparerAccountPostings { count, .. } => i128::from(*count),
             Self::RuleShare { basis_points, .. } => *basis_points,
@@ -821,6 +882,7 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. }
+            | Self::CapitalizedExpense { scale, .. }
             | Self::SubsequentEventAmount { scale, .. }
             | Self::UnrecordedLiabilityAmount { scale, .. }
             | Self::AgedOpenAmount { scale, .. }
@@ -864,6 +926,31 @@ impl VerifiedProcedureFinding {
             return cites;
         }
         let citations: Vec<(u8, [u8; 16])> = match &self.statistic {
+            VerifiedProcedureStatistic::SuspenseAge {
+                account, entries, ..
+            } => {
+                let mut citations = vec![(3, account.to_le_bytes())];
+                citations.extend(entries.iter().map(|entry| (1, entry.to_le_bytes())));
+                citations
+            }
+            VerifiedProcedureStatistic::CapitalizedExpense {
+                capital_asset,
+                cost_accounts,
+                ..
+            } => {
+                let mut citations: Vec<_> = self
+                    .entry
+                    .map(|entry| (1, entry.to_le_bytes()))
+                    .into_iter()
+                    .collect();
+                citations.push((3, capital_asset.to_le_bytes()));
+                citations.extend(
+                    cost_accounts
+                        .iter()
+                        .map(|account| (3, account.to_le_bytes())),
+                );
+                citations
+            }
             VerifiedProcedureStatistic::RoundTrip {
                 outbound,
                 returned,
@@ -1035,6 +1122,9 @@ pub(super) struct Registry {
     pub unit_currencies: BTreeMap<u32, u16>,
     /// From authenticated historical chart controls, populated after replay.
     pub account_types: BTreeMap<u128, u8>,
+    pub account_codes: BTreeMap<u128, String>,
+    /// Assignments replayed from immutable controls at the historical frontier.
+    pub account_roles: BTreeMap<u128, BTreeSet<String>>,
     /// First party dimension on each original leg, independently decoded from
     /// authenticated payloads. Empty for procedures that do not need parties.
     pub leg_parties: BTreeMap<u128, Vec<Option<u128>>>,
@@ -1113,6 +1203,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.round_amounts" => ("FA-EVID-L01", Some(("round_power", 30))),
         "jet.period_end_timing" => ("FA-EVID-L02", Some(("window_days", u32::MAX))),
         "jet.post_closing" => ("FA-EVID-L03", None),
+        "jet.weekend" => ("FA-EVID-L04", None),
+        "jet.suspense_aging" => ("FA-EVID-L28", Some(("max_age_days", u32::MAX))),
+        "expense.capitalization" => ("FA-EVID-L48", None),
         "cutoff.period_boundary" => ("FA-EVID-L11", None),
         "completeness.unrecorded_liabilities" => ("FA-EVID-L44", Some(("window_days", u32::MAX))),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
@@ -1139,7 +1232,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing and preparer/manual-origin/round-reversal v1, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1149,6 +1242,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "jet.suspense_aging"
+                | "expense.capitalization"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
                 | "jet.large_round_reversals"
@@ -1166,11 +1261,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     }
     let version = question.u16("procedure.version")?;
     if !matches!(version, 1 | 2 | 3)
-        || (id == "events.subsequent" && version != 3)
-        || (id != "events.subsequent" && version == 3)
+        || (matches!(id, "events.subsequent" | "jet.suspense_aging") && version != 3)
+        || (!matches!(id, "events.subsequent" | "jet.suspense_aging") && version == 3)
         || (matches!(
             id,
             "jet.post_closing"
+                | "jet.weekend"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
                 | "jet.large_round_reversals"
@@ -1185,6 +1281,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (matches!(
             id,
             "jet.unusual_accounts"
+                | "expense.capitalization"
                 | "reversal.patterns"
                 | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
@@ -1219,6 +1316,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "benford.second_digit"
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
+                | "expense.capitalization"
                 | "reversal.patterns"
                 | "events.subsequent"
                 | "completeness.unrecorded_liabilities"
@@ -1296,6 +1394,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::RoundAmounts { round_power: value }
         } else if id == "duplicates.same_same_different" {
             VerifiedProcedureParameters::SameSameDifferent { window_days: value }
+        } else if id == "jet.suspense_aging" {
+            VerifiedProcedureParameters::SuspenseAging {
+                max_age_days: value,
+            }
         } else if id == "completeness.unrecorded_liabilities" {
             if value == 0 {
                 return Err(failed(
@@ -1311,11 +1413,15 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         if question.count(1, 20, "procedure.parameters")? != 0 {
             return Err(failed(
                 "procedure_profile",
-                "post-closing, period-boundary cutoff and exact duplicates take no procedure parameters",
+                "post-closing, weekend, expense capitalization, period-boundary cutoff and exact duplicates take no procedure parameters",
             ));
         }
         if id == "jet.post_closing" {
             VerifiedProcedureParameters::PostClosing
+        } else if id == "jet.weekend" {
+            VerifiedProcedureParameters::Weekend
+        } else if id == "expense.capitalization" {
+            VerifiedProcedureParameters::ExpenseCapitalization
         } else if id == "cutoff.period_boundary" {
             VerifiedProcedureParameters::PeriodBoundary
         } else {
@@ -1396,6 +1502,40 @@ fn finding(
             w.count(ordinals.len() + 1).u8(1).u128(entry);
             for ordinal in ordinals {
                 w.u8(2).u128(entry).u16(*ordinal);
+            }
+        }
+        VerifiedProcedureStatistic::IsoWeekday { .. } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed("procedure_recomputation", "weekday finding lacks its entry")
+            })?;
+            w.count(1).u8(1).u128(entry);
+        }
+        VerifiedProcedureStatistic::SuspenseAge {
+            account, entries, ..
+        } => {
+            w.count(entries.len() + 1).u8(3).u128(*account);
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
+        }
+        VerifiedProcedureStatistic::CapitalizedExpense {
+            capital_asset,
+            cost_accounts,
+            ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed(
+                    "procedure_recomputation",
+                    "capitalization finding lacks its entry",
+                )
+            })?;
+            w.count(cost_accounts.len() + 2)
+                .u8(1)
+                .u128(entry)
+                .u8(3)
+                .u128(*capital_asset);
+            for account in cost_accounts {
+                w.u8(3).u128(*account);
             }
         }
         VerifiedProcedureStatistic::AccountRoundLegs { account, legs, .. }
@@ -2159,6 +2299,9 @@ fn recompute_version(
             .ok_or_else(|| failed("procedure_arithmetic", "round factor overflow"))?,
         VerifiedProcedureParameters::PeriodEndTiming { .. }
         | VerifiedProcedureParameters::PostClosing
+        | VerifiedProcedureParameters::Weekend
+        | VerifiedProcedureParameters::SuspenseAging { .. }
+        | VerifiedProcedureParameters::ExpenseCapitalization
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2287,6 +2430,9 @@ fn recompute_version(
                 post_closing::finding(entry, &first_closes)?
             }
             VerifiedProcedureParameters::SameSameSame
+            | VerifiedProcedureParameters::Weekend
+            | VerifiedProcedureParameters::SuspenseAging { .. }
+            | VerifiedProcedureParameters::ExpenseCapitalization
             | VerifiedProcedureParameters::PeriodBoundary
             | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
             | VerifiedProcedureParameters::OpenItemsAging { .. }
@@ -2325,6 +2471,16 @@ fn recompute_version(
     }
     if profile == VerifiedProcedureParameters::SameSameSame {
         (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
+    } else if profile == VerifiedProcedureParameters::Weekend {
+        findings = journal_metadata::weekend(&grouped_population)?;
+    } else if profile.is_account_screen() {
+        (findings, live_entries, live_legs, comparisons) = account_screens::replay(
+            profile,
+            &entries,
+            &grouped_population,
+            effective_through,
+            registry,
+        )?;
     } else if profile == VerifiedProcedureParameters::PeriodBoundary {
         findings = cutoff::replay(&grouped_population)?;
     } else if let VerifiedProcedureParameters::UnrecordedLiabilities { window_days } = profile {
@@ -2406,9 +2562,12 @@ fn recompute_version(
         VerifiedProcedureParameters::RoundAmounts { .. } => Some(live_legs),
         VerifiedProcedureParameters::PeriodEndTiming { .. }
         | VerifiedProcedureParameters::PostClosing
+        | VerifiedProcedureParameters::Weekend
         | VerifiedProcedureParameters::SameSameSame
         | VerifiedProcedureParameters::SameSameDifferent { .. } => Some(live_entries),
         VerifiedProcedureParameters::FirstDigit { .. }
+        | VerifiedProcedureParameters::SuspenseAging { .. }
+        | VerifiedProcedureParameters::ExpenseCapitalization
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::SecondDigit { .. }
@@ -2529,6 +2688,8 @@ mod tests {
             unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
             unit_currencies: BTreeMap::from([(1, 840), (2, 392)]),
             account_types: BTreeMap::from([(0, 1), (1, 3)]),
+            account_codes: BTreeMap::new(),
+            account_roles: BTreeMap::new(),
             leg_parties: BTreeMap::new(),
             entry_facts: BTreeMap::new(),
             trace: None,

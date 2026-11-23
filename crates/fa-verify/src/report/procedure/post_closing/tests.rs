@@ -18,6 +18,8 @@ fn registry() -> Registry {
         unit_scales: BTreeMap::from([(1, 2)]),
         unit_currencies: BTreeMap::from([(1, 840)]),
         account_types: BTreeMap::new(),
+        account_codes: BTreeMap::new(),
+        account_roles: BTreeMap::new(),
         leg_parties: BTreeMap::new(),
         entry_facts: BTreeMap::new(),
         trace: None,

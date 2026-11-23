@@ -5,6 +5,8 @@
 use super::*;
 use fa_verify::report::{VerifiedReport, verify_report_expected};
 
+#[path = "offline/account_screens.rs"]
+mod account_screens;
 #[path = "offline/benford_digits.rs"]
 mod benford_digits;
 #[path = "offline/cutoff.rs"]
@@ -14,6 +16,8 @@ mod cutoff;
 mod correction_history;
 #[path = "offline/jet.rs"]
 mod jet;
+#[path = "offline/journal_metadata.rs"]
+mod journal_metadata;
 
 #[path = "offline/libr.rs"]
 mod libr;
@@ -1905,7 +1909,9 @@ fn round_amounts_offline_scope_is_explicit_and_production_authority_precedes_obs
         finding.version = 1;
     }
     reseal(&mut legacy_cutoff);
-    let other = f.certify(&f.request("jet.weekend", source)).certificate;
+    let other = f
+        .certify(&f.request("jet.self_approved", source))
+        .certificate;
     let produced = produce(&mut f, &ordinary);
     let key = f.book.checkpoint_public_key();
     let cx = f.cx();

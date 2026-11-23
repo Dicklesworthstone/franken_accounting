@@ -98,6 +98,8 @@
 //! `jet.post_closing` v1 additionally
 //! reconstructs the first journaled close of each period and the recording
 //! distance of every live posting after it, including reopened periods.
+//! `jet.weekend` v1 uses the literal document date, or the effective date when
+//! no document date exists, without requiring a declared document period.
 //! Exact duplicates reconstruct the full
 //! leg multisets, effective dates and directed correction lineage. Authenticated
 //! period declarations supply the exclusive ends and period citations. The
@@ -107,6 +109,10 @@
 //! v2 and second/first-two-digit Benford v2. Account pairs use the historical
 //! chart and complete live posting population, count reciprocal and split legs
 //! once per entry, and reproduce the rarest-pair tie-break and work transcript.
+//! Suspense aging v3 reconstructs settlement residuals at an optional effective
+//! cutoff before grouping accounts with the historically assigned suspense
+//! role. Capitalization v2 uses historical fixed-asset and accrued-expense
+//! roles and account types to identify matching debit/credit postings.
 //! Relative-size factor and threshold splitting v1 additionally reconstruct
 //! native-unit debit subsets, original per-leg party grouping, exact wide ratios
 //! and complete inclusive date windows. Their thresholds retain full i128
@@ -2227,6 +2233,7 @@ fn verify_report_with_native_subledger_input(
                     let period = if matches!(
                         request.parameters,
                         procedure::VerifiedProcedureParameters::PeriodEndTiming { .. }
+                            | procedure::VerifiedProcedureParameters::Weekend
                             | procedure::VerifiedProcedureParameters::PostClosing
                             | procedure::VerifiedProcedureParameters::PeriodBoundary
                             | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }
@@ -2254,7 +2261,13 @@ fn verify_report_with_native_subledger_input(
                             code,
                             effective,
                             end,
-                            document: if matches!(request.parameters,
+                            document: if request.parameters == procedure::VerifiedProcedureParameters::Weekend {
+                                info.document_date.map(|date| procedure::DocumentPeriod {
+                                    date,
+                                    code: None,
+                                    end: None,
+                                })
+                            } else if matches!(request.parameters,
                                 procedure::VerifiedProcedureParameters::PeriodBoundary
                                     | procedure::VerifiedProcedureParameters::UnrecordedLiabilities { .. }) {
                                 info.document_date
@@ -2361,6 +2374,7 @@ fn verify_report_with_native_subledger_input(
             if request.parameters.is_benford()
                 || request.parameters.is_number_analytics()
                 || request.parameters.is_override_jet()
+                || request.parameters.is_account_screen()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2377,6 +2391,22 @@ fn verify_report_with_native_subledger_input(
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
             definitions.entry_facts = entry_facts;
+            if request.parameters.is_account_screen() {
+                let chart = metadata::declared_chart(
+                    envelopes
+                        .iter()
+                        .zip(&records)
+                        .map(|(envelope, (length, payload))| (envelope, &payload[..*length])),
+                    &cert.book,
+                    cert.known_at,
+                )?;
+                for (identity, account) in chart {
+                    definitions.account_codes.insert(identity, account.code);
+                    definitions
+                        .account_roles
+                        .insert(identity, account.roles.into_iter().collect());
+                }
+            }
             if matches!(
                 request.parameters,
                 procedure::VerifiedProcedureParameters::OpenItemsAging { .. }
@@ -2403,6 +2433,30 @@ fn verify_report_with_native_subledger_input(
                     )?
                     .items,
                 );
+            }
+            if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::SuspenseAging { .. }
+            ) {
+                definitions.open_items = Some(match request.effective_through {
+                    Some(cutoff) => {
+                        open_items::replay_as_of(
+                            cert.known_at,
+                            *account_filter,
+                            cutoff,
+                            &units,
+                            &schema,
+                            envelopes,
+                            &infos,
+                            &legs,
+                            &records,
+                            &visible_migrations,
+                            &migration_activations,
+                        )?
+                        .items
+                    }
+                    None => open_items.items.clone(),
+                });
             }
             let (verified, output) =
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;

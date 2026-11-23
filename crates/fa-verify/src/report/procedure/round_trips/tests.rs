@@ -19,6 +19,8 @@ impl Fixture {
                 unit_scales: BTreeMap::from([(1, 2), (2, 0)]),
                 unit_currencies: BTreeMap::new(),
                 account_types: BTreeMap::from([(10, 1), (20, 1), (30, 1), (40, 3)]),
+                account_codes: BTreeMap::new(),
+                account_roles: BTreeMap::new(),
                 leg_parties: BTreeMap::new(),
                 entry_facts: BTreeMap::new(),
                 trace: Some(TraceContext::default()),

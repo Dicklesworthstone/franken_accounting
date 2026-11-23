@@ -134,13 +134,14 @@ commands:
                                                 direct cash flows, changes in equity and their comparisons, lot schedules,
                                                 native/functional one-book consolidated group statements,
                                                 and bounded statistical procedures: JET round-amount/period-end v1/v2,
-                                                post-closing v1, unusual-account pairs v2, exact same-day/different-date duplicates v1,
+                                                post-closing/weekend v1, suspense aging v3, expense capitalization v2,
+                                                unusual-account pairs v2, exact same-day/different-date duplicates v1,
                                                 round-amount density v1, Benford digit profiles v2 and one-account LIBR/FIFO/LIFO/pro-rata v2.
-                                                JET round-amount/period-end v2 accepts an inclusive effective cutoff;
+                                                JET round-amount/period-end v2 and suspense aging v3 accept an optional inclusive effective cutoff;
                                                 Tracing v2 requires a claim date and canonical account/source handles,
                                                 and checks its declared intraday order and law (LIBR also binds replenishment)
                                                 within the source-selected native unit and legal entity.
-                                                All other profiles require no cutoff or input handles;
+                                                All other listed statistical profiles require no cutoff or input handles;
                                                 Replacement histories require current target-derived identities and later
                                                 authenticated references resolving every corrected entry; unresolved and
                                                 legacy identities refuse. Exact statistical and decision-card
@@ -2416,6 +2417,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
+                | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
         ) {
             amount(value)
         } else {
@@ -2446,6 +2448,44 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::IsoWeekday { iso } => {
+                details.push(("iso_weekday", n(u64::from(*iso))));
+            }
+            crate::report::VerifiedProcedureStatistic::SuspenseAge {
+                account,
+                age,
+                entries,
+            } => {
+                details.push(("account", s(format!("{account:032x}"))));
+                details.push(("age_days", n(*age)));
+                details.push((
+                    "entries",
+                    Json::List(
+                        entries
+                            .iter()
+                            .map(|entry| s(format!("{entry:032x}")))
+                            .collect(),
+                    ),
+                ));
+            }
+            crate::report::VerifiedProcedureStatistic::CapitalizedExpense {
+                capital_asset,
+                cost_accounts,
+                unit,
+                ..
+            } => {
+                details.push(("capital_asset", s(format!("{capital_asset:032x}"))));
+                details.push((
+                    "cost_accounts",
+                    Json::List(
+                        cost_accounts
+                            .iter()
+                            .map(|account| s(format!("{account:032x}")))
+                            .collect(),
+                    ),
+                ));
+                details.push(("unit_id", n(u64::from(*unit))));
+            }
             crate::report::VerifiedProcedureStatistic::AgedOpenAmount {
                 account,
                 unit,
