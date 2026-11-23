@@ -51,7 +51,7 @@ consumed_apis = ["Font::parse_static", "advance_width", "glyph_index", "font_bbo
 [[capability]]
 row = "R-RATIONAL"
 capability = "FrankenSymPy `fsym-bigint`, `fsym-rational`, `fsym-budget` at the exact `franken-stack.lock` revision"
-status = "Integrated in `fa-money`: metered arbitrary-size rates and exact conversion intermediates; native verification required at landing"
+status = "`fa-money` uses public upstream revision `9fd3a317` for metered arbitrary-size rates and exact conversion intermediates"
 posture = "Fixed-scale `i128` amounts and accounting rounding/FX laws remain owned here; `fgdb-bigint` and the reference engine remain independent oracles"
 switch_over = "Re-pin only with arithmetic, codec, resource-refusal and dependency-closure gates; no symbolic-engine adoption implied"
 foundation = "frankensympy"

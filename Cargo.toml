@@ -85,9 +85,9 @@ fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = 
 fastmcp-rust = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6", version = "=0.12.0" }
 
 # Exact rate coefficients and cooperatively metered arithmetic (fa-pri).
-fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
-fsym-rational = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
-fsym-budget = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
+fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "9fd3a317ab1ca9225559e130a4ef7bd907fbe3be", version = "=0.1.0" }
+fsym-rational = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "9fd3a317ab1ca9225559e130a4ef7bd907fbe3be", version = "=0.1.0" }
+fsym-budget = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "9fd3a317ab1ca9225559e130a4ef7bd907fbe3be", version = "=0.1.0" }
 
 # Forensic graph algorithms and CGSE determinism witnesses (fa-ac78, plan §11.6).
 fnx-classes = { git = "https://github.com/Dicklesworthstone/franken_networkx.git", rev = "9d710b1c33e99412c94de7fa4de2f7ce4954110f", version = "=0.2.0", default-features = false }

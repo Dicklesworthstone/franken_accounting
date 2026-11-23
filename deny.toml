@@ -119,7 +119,7 @@ exceptions = [
 ]
 
 # These packages declare license-file rather than an SPDX expression. The
-# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 / fsym bd1ad68
+# current first-party LICENSE and pinned fgdb b323bd1 / fnx 9d710b1 / fsym 9fd3a317
 # and franken_markdown 7d0472b LICENSE
 # bytes are identical (SHA256 32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509).
 # Clarify that exact text, including its rider; a changed text must fail.
@@ -546,9 +546,9 @@ deny = [
   { name = "time", wrappers = ["fastmcp-console", "rich_rust", "x509-parser", "asn1-rs"], reason = "fa-mcp posture: fastmcp-console 0.12.0 → rich_rust, and asupersync tls → x509-parser/asn1-rs only" },
   { name = "rust_decimal" },
   { name = "bigdecimal" },
-  { name = "num-bigint", wrappers = ["fsym-bigint", "num-rational", "der-parser"], reason = "FrankenSymPy bd1ad68 integer containment; and the fa-mcp posture: rich_rust enables num-rational's bigint feature, der-parser (x509-parser, asupersync tls) needs it" },
-  { name = "num-integer", wrappers = ["fsym-bigint", "num-bigint", "num-rational"], reason = "FrankenSymPy bd1ad68 exact arithmetic closure only" },
-  { name = "num-rational", wrappers = ["fsym-rational", "rich_rust"], reason = "FrankenSymPy bd1ad68 rational containment; and the fa-mcp posture: rich_rust (fastmcp-console)" },
+  { name = "num-bigint", wrappers = ["fsym-bigint", "num-rational", "der-parser"], reason = "FrankenSymPy 9fd3a317 integer containment; and the fa-mcp posture: rich_rust enables num-rational's bigint feature, der-parser (x509-parser, asupersync tls) needs it" },
+  { name = "num-integer", wrappers = ["fsym-bigint", "num-bigint", "num-rational"], reason = "FrankenSymPy 9fd3a317 exact arithmetic closure only" },
+  { name = "num-rational", wrappers = ["fsym-rational", "rich_rust"], reason = "FrankenSymPy 9fd3a317 rational containment; and the fa-mcp posture: rich_rust (fastmcp-console)" },
   # Columnar/dataframe/graph/search stacks banned by the substrate's closure.
   { name = "arrow" },
   { name = "polars" },

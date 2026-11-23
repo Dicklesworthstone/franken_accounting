@@ -806,7 +806,7 @@ mod tests {
         assert!(text.contains("frankengraphdb@b323bd17"), "{text}");
         assert!(text.contains("franken_networkx@9d710b1c"), "{text}");
         assert!(text.contains("fastmcp-rust@1fd4b6c4"), "{text}");
-        assert!(text.contains("frankensympy@bd1ad68a"), "{text}");
+        assert!(text.contains("frankensympy@9fd3a317"), "{text}");
         assert!(text.contains("franken_markdown@7d0472b2"), "{text}");
         assert!(text.contains("registries: schema_v=1, epochs=15"), "{text}");
 

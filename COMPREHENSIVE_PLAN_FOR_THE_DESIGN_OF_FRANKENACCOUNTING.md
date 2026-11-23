@@ -1314,6 +1314,13 @@ at their retained frontier after a later posting. The cash-flow catalog runs
 v5 and v6 and explicitly refuses a request to execute v4. Historical v4
 certificate framing has a separate verification test.
 
+The source selected for the three exact-arithmetic crates is FrankenSymPy
+`9fd3a317`, a first-parent revision of public main. Its full workspace on
+Darwin ARM64 passed 1,883 tests with one ignored, using the registered
+sibling revisions and the SymPy 1.14.0 oracle. On the prior pin, the same
+host passed 1,192 tests and failed two operation-count assertions. The
+corrected pin preserves the accounting dependency edges and enabled features.
+
 At `cec2e391c86a` the Linux CLI completed the 21-command README invoice in a
 fresh book. A reopened book returned the signed checkpoint it had published.
 After another posting, register verification agreed with a journal refold and
@@ -2970,7 +2977,7 @@ Laws: **derivability** (every §17 gate names its class and counting unit and is
 |---|---|---|---|---|
 | R-ICC | FrankenMarkdown `pdfa::compact_srgb_icc` at the exact `franken-stack.lock` revision | Complete compact RGB output profile integrated; native and external client qualification required at landing | Fixed color-profile data only, with gamma-2.2 approximation named explicitly; no accounting or layout inputs enter the builder and full Markdown rendering remains open in `fa-cet` | Re-pin only with profile identity, tag bounds, dependency closure, PDF/A and independent client checks |
 | R-FONT | FrankenMarkdown `fmd-font` at the exact `franken-stack.lock` revision | Bundled TrueType font programs and integer metrics integrated in statement PDFs; native and external qualification required at landing | Accounting IR, amounts, timestamps and footings remain owned here; full Markdown-engine adoption remains open in `fa-cet` | Re-pin only with font, dependency-closure, external PDF/A and deterministic-render checks |
-| R-RATIONAL | FrankenSymPy `fsym-bigint`, `fsym-rational`, `fsym-budget` at the exact `franken-stack.lock` revision | Integrated in `fa-money`: metered arbitrary-size rates and exact conversion intermediates; native verification required at landing | Fixed-scale `i128` amounts and accounting rounding/FX laws remain owned here; `fgdb-bigint` and the reference engine remain independent oracles | Re-pin only with arithmetic, codec, resource-refusal and dependency-closure gates; no symbolic-engine adoption implied |
+| R-RATIONAL | FrankenSymPy `fsym-bigint`, `fsym-rational`, `fsym-budget` at the exact `franken-stack.lock` revision | `fa-money` uses public upstream revision `9fd3a317` for metered arbitrary-size rates and exact conversion intermediates | Fixed-scale `i128` amounts and accounting rounding/FX laws remain owned here; `fgdb-bigint` and the reference engine remain independent oracles | Re-pin only with arithmetic, codec, resource-refusal and dependency-closure gates; no symbolic-engine adoption implied |
 | R-API | `fgdb::Database` embedded API: `WriteBatch`, `WriteTxn` (`begin`, point reads, `write_ordered`, `refresh_snapshot`, `commit`), `Database::query`, `execute_certified`, `replay`, `read_session`, `subscribe_native`, `delta_since`/`ensure_delta_window`, `open_memory`, `bulk_load` | Live (single-writer handle) | the legacy `execute_gql*`/`BoundPlan` path is never called | — |
 | R-ST | Chronicle system time, `FOR SYSTEM_TIME AS OF SEQ`, retention | Live | — | retention policy per book |
 | R-SSI | Full Graph-SSI (`fgdb-txn`) | Planned ("deliberately not SSI" today; pinned WriteTxn already has point/scan witnesses and admitted bounded single-vertex predicate-selection prefixes) | bounded optimistic `WriteTxn` with first-committer-wins over point-read witnesses for dependencies they cover; mutating aggregate-derived plans additionally require §5.10's atomic basis guard. Point-only ordinary posts gain no scan witness or shared hot object. Guard activation requires pinned-foundation conformance and both-order tests; conservative invalidation can require retry or quiescence under the existing soft-close workflow | adopt SSI; the conflict oracle is unchanged |

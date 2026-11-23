@@ -2233,9 +2233,9 @@ available yet (fa-76hy).
 
 **FrankenSymPy assessment (2026-10-10, corrected after the owner's clarification).**
 The owner's own Rust projects — Franken-named or not — are eligible dependencies,
-including their recorded transitive dependencies. [`frankensympy`](https://github.com/Dicklesworthstone/frankensympy/tree/bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e)
+including their recorded transitive dependencies. [`frankensympy`](https://github.com/Dicklesworthstone/frankensympy/tree/9fd3a317ab1ca9225559e130a4ef7bd907fbe3be)
 supplies the arbitrary-precision exact rationals used by `Rate`.
-Its [`fsym-rational`](https://github.com/Dicklesworthstone/frankensympy/blob/bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e/crates/fsym-rational/src/lib.rs)
+Its [`fsym-rational`](https://github.com/Dicklesworthstone/frankensympy/blob/9fd3a317ab1ca9225559e130a4ef7bd907fbe3be/crates/fsym-rational/src/lib.rs)
 and `fsym-bigint` APIs provide normalized rationals, cross-cancelled composition
 and metered arithmetic. The integration (`fa-pri`) uses those APIs for large
 rate coefficients and exact conversion intermediates, with registered rounding

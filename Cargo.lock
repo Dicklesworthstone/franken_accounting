@@ -1711,7 +1711,7 @@ dependencies = [
 [[package]]
 name = "fsym-bigint"
 version = "0.1.0"
-source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e#bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
+source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=9fd3a317ab1ca9225559e130a4ef7bd907fbe3be#9fd3a317ab1ca9225559e130a4ef7bd907fbe3be"
 dependencies = [
  "fsym-budget",
  "num-bigint",
@@ -1723,7 +1723,7 @@ dependencies = [
 [[package]]
 name = "fsym-budget"
 version = "0.1.0"
-source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e#bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
+source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=9fd3a317ab1ca9225559e130a4ef7bd907fbe3be#9fd3a317ab1ca9225559e130a4ef7bd907fbe3be"
 dependencies = [
  "serde",
 ]
@@ -1731,7 +1731,7 @@ dependencies = [
 [[package]]
 name = "fsym-modular"
 version = "0.1.0"
-source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e#bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
+source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=9fd3a317ab1ca9225559e130a4ef7bd907fbe3be#9fd3a317ab1ca9225559e130a4ef7bd907fbe3be"
 dependencies = [
  "fsym-bigint",
  "fsym-budget",
@@ -1740,7 +1740,7 @@ dependencies = [
 [[package]]
 name = "fsym-rational"
 version = "0.1.0"
-source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e#bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e"
+source = "git+https://github.com/Dicklesworthstone/frankensympy?rev=9fd3a317ab1ca9225559e130a4ef7bd907fbe3be#9fd3a317ab1ca9225559e130a4ef7bd907fbe3be"
 dependencies = [
  "fsym-bigint",
  "fsym-budget",

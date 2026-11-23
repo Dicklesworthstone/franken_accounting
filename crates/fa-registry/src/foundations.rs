@@ -768,7 +768,7 @@ mod tests {
         assert!(summary.contains("frankengraphdb@b323bd17"), "{summary}");
         assert!(summary.contains("franken_networkx@9d710b1c"), "{summary}");
         assert!(summary.contains("fastmcp-rust@1fd4b6c4"), "{summary}");
-        assert!(summary.contains("frankensympy@bd1ad68a"), "{summary}");
+        assert!(summary.contains("frankensympy@9fd3a317"), "{summary}");
         for (name, version) in [
             ("franken_markdown", "0.4.0"),
             ("franken_markdown-icc", "0.7.0"),
