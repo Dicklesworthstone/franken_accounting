@@ -752,6 +752,54 @@ fn chart_installation_claims_are_atomic_and_bind_the_retry() {
 }
 
 #[test]
+fn chart_installation_claim_requires_the_chart_body_and_its_bound_origin() {
+    let mut h = harness();
+    let request = chart_request(&h, b"install-shape");
+    let recorded = install_admitted(&mut h, &request).unwrap();
+    let (entry, _) = read_entry(&h.db, recorded.control_entry).unwrap().unwrap();
+    let stage = |entry: &fa_model::Entry| {
+        fa_journal::outcome::stage_control(
+            &mut fgdb::WriteBatch::new(relation::IN_BOOK),
+            entry,
+            recorded.control_entry,
+        )
+    };
+    stage(&entry).unwrap();
+    // The original chart writer used minor 0, before the extension block.
+    let mut original = entry.proposal.clone();
+    original.schema_minor = 0;
+    stage(&original.seal(Vec::new(), None).unwrap()).unwrap();
+
+    let mut wrong_origin = entry.proposal.clone();
+    wrong_origin.origin = EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::PERIOD_CREATION,
+        spec_body_digest: fgdb_crypto::hash(&request.key).0,
+    };
+    assert!(stage(&wrong_origin.seal(Vec::new(), None).unwrap()).is_err());
+    let mut wrong_digest = entry.proposal.clone();
+    wrong_digest.origin = EntryOrigin::Control {
+        control_kind: fa_model::ControlKind::CHART_INSTALL,
+        spec_body_digest: [0x6b; 32],
+    };
+    assert!(stage(&wrong_digest.seal(Vec::new(), None).unwrap()).is_err());
+    let mut malformed = entry.proposal.clone();
+    let Some(ControlPayload::SchemaChange {
+        canonical_bytes, ..
+    }) = &mut malformed.control
+    else {
+        panic!("installation produced a non-schema entry");
+    };
+    assert!(canonical_bytes.pop().is_some());
+    assert!(stage(&malformed.seal(Vec::new(), None).unwrap()).is_err());
+    let planned = entry
+        .proposal
+        .seal(Vec::new(), Some(Oid([0x6c; 32])))
+        .unwrap();
+    assert!(stage(&planned).is_err());
+    assert_eq!(h.db.frontier().unwrap(), recorded.recorded_at);
+}
+
+#[test]
 fn prepared_reversal_loses_to_chart_installation_with_the_same_key() {
     let mut h = harness();
     let source = h.proposal(

@@ -768,7 +768,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 1..=12 | 14..=19 | 21..=23 | 25..=26,
+                    kind: 2..=12 | 14..=19 | 21..=23 | 25..=26,
                     ..
                 })
             ));
@@ -795,6 +795,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
         );
     (admitted
         || migration
+        || crate::chart::is_installation_control(entry)
         || is_statement_activation(entry)
         || is_cash_flow_policy_activation(entry)
         || is_rule_activation(entry)

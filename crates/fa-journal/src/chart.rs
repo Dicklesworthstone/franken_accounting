@@ -835,6 +835,34 @@ fn finalize_snapshot(
     })
 }
 
+// A chart installation reserves its ordinary principal-scoped outcome key.
+// The SchemaChange tag alone cannot identify the dedicated writer's output.
+pub(super) fn is_installation_control(entry: &Entry) -> bool {
+    let proposal = &entry.proposal;
+    proposal.class == EntryClass::SCHEMA_CONTROL
+        && proposal.branch_id == Id128::TRUNK
+        && proposal.document_date.is_none()
+        && proposal.effective_period.is_none()
+        && proposal.legs.is_empty()
+        && proposal.unit_totals.is_empty()
+        && proposal.base_totals.is_none()
+        && proposal.session_ref.is_none()
+        && proposal.evidence.is_empty()
+        && proposal.supersession.is_empty()
+        && proposal.pending.is_none()
+        && proposal.external_ids.is_empty()
+        && proposal.extensions.is_empty()
+        && proposal.tags.is_empty()
+        && entry.approvals.is_empty()
+        && entry.plan_certificate.is_none()
+        && matches!(&proposal.origin, EntryOrigin::Control {
+            control_kind: ControlKind::CHART_INSTALL, spec_body_digest,
+        } if *spec_body_digest == fgdb_crypto::hash(&proposal.idempotency_key).0)
+        && matches!(&proposal.control, Some(ControlPayload::SchemaChange {
+            kind: 1, canonical_bytes,
+        }) if decode_install(canonical_bytes).is_ok())
+}
+
 // install_chart's existing canonical format: list(AccountSpec base fields),
 // optionally list(code, lower?, upper?), optionally list(period-limit code).
 // No new stored bytes and no reinterpretation of legacy lifetime limits.

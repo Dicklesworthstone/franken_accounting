@@ -3,8 +3,8 @@
 
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
-    ControlPayload, DecodeError, Entry, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128,
-    Reader, SealKey, SymbolTable, Writer, account_vid, entry_vid, unit_vid,
+    DecodeError, Entry, Erasable, Id128, Reader, SealKey, SymbolTable, Writer, account_vid,
+    entry_vid, unit_vid,
 };
 use fa_money::{UnitId, UnitRegistry};
 use fa_time::{
@@ -1081,36 +1081,15 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
     }
     let canonical_bytes = w.finish().map_err(fa_model::EntryError::from)?;
 
-    let proposal = EntryPayload {
-        schema_minor: fa_model::entry::EXTENSIONS_MINOR,
-        book_id: book.book_id,
-        branch_id: Id128::TRUNK,
-        class: EntryClass::SCHEMA_CONTROL,
-        effective_date,
-        document_date: None,
-        description,
-        effective_period: None,
-        legs: Vec::new(),
-        control: Some(ControlPayload::SchemaChange {
-            kind: 1,
-            canonical_bytes,
-        }),
-        unit_totals: Vec::new(),
-        base_totals: None,
-        idempotency_key: idempotency_key.to_vec(),
-        origin: EntryOrigin::Control {
-            control_kind: fa_model::ControlKind::CHART_INSTALL,
-            spec_body_digest: fgdb_crypto::hash(idempotency_key).0,
-        },
+    let proposal = crate::chart::schema_control_proposal(
+        book,
+        1,
+        canonical_bytes,
         principal_ref,
-        session_ref: None,
-        evidence: Vec::new(),
-        supersession: Vec::new(),
-        pending: None,
-        external_ids: Vec::new(),
-        extensions: Vec::new(),
-        tags: Vec::new(),
-    };
+        effective_date,
+        idempotency_key,
+        description,
+    );
     let proposal_digest = proposal.proposal_digest()?;
     let entry: Entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
@@ -1141,22 +1120,26 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(refusal));
     }
-    if let Err(refusal) = crate::outcome::witness_named_key(
-        &txn,
+    let existing = match crate::outcome::witness_control_record(
+        &mut txn,
         db,
-        book.book_id,
+        ctx,
+        book,
         principal_ref,
         idempotency_key,
         evid,
-    )? {
-        txn.abort();
-        return Ok(Err(refusal));
-    }
-    if let Some(row) = txn.vertex(db, evid)? {
-        txn.abort();
-        if !crate::entry_storage::has_class_mirror(&row, entry.proposal.class) {
-            return Ok(Err(crate::outcome::key_conflict()));
+        entry.proposal.class,
+    )
+    .await?
+    {
+        Ok(row) => row,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
         }
+    };
+    if let Some(row) = existing {
+        txn.abort();
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
         if !stored.approvals.is_empty()
             || stored.plan_certificate.is_some()
@@ -1190,15 +1173,6 @@ pub async fn install_chart<V: asupersync::fs::Vfs + Clone>(
                 "resubmit the original chart request, or use a new key for a distinct chart with unused account codes",
             )))
         };
-    }
-    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
-        &txn,
-        db,
-        book,
-        crate::outcome::entry_outcome_vid(&entry.proposal),
-    )? {
-        txn.abort();
-        return Ok(Err(refusal));
     }
     // A budget-capped account is born with one cell per existing period.
     let existing_periods = if accounts
