@@ -1,6 +1,8 @@
 //! Recipient-selected access-attempt extraction over existing native artifacts.
 
-use super::{Args, Check, Json, Read, Usage, Verdict, h, int, key, load, n, s, subject, usage};
+use super::{
+    Args, Check, Json, Read, Usage, Verdict, h, identity_hex, int, key, load, n, s, subject, usage,
+};
 use crate::access_log::{
     ACCESS_LOG_PROOF_FORMAT, AccessLogExpectation, AccessLogRequest, MAX_ACCESS_TRUSTED_KEYS,
     SCOPE_ACCESS_LOG, VerifiedAccessLog, verify_access_log, verify_access_log_expected,
@@ -31,10 +33,10 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
     ) {
         (None, None, None) if components.is_some() => None,
         (Some(book), Some(branch), checkpoint) => Some(AccessLogExpectation {
-            book_id: identity_hex(book, "--book")?,
-            branch_id: identity_hex(branch, "--branch")?,
+            book_id: identity_hex(book, "access-log --book")?,
+            branch_id: identity_hex(branch, "access-log --branch")?,
             checkpoint_oid: checkpoint
-                .map(|value| identity_hex(value, "--expect-checkpoint"))
+                .map(|value| identity_hex(value, "access-log --expect-checkpoint"))
                 .transpose()?,
         }),
         _ => {
@@ -125,25 +127,6 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         },
     };
     Ok(vec![check])
-}
-
-fn identity_hex<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], Usage> {
-    let digits = value.strip_prefix("0x").unwrap_or(value);
-    let invalid = || {
-        usage(
-            format!("access-log {flag} requires exactly {} hex digits", N * 2),
-            "supply the independently retained identity, optionally prefixed by 0x",
-        )
-    };
-    if digits.len() != N * 2 || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(invalid());
-    }
-    let mut bytes = [0; N];
-    for (byte, pair) in bytes.iter_mut().zip(digits.as_bytes().as_chunks::<2>().0) {
-        let text = std::str::from_utf8(pair).map_err(|_| invalid())?;
-        *byte = u8::from_str_radix(text, 16).map_err(|_| invalid())?;
-    }
-    Ok(bytes)
 }
 
 fn checked(log: VerifiedAccessLog, expected: Option<&AccessLogExpectation>) -> Check {

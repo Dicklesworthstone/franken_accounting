@@ -1688,6 +1688,10 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         .expect("the extract is a named check");
     assert_eq!(text(extract, "result"), "pass");
     assert_eq!(integer(get(extract, "detail"), "entries"), 2);
+    assert_eq!(
+        text(get(extract, "detail"), "chart_coverage"),
+        "authenticated_declarations"
+    );
     assert_eq!(cli(&without, true).exit, 8);
     assert_eq!(cli(&gl, false).exit, 2);
 }
@@ -1748,7 +1752,7 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
     // No Cash leg: outside the account's extract.
     post("bill-1", "2026-03-08", "6000", "2000", "3.00");
     post("pay-1", "2026-03-12", "2000", "1000", "3.00");
-    f.checkpoint();
+    let checkpoint = f.checkpoint();
     // Recorded after the state: in neither extract.
     post("sale-2", "2026-03-20", "1000", "4000", "5.00");
 
@@ -1925,6 +1929,58 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
         .find(|check| text(check, "check") == "ads_extract")
         .expect("the extract is a named check");
     assert_eq!(text(get(extract, "detail"), "account_scope"), "1000");
+    assert_eq!(
+        text(get(extract, "detail"), "chart_coverage"),
+        "not_authenticated"
+    );
+    // The examiner retained the checkpoint at creation and specified the
+    // account and March cutoff independently of either export.
+    let requested = |path: &Path, code: Option<&str>, day: &str, checkpoint: &str| {
+        let mut args = vec![
+            "ads",
+            path.to_str().unwrap(),
+            "--json",
+            "--key",
+            text(proof, "checkpoint_public_key"),
+            "--through",
+            day,
+            "--expect-checkpoint",
+            checkpoint,
+        ];
+        if let Some(code) = code {
+            args.extend(["--account", code]);
+        }
+        fa_verify::cli::run(
+            &args.into_iter().map(String::from).collect::<Vec<_>>(),
+            &|p| std::fs::read(p),
+        )
+    };
+    let pin = text(&checkpoint, "checkpoint_oid");
+    let wrong_pin = "00".repeat(32);
+    for (package, account, through, checkpoint, exit) in [
+        (&dir, Some("1000"), "20543", pin, 0),
+        (&whole, None, "20543", pin, 0),
+        (&dir, None, "20543", pin, 8),
+        (&whole, Some("1000"), "20543", pin, 8),
+        (&dir, Some("4000"), "20543", pin, 8),
+        (&dir, Some("1000"), "20542", pin, 8),
+        (&dir, Some("1000"), "20543", wrong_pin.as_str(), 8),
+    ] {
+        let response = requested(package, account, through, checkpoint);
+        assert_eq!(response.exit, exit, "{}", response.stdout);
+        let parsed = json::parse(response.stdout.trim()).unwrap();
+        let Json::Arr(checks) = get(&parsed, "checks") else {
+            panic!("missing checks")
+        };
+        let check = checks
+            .iter()
+            .find(|c| text(c, "check") == "recipient_selection")
+            .unwrap();
+        assert_eq!(
+            text(check, "result"),
+            if exit == 0 { "pass" } else { "fail" }
+        );
+    }
     for format in [
         "saft",
         "csv-gl",

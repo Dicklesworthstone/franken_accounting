@@ -157,6 +157,9 @@ commands:
                                                 proves through the certificate's cutoff,
                                                 Trial_Balance exactly their refold and, against a
                                                 complete prefix, Chart_of_Accounts its declarations
+               [--through D --expect-checkpoint HEX64 [--account CODE]]
+                                                require the whole chart or one chart account at
+                                                your effective cutoff and signed checkpoint
   saft         <dir> --key K... [--receipt R]   a SAF-T 2.00 extract (fa export saft --with-proofs),
                                                 judged as ads: transactions, balance assertions and
                                                 accounts, read without the producer's parser
@@ -175,13 +178,16 @@ options:
   --state S      access-log raw form: canonical AccumulatorState exported for C's signed state_oid
   --book HEX32 --branch HEX32  access-log: independently selected identities, required for
                  portable proofs; use 32 zeroes for trunk. Neither flag opens a source book.
-  --expect-checkpoint HEX64  access-log: optional exact signed checkpoint OID pin;
-                 requires --book/--branch and does not replace a trusted --key
+  --expect-checkpoint HEX64  the exact signed checkpoint OID retained by the recipient.
+                 Access logs pair it with --book and --branch. ADS pairs it with --through.
   --after-seq N --through-seq N  access-log: recipient-selected recording interval (N, N];
                  the lower bound cannot precede S's authenticated access_after boundary
   --reader HEX32 access-log: optional principal ID, exactly 32 hex digits (optional 0x);
                  names are display data. Attempts do not prove successful delivery.
-  --account A    an account vid: decimal, or 0x followed by up to 32 hex characters
+  --account A    scope and bundle take an account vid in decimal or 0x-prefixed hex.
+                 ADS takes the chart account code as written, including any leading zeros.
+  --through D    ADS recipient cutoff in days since 1970-01-01. With --expect-checkpoint,
+                 omitting --account requests the whole chart.
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
   --receipt R    a bundle's detached production receipt
   --units N,N,...  V1 statements require 1..=4096 strictly ascending unique native unit IDs;
@@ -324,7 +330,14 @@ fn admitted(command: &str) -> &'static [&'static str] {
         ],
         "doc-commit" => &["--kind", "--expect"],
         "bundle" => &["--key", "--receipt", "--account", "--from", "--to"],
-        "ads" | "saft" => &["--key", "--receipt"],
+        "ads" => &[
+            "--key",
+            "--receipt",
+            "--account",
+            "--through",
+            "--expect-checkpoint",
+        ],
+        "saft" => &["--key", "--receipt"],
         "report" => &[
             "--key",
             "--receipt",
@@ -813,6 +826,25 @@ fn key(text: &str) -> Result<[u8; 32], Usage> {
         )
     })?;
     Ok(key)
+}
+
+fn identity_hex<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], Usage> {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    let invalid = || {
+        usage(
+            format!("{flag} requires exactly {} hex digits", N * 2),
+            "supply the independently retained identity, optionally prefixed by 0x",
+        )
+    };
+    if digits.len() != N * 2 || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    let mut bytes = [0; N];
+    for (byte, pair) in bytes.iter_mut().zip(digits.as_bytes().as_chunks::<2>().0) {
+        let text = std::str::from_utf8(pair).map_err(|_| invalid())?;
+        *byte = u8::from_str_radix(text, 16).map_err(|_| invalid())?;
+    }
+    Ok(bytes)
 }
 
 fn account(text: &str) -> Result<u128, Usage> {
@@ -2000,6 +2032,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "ads" => {
             let dir = subject(args, "an ADS package directory")?;
+            let selection = AdsSelection::from_args(args)?;
             let keys = args.all("--key");
             if keys.is_empty() {
                 return Err(usage(
@@ -2026,26 +2059,29 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Some(p) => load(read, p, args.hex)?,
                 None => load(read, &format!("{dir}/ADS_Proof.receipt"), false)?,
             };
-            Ok(
-                match verify_ads(
-                    &certificate,
-                    &chart_of_accounts,
-                    &gl_detail,
-                    &trial_balance,
-                    &bundle,
-                    &keys,
-                    Some(&receipt),
-                ) {
-                    Err(e) => vec![Check {
-                        name: "bundle",
-                        scope: "format",
-                        verdict: Verdict::Fail,
-                        detail: Vec::new(),
-                        reason: Some(e.to_string()),
-                    }],
-                    Ok(report) => ads_checks(&report, "ads_extract"),
-                },
-            )
+            let verified = verify_ads(
+                &certificate,
+                &chart_of_accounts,
+                &gl_detail,
+                &trial_balance,
+                &bundle,
+                &keys,
+                Some(&receipt),
+            );
+            let mut checks = match &verified {
+                Err(e) => vec![Check {
+                    name: "bundle",
+                    scope: "format",
+                    verdict: Verdict::Fail,
+                    detail: Vec::new(),
+                    reason: Some(e.to_string()),
+                }],
+                Ok(report) => ads_checks(report, "ads_extract"),
+            };
+            if let Some(selection) = selection {
+                checks.push(selection.check(verified.as_ref().ok()));
+            }
+            Ok(checks)
         }
         "saft" => {
             let dir = subject(args, "a SAF-T package directory")?;
@@ -5243,6 +5279,65 @@ fn statement_checks(
     checks
 }
 
+/// The examiner supplies these independently of the package and its receipt.
+struct AdsSelection<'a> {
+    account: Option<&'a str>,
+    effective_through: String,
+    checkpoint: [u8; 32],
+}
+
+impl<'a> AdsSelection<'a> {
+    fn from_args(args: &'a Args) -> Result<Option<Self>, Usage> {
+        let account = args.one("--account");
+        match (
+            account,
+            args.one("--through"),
+            args.one("--expect-checkpoint"),
+        ) {
+            (None, None, None) => Ok(None),
+            (_, Some(_), Some(checkpoint)) => Ok(Some(Self {
+                account,
+                effective_through: crate::bundle::civil(int(args, "--through", "ads")?),
+                checkpoint: identity_hex(checkpoint, "ads --expect-checkpoint")?,
+            })),
+            _ => Err(usage(
+                "an ADS selection requires both --through and --expect-checkpoint",
+                "supply the effective day and trusted checkpoint OID, adding --account CODE for one account",
+            )),
+        }
+    }
+
+    fn check(&self, report: Option<&AdsReport>) -> Check {
+        let (verdict, reason) = match report.filter(|report| report.verified()) {
+            None => (Verdict::Unrun, Some("the ADS package did not verify")),
+            Some(report) if report.bundle.manifest.checkpoint_oid != self.checkpoint => (
+                Verdict::Fail,
+                Some("the signed checkpoint differs from the requested checkpoint"),
+            ),
+            Some(report) if report.effective_through != self.effective_through => (
+                Verdict::Fail,
+                Some("the effective cutoff differs from the requested day"),
+            ),
+            Some(report) if report.account_scope.as_deref() != self.account => (
+                Verdict::Fail,
+                Some("the account selection differs from the requested scope"),
+            ),
+            Some(_) => (Verdict::Pass, None),
+        };
+        Check {
+            name: "recipient_selection",
+            scope: "ads_extract",
+            verdict,
+            detail: vec![
+                ("account_scope", self.account.map_or(Json::Null, s)),
+                ("effective_through", s(&self.effective_through)),
+                ("checkpoint_oid", h(&self.checkpoint)),
+            ],
+            reason: reason.map(str::to_owned),
+        }
+    }
+}
+
 /// The bundle's checks, then the extract's: exactly the proven selection.
 fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
     let mut checks = bundle_checks(&report.bundle);
@@ -5257,6 +5352,14 @@ fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
         ("rows", n(report.rows)),
         ("tb_rows", n(report.tb_rows)),
         ("chart_rows", report.chart_rows.map_or(Json::Null, n)),
+        (
+            "chart_coverage",
+            s(if report.chart_rows.is_some() {
+                "authenticated_declarations"
+            } else {
+                "not_authenticated"
+            }),
+        ),
         (
             "dimension_rows",
             report.dimension_rows.map_or(Json::Null, n),
@@ -6735,6 +6838,25 @@ mod tests {
             let args = args.into_iter().map(String::from).collect::<Vec<_>>();
             let out = run(&args, &|file| panic!("usage read {file} for {options:?}"));
             assert_eq!(out.exit, EXIT_USAGE, "{options:?}: {}", out.stderr);
+        }
+    }
+
+    #[test]
+    fn an_incomplete_or_malformed_ads_selection_refuses_before_reading_the_package() {
+        let key = key_hex();
+        let pin = "00".repeat(32);
+        for flags in [
+            &["--account", "1000"][..],
+            &["--through", "20543"],
+            &["--expect-checkpoint", &pin],
+            &["--through", "today", "--expect-checkpoint", &pin],
+            &["--through", "20543", "--expect-checkpoint", "xyz"],
+        ] {
+            let mut args = vec!["ads", "unopened", "--key", &key];
+            args.extend_from_slice(flags);
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            let out = run(&args, &|file| panic!("read {file} for {flags:?}"));
+            assert_eq!(out.exit, EXIT_USAGE, "{}", out.stderr);
         }
     }
 
