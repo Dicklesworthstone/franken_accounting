@@ -40,20 +40,27 @@ struct ExportFile {
 
 pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let format = match args.positional.get(1).map(String::as_str) {
-        Some("warehouse") if args.positional.len() == 2 => {
-            return export_warehouse_cmd(ctx, args);
-        }
-        Some("part370") if args.positional.len() == 2 => {
-            return export_part370_cmd(ctx, args);
-        }
         Some(
-            format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"),
+            format @ ("ads" | "saft" | "csv-gl" | "beancount" | "hledger" | "ndjson" | "xbrl"
+            | "warehouse" | "part370"),
         ) if args.positional.len() == 2 => format,
         Some(other) if args.positional.len() == 2 => {
             return Err(usage(format!("unknown export format `{other}`"), EXAMPLE));
         }
         _ => return Err(usage("export needs exactly one format", EXAMPLE)),
     };
+    let account = args.flag("--account");
+    if account.is_some() && format != "ads" {
+        return Err(usage(
+            "--account scopes an ADS extract to one account",
+            "fa export ads --account <code> --period <code> --out <new dir> [--with-proofs] --json",
+        ));
+    }
+    match format {
+        "warehouse" => return export_warehouse_cmd(ctx, args),
+        "part370" => return export_part370_cmd(ctx, args),
+        _ => {}
+    }
     for flag in ["--connector", "--destination", "--report"] {
         if args.flag(flag).is_some() {
             return Err(usage(
@@ -101,7 +108,7 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     if !with_proofs && args.flag("--state").is_some() {
         return Err(usage(
-            "--state names the accumulator state an ADS extract is proved against; it goes with --with-proofs",
+            "--state selects the accumulator state for an ADS or SAF-T extract with --with-proofs",
             "add --with-proofs, or drop --state",
         ));
     }
@@ -109,16 +116,6 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         None | Some("latest") => None,
         Some(text) => Some(fa_model::Oid(crate::proof::fixed_hex(text, "--state")?)),
     };
-    // One account's extract (plan §13.1): every entry with a leg on it, and
-    // its balance. With --with-proofs the bundle proves that account's
-    // entries complete through the cutoff (ScopeIndexComplete).
-    let account = args.flag("--account");
-    if account.is_some() && format != "ads" {
-        return Err(usage(
-            "--account scopes an ADS extract to one account; other formats export the whole chart",
-            "fa export ads --account <code> --period <code> --out <new dir> [--with-proofs] --json",
-        ));
-    }
     // An export discloses the journal to an outsider, as a proof or a
     // bundle does: authority is checked before the book is read.
     let capability = ctx.capability(args, &["read", "produce"])?;
@@ -637,7 +634,6 @@ fn export_part370_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     for flag in [
         "--period",
         "--state",
-        "--account",
         "--connector",
         "--destination",
         "--report",
@@ -855,7 +851,7 @@ const VERIFY_CITE: &str = "plan §16 (export then import is the identity on fold
 fn export_warehouse_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.switch("--with-proofs") || args.flag("--state").is_some() {
         return Err(usage(
-            "--with-proofs and --state belong to `fa export ads`",
+            "--with-proofs and --state apply to ADS and SAF-T exports",
             WAREHOUSE_EXAMPLE,
         ));
     }

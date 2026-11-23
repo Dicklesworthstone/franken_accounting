@@ -1925,18 +1925,39 @@ fn an_account_month_ads_extract_is_proven_by_its_scope_index_offline() {
         .find(|check| text(check, "check") == "ads_extract")
         .expect("the extract is a named check");
     assert_eq!(text(get(extract, "detail"), "account_scope"), "1000");
-    let (code, _) = run(
-        &f.book,
-        &[
-            "export",
-            "saft",
-            "--account",
-            "1000",
-            "--period",
-            "FY2026-P03",
-        ],
-    );
-    assert_eq!(code, 2);
+    for format in [
+        "saft",
+        "csv-gl",
+        "beancount",
+        "hledger",
+        "ndjson",
+        "xbrl",
+        "part370",
+        "warehouse",
+    ] {
+        let (code, refused) = run(
+            &f.book,
+            &[
+                "export",
+                format,
+                "--account",
+                "1000",
+                "--as-of",
+                "2026-03-31",
+            ],
+        );
+        assert_eq!(code, 2, "{format}: {}", refused.render());
+        assert!(
+            text(&refused, "message").contains("--account scopes an ADS extract"),
+            "{format}: {}",
+            refused.render()
+        );
+        assert!(
+            text(&refused, "fix").contains("fa export ads --account"),
+            "{format}: {}",
+            refused.render()
+        );
+    }
     let unknown = f.dir.join("unknown");
     let (code, refused) = run(
         &f.book,
