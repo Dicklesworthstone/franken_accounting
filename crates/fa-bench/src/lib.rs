@@ -1893,9 +1893,10 @@ mod tests {
             .expect("verify witness");
         assert_eq!(op_count_from_live_witness(live_verify).point_reads, 3);
 
-        // 3. Posting 3 entries after a prior checkpoint yields live checkpoint
-        // point_reads == 4 (1 prior AccumulatorState read + 3 new entry leaves).
-        book.checkpoint(controller, &witness_cap)
+        // 3. The signed predecessor covers the prior prefix. Three new entries
+        // extend it through the commit stream without three extra point reads.
+        let prior = book
+            .checkpoint(controller, &witness_cap)
             .expect("cp1 io")
             .expect("cp1 admitted");
         for idx in 0..3u8 {
@@ -1948,14 +1949,21 @@ mod tests {
             .expect("cp delta io")
             .expect("cp delta admitted");
         }
-        let (_, live_cp) = book
-            .measure_with_op_witness(|b| {
+        let (next, live_cp, raw) = book
+            .measure_with_op_witness_raw(|b| {
                 b.checkpoint(controller, &witness_cap)
                     .map_err(|e| e.to_string())?
                     .map_err(|r| r.message)
             })
             .expect("cp2 witness");
-        assert_eq!(op_count_from_live_witness(live_cp).point_reads, 4);
+        assert_eq!(next.stored.state.prev_state_oid, Some(prior.stored.oid));
+        assert_eq!(
+            next.stored.state.leaf_count,
+            prior.stored.state.leaf_count + 3
+        );
+        assert_eq!(raw.point_reads, 2);
+        assert_eq!((raw.vertex_scans, raw.edge_scans), (0, 0));
+        assert_eq!(op_count_from_live_witness(live_cp).point_reads, 2);
     }
 
     #[test]
