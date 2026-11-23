@@ -445,11 +445,11 @@ fn load_for_advance<V: asupersync::fs::Vfs + Clone>(
                                             break;
                                         }
                                     }
-                                    DeltaRow::DeleteVertex { .. } | DeltaRow::DeleteEdge { .. } => {
-                                        if seq != state.created_at {
-                                            clean = false;
-                                            break;
-                                        }
+                                    DeltaRow::DeleteVertex { .. } | DeltaRow::DeleteEdge { .. }
+                                        if seq != state.created_at =>
+                                    {
+                                        clean = false;
+                                        break;
                                     }
                                     _ => {}
                                 }
