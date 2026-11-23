@@ -410,15 +410,15 @@ impl Adapter {
         spec: &MacroSpec,
         arguments: &JsonValue,
     ) -> Result<CallOutput, StructuredError> {
-        self.call_macro_with_dispatch(spec, arguments, |inv| self.dispatch(inv))
+        self.call_macro_observing_replies(spec, arguments, |_, _| {})
             .map_err(|e| e.with_authority(self.authority_json()))
     }
 
-    fn call_macro_with_dispatch(
+    fn call_macro_observing_replies(
         &self,
         spec: &MacroSpec,
         arguments: &JsonValue,
-        mut dispatch: impl FnMut(&Invocation) -> Result<Reply, StructuredError>,
+        mut after_dispatch: impl FnMut(&Invocation, &Reply),
     ) -> Result<CallOutput, StructuredError> {
         if let Some(error) = forbidden_macro_argument(spec, arguments) {
             return Err(error);
@@ -670,7 +670,8 @@ impl Adapter {
             let mut argv = raw_argv.clone();
             argv.push("--json".into());
             let inv = Invocation { argv, stdin: None };
-            let reply = dispatch(&inv)?;
+            let reply = self.dispatch(&inv)?;
+            after_dispatch(&inv, &reply);
             if step_name == "close_plan"
                 && let Some(tool) = self.mcp.tool_by_wire(tool_wire)
                 && let Ok(mut memory) = self.memory.lock()
@@ -2262,8 +2263,7 @@ mod tests {
         let mac = macro_by_wire("fa_macro_certify_period_reports").unwrap();
         let mut interleaved = None;
         let output = adapter
-            .call_macro_with_dispatch(mac, &json!({"period": "FY2026-P03"}), |inv| {
-                let reply = adapter.dispatch(inv)?;
+            .call_macro_observing_replies(mac, &json!({"period": "FY2026-P03"}), |inv, reply| {
                 if inv.argv.first().is_some_and(|verb| verb == "tb") {
                     assert!(interleaved.is_none(), "one initial trial balance");
                     assert_eq!(reply.exit, 0, "{reply:?}");
@@ -2271,7 +2271,6 @@ mod tests {
                     // statement: no mocked amounts, sleeps or timing races.
                     interleaved = Some(post("additional-rent", "20.00 USD"));
                 }
-                Ok(reply)
             })
             .expect("one coherent historical report package");
         let package: JsonValue = fastmcp_rust::serde_json::from_str(&output.data).unwrap();

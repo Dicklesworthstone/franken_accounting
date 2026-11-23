@@ -1284,6 +1284,36 @@ This section records an audit and remaining work; it neither changes the target
 contracts above nor closes implementation beads. The generated workflow scoreboard
 is a sample of commands, not a percentage of the complete product delivered.
 
+#### Current-cut refresh (2026-11-23)
+
+At `cec2e391c86a` the Linux CLI completed the 21-command README invoice in a
+fresh book. A reopened book returned the signed checkpoint it had published.
+After another posting, register verification agreed with a journal refold and
+the first certified trial balance replayed byte-for-byte. The Rust checkpoint,
+purchase-matching and README suites passed all 20 tests. All nine scoreboard
+tests passed against the tracked graph, including the four Genesis and recipient
+criteria described below. A separate macOS verifier made all nine expected
+decisions about the Linux artifacts, including wrong account, wrong dates,
+missing witness and reversed checkpoint order.
+
+At the March 31 coordinate through commit 26, the native trial balance, CSV,
+Beancount and hledger agreed on two entries, four postings and two USD cells.
+The ten comparisons covered balances, gross activity and counts. In a separate
+37-command run, a post-only Agent confined to its draft prepared two matching
+rules under one receipt. A retry returned both original entry identities. An
+independent controller promoted the reviewed 42.00 USD total. Activating another
+matching rule before review caused rehearsal and promotion to refuse without
+advancing the book.
+
+**Qualification remains open.** Exact-tree Tier 0 passed. The verified Tier 1
+note `0b82d9bfce7a` records three passes, an MCP test Clippy error and an
+unrun workspace test step. The native scale campaign also found 9,187 read
+units against the registered `query_procedure` ceiling of one at 1,000 entries.
+The forensic snapshot checks historical `CONTROLS` edge semantics by enumerating
+the stored edges. Preserve that check when addressing `fa-0hs4.27`. The dependency
+gate independently found RUSTSEC-2026-0592 through both MCP parents, which pin
+`url` 2.5.8 exactly. The first fixed version is 2.5.9 (`fa-0hs4.26`).
+
 #### Current-cut refresh (2026-11-22)
 
 **The journal-to-recipient workflow works on retained binaries. A new operator cannot build the CLI from the reviewed source.** Local `main` was `6683789e947d`, tree `10cca6a52e55`, seven commits ahead of published `main` and `master` at `adb8e10ddbcd`. The 34 intervening commits since the November 20 review added meaningful accounting behavior, including whole automatic-rule groups in drafts, explicit purchase-line coverage and bank-reconciliation requirements in close runs. The fresh-build failure sits at the junction of two of those changes. This entry updates the V01–V39 assessment below. The §19 exit criteria continue to govern qualification.
