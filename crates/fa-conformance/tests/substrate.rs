@@ -1992,11 +1992,12 @@ mod forensic_semantics {
         AccountRoleSpec, AccountSpec, BookContext, BookSpec, UnitPolicy, create_book, create_party,
         create_periods, install_chart, record_account_role, transition_period,
     };
-    use fa_lantern::Params;
+    use fa_lantern::catalog::{Inputs, build_version};
     use fa_lantern::cutoff::{
         DistributionProRata, LookbackPreferences, PonziNetInvestment, SolvencyBalanceSheetTest,
         SolvencyCashFlowTest,
     };
+    use fa_lantern::{Cite, LanternError, Params};
     use fa_model::obligation::{InlineObligationTerms, ObligationInstallment, ObligationStatus};
     use fa_model::{
         EntryClass, EntryOrigin, EntryPayload, EntryRef, Erasable, EvidenceRef, Id128, LegPayload,
@@ -2348,7 +2349,7 @@ mod forensic_semantics {
             f.leg(Side::Credit, "3000", 10_000, Some("INV-A")),
             f.leg(Side::Credit, "3000", 20_000, Some("INV-B")),
         ];
-        f.post((1, 10), "subscriptions", subscriptions, Vec::new());
+        let subscribed = f.post((1, 10), "subscriptions", subscriptions, Vec::new());
         let mut bills = Vec::new();
         for ((month, day), key, vendor, cents) in [
             ((2, 1), "bill-a", "VEND-A", 10_000),
@@ -2371,85 +2372,141 @@ mod forensic_semantics {
             payment.push(leg);
         }
         payment.push(f.leg(Side::Credit, "1000", 30_000, None));
-        f.post((4, 15), "batched-payment", payment, Vec::new());
+        let paid = f.post((4, 15), "batched-payment", payment, Vec::new());
         let long = vec![
             f.leg(Side::Debit, "6000", 100_000, None),
             f.leg(Side::Credit, "2000", 100_000, None),
         ];
-        f.post((4, 20), "long-debt", long, vec![due(1, (12, 31), 100_000)]);
+        let deferred = f.post((4, 20), "long-debt", long, vec![due(1, (12, 31), 100_000)]);
         let short = vec![
             f.leg(Side::Debit, "6000", 12_500, None),
             f.leg(Side::Credit, "2000", 12_500, None),
         ];
-        f.post((4, 26), "short-debt", short, vec![due(1, (5, 20), 12_500)]);
+        let maturing = f.post((4, 26), "short-debt", short, vec![due(1, (5, 20), 12_500)]);
 
         let retained_seq = f.db.frontier().expect("retained frontier");
         let retained = f.snapshot(retained_seq);
         // Its own copy of the book context: the book is posted to again below.
         let book = f.book.clone();
-        let run = |snapshot: &fa_lantern::Snapshot, procedure: &dyn fa_lantern::Procedure| {
-            fa_lantern::run_over(snapshot, &book, procedure).expect("procedure runs")
-        };
-        let pro_rata = || {
-            DistributionProRata::with(
-                Params::defaults(DistributionProRata::ID)
-                    .unwrap()
-                    .set("distributable_pool", 9_000)
-                    .unwrap(),
-            )
+        let run = |snapshot: &fa_lantern::Snapshot, id: &str, version: u16| {
+            // Keep the recorded inputs even if a later registry changes its defaults.
+            let declared: &[(&str, i128)] = match id {
+                LookbackPreferences::ID => &[
+                    ("baseline_days", 180),
+                    ("contemporaneous_days", 5),
+                    ("insider_window_days", 365),
+                    ("ordinary_course_tolerance_days", 15),
+                    ("window_days", 90),
+                ],
+                PonziNetInvestment::ID => &[("cohort_window_days", 90)],
+                DistributionProRata::ID => &[("distributable_pool", 9_000)],
+                SolvencyCashFlowTest::ID => &[("horizon_days", 30)],
+                SolvencyBalanceSheetTest::ID => &[("fair_value_haircut_bps", 0)],
+                _ => panic!("unexpected fixture procedure {id}"),
+            };
+            let mut params = Params::defaults(id).unwrap();
+            for &(name, value) in declared {
+                params = params.set(name, value).unwrap();
+            }
+            let method = build_version(id, version, params, Inputs::default()).unwrap();
+            let report =
+                fa_lantern::run_over(snapshot, &book, method.as_ref()).expect("procedure runs");
+            assert_eq!(report.version, version);
+            assert_eq!(report.procedure, id);
+            assert!(
+                report
+                    .parameters
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), *value))
+                    .eq(declared.iter().copied())
+            );
+            report
         };
 
         // Each creditor's own payment, the investors' own subscriptions, a
         // pool of 90.00 shared 30/60.
-        let preferences = run(&retained, &LookbackPreferences::new().unwrap());
-        assert_eq!(preferences.version, 3);
-        assert_eq!(
-            values(&preferences),
-            [10_000, 20_000],
-            "{:?}",
-            preferences.findings
-        );
-        let ponzi = run(&retained, &PonziNetInvestment::new().unwrap());
+        let party_values = |report: &fa_lantern::ProcedureRun, parties: [&str; 2], source| {
+            assert_eq!(report.findings.len(), parties.len());
+            parties.map(|party| {
+                let finding = report
+                    .findings
+                    .iter()
+                    .find(|f| f.narrative.contains(party))
+                    .unwrap_or_else(|| panic!("missing {party}: {:?}", report.findings));
+                assert!(finding.cites.contains(&Cite::Entry(source)), "{finding:?}");
+                finding.statistic.value
+            })
+        };
+        let preferences = run(&retained, LookbackPreferences::ID, 3);
+        let preferences_v4 = run(&retained, LookbackPreferences::ID, 4);
+        for report in [&preferences, &preferences_v4] {
+            assert_eq!(
+                party_values(report, ["VEND-A", "VEND-B"], paid.vid),
+                [10_000, 20_000]
+            );
+        }
+        let ponzi = run(&retained, PonziNetInvestment::ID, 5);
         // Version 5 adds explicitly classified principal transfers. This
         // cash-only history must retain its exact per-investor principal.
-        assert_eq!(ponzi.version, 5);
-        assert_eq!(values(&ponzi), [10_000, 20_000], "{:?}", ponzi.findings);
-        let distribution = run(&retained, &pro_rata());
-        assert_eq!(distribution.version, 4);
         assert_eq!(
-            values(&distribution),
-            [3_000, 6_000],
-            "{:?}",
-            distribution.findings
+            party_values(&ponzi, ["INV-A", "INV-B"], subscribed.vid),
+            [10_000, 20_000]
+        );
+        let distribution = run(&retained, DistributionProRata::ID, 4);
+        assert_eq!(
+            party_values(&distribution, ["INV-A", "INV-B"], subscribed.vid),
+            [3_000, 6_000]
         );
         // Cash is 0 at Apr 30; the 125.00 due May 20 matures within 30 days
         // and the 1,000.00 due Dec 31 does not.
-        let cash_flow = run(&retained, &SolvencyCashFlowTest::new().unwrap());
-        // Versions 3 and 4 retain effective-date obligation visibility and
-        // net overdrafts before flooring liquidity. This fixture has neither
-        // a later settlement nor an overdraft, so its exact result stays put.
-        assert_eq!(cash_flow.version, 4);
-        assert_eq!(values(&cash_flow), [12_500], "{:?}", cash_flow.findings);
-        let narrative = &cash_flow.findings[0].narrative;
-        for part in [
-            "liquid_cash=0",
-            "maturing_obligations=12500",
-            "deferred_obligations=100000",
-            "maturity_basis=authenticated_schedule",
-        ] {
-            assert!(narrative.contains(part), "{part}: {narrative}");
+        // V4 retained its certificate framing after the unscheduled cutoff
+        // changed. The catalog must refuse to execute it under a later law.
+        assert!(matches!(
+            build_version(SolvencyCashFlowTest::ID, 4, Params::defaults(SolvencyCashFlowTest::ID).unwrap(), Inputs::default()),
+            Err(LanternError::Version { procedure, code: 4, registry: 6 }) if procedure == SolvencyCashFlowTest::ID
+        ));
+        let cash_flow = run(&retained, SolvencyCashFlowTest::ID, 5);
+        let cash_flow_v6 = run(&retained, SolvencyCashFlowTest::ID, 6);
+        for report in [&cash_flow, &cash_flow_v6] {
+            assert_eq!(values(report), [12_500], "{:?}", report.findings);
+            let finding = &report.findings[0];
+            for part in [
+                "liquid_cash=0",
+                "maturing_obligations=12500",
+                "deferred_obligations=100000",
+                "maturity_basis=authenticated_schedule",
+            ] {
+                assert!(
+                    finding.narrative.contains(part),
+                    "{part}: {}",
+                    finding.narrative
+                );
+            }
+            for cite in [
+                Cite::Entry(deferred.vid),
+                Cite::Entry(maturing.vid),
+                Cite::Document(f.evidence[0].document_oid),
+            ] {
+                assert!(finding.cites.contains(&cite), "{cite:?}: {finding:?}");
+            }
         }
         // Payables of 1,125.00 against no assets.
-        let balance_sheet = run(&retained, &SolvencyBalanceSheetTest::new().unwrap());
+        let balance_sheet = run(&retained, SolvencyBalanceSheetTest::ID, 3);
         // Version 3 scopes inline valuations to the effective-date window;
         // this book-basis fixture has no valuation extension to change it.
-        assert_eq!(balance_sheet.version, 3);
         assert_eq!(
             values(&balance_sheet),
             [112_500],
             "{:?}",
             balance_sheet.findings
         );
+        for entry in [deferred.vid, maturing.vid] {
+            assert!(
+                balance_sheet.findings[0]
+                    .cites
+                    .contains(&Cite::Entry(entry))
+            );
+        }
 
         // A later posting moves the head; the retained sequence replays.
         let later = vec![
@@ -2460,26 +2517,22 @@ mod forensic_semantics {
         let replayed = f.snapshot(retained_seq);
         assert_eq!(replayed.inputs_digest, retained.inputs_digest);
         let mut held = true;
-        for (before, procedure) in [
-            (
-                &preferences,
-                Box::new(LookbackPreferences::new().unwrap()) as Box<dyn fa_lantern::Procedure>,
-            ),
-            (&ponzi, Box::new(PonziNetInvestment::new().unwrap())),
-            (&distribution, Box::new(pro_rata())),
-            (&cash_flow, Box::new(SolvencyCashFlowTest::new().unwrap())),
-            (
-                &balance_sheet,
-                Box::new(SolvencyBalanceSheetTest::new().unwrap()),
-            ),
+        for before in [
+            &preferences,
+            &preferences_v4,
+            &ponzi,
+            &distribution,
+            &cash_flow,
+            &cash_flow_v6,
+            &balance_sheet,
         ] {
-            let again = run(&replayed, procedure.as_ref());
-            assert_eq!(again.version, before.version, "{}", procedure.id());
-            held &= again.findings_digest == before.findings_digest;
+            let again = run(&replayed, &before.procedure, before.version);
+            held &= &again == before;
         }
         // Not vacuous: at the head, 5,000.00 of new cash covers the payables.
         let head = f.snapshot(f.db.frontier().expect("head frontier"));
-        let head_balance_sheet = run(&head, &SolvencyBalanceSheetTest::new().unwrap());
+        assert_ne!(head.inputs_digest, retained.inputs_digest);
+        let head_balance_sheet = run(&head, SolvencyBalanceSheetTest::ID, 3);
         assert_ne!(
             head_balance_sheet.findings_digest,
             balance_sheet.findings_digest
