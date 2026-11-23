@@ -861,6 +861,43 @@ PY
   gate_pass "conformance_mutation_covers_nested_tests_and_rejects_hidden_failures (${#scenarios[@]} classifier/argv cases; no native proof)"
 }
 
+bench_only_returns_after_the_smoke_verdict() {
+  local dir="$base/bench-only" expected rc status
+  mkdir -p "$dir/bin"
+  cat > "$dir/bin/rch" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *" -p fa-bench --bin fa-bench -- --smoke --json") ;;
+  *) echo '[RCH] unexpected command; refusing local fallback'; exit 103 ;;
+esac
+if [ "$BENCH_TEST_EXIT" = 2 ]; then
+  echo '[RCH] refusing local fallback'
+  exit 103
+fi
+echo "Remote command finished: exit=$BENCH_TEST_EXIT"
+exit "$BENCH_TEST_EXIT"
+SH
+  chmod +x "$dir/bin/rch"
+  for expected in 0 1 2; do
+    case "$expected" in 0) status=PASS ;; 1) status=FAIL ;; 2) status=UNRUN ;; esac
+    PATH="$dir/bin:$PATH" BENCH_TEST_EXIT="$expected" CHECK_TEST_ATTEMPTS=1 \
+      CHECK_LOG_DIR="$dir/$expected" CHECK_STEP_MANIFEST="$dir/$expected/steps.jsonl" \
+      bash "$SOURCE_ROOT/scripts/check.sh" --bench >"$dir/$expected.log" 2>&1
+    rc=$?
+    if [ "$rc" -ne "$expected" ] || ! python3 - "$dir/$expected/steps.jsonl" "$status" <<'PY'
+import json, pathlib, sys
+steps = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+assert [(s["step"], s["status"]) for s in steps] == [("bench-smoke", sys.argv[2])], steps
+PY
+    then
+      gate_fail "bench-only mode produced extra steps or the wrong exit (expected $expected, got $rc); log $dir/$expected.log"
+      return 1
+    fi
+  done
+  gate_pass "bench-only mode exits after exactly one PASS, FAIL or UNRUN step (driver fixtures)"
+}
+
+bench_only_returns_after_the_smoke_verdict
 ssh_timeout_exit1_is_unrun
 classifier_table_covers_rch_markers_and_exit_codes
 split_test_jobs_compose_one_step

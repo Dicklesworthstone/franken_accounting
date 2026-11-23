@@ -791,6 +791,8 @@ public_ledger_unit() {
 if [ "$BENCH_ONLY" -eq 1 ]; then
   cargo_build "bench-smoke" run -p fa-bench --bin fa-bench -- --smoke --json
   gate_verdict
+  rc=$?
+  exit "$rc"
 fi
 
 run_step "fmt" cargo fmt --all --check
