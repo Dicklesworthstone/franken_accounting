@@ -152,6 +152,30 @@ impl Harness {
         account_vid(self.book.book_id, code)
     }
 
+    fn assign_role(&mut self, account: &str, role: &str) {
+        let spec = AccountRoleSpec {
+            account: self.account(account),
+            role: role.into(),
+            assigned: true,
+        };
+        let key = format!("catalog-role:{account}:{role}");
+        let description = self.seal("catalog population role");
+        let cx = self.ctx();
+        self.runtime
+            .block_on(record_account_role(
+                &mut self.db,
+                &cx,
+                &self.book,
+                &spec,
+                PREPARER,
+                key.as_bytes(),
+                description,
+                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
+            ))
+            .expect("native role control")
+            .expect("registered role and account type admitted");
+    }
+
     fn seal(&mut self, text: &str) -> Erasable<String> {
         self.next_salt = self.next_salt.wrapping_add(1);
         Erasable::seal(
@@ -1875,7 +1899,6 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
     assert_eq!(h.db.frontier().unwrap(), head);
     // The positive catalog requires each role-selected population. Admit
     // real role controls; do not infer roles from account codes or names.
-    let cx = h.ctx();
     for (account, role) in [
         ("1000", "cash"),
         ("1010", "suspense"),
@@ -1888,26 +1911,7 @@ fn the_catalog_builds_every_registered_procedure_and_refuses_what_it_cannot() {
         ("2000", "investor_capital"),
         ("6000", "payroll"),
     ] {
-        let spec = AccountRoleSpec {
-            account: h.account(account),
-            role: role.into(),
-            assigned: true,
-        };
-        let key = format!("catalog-role:{account}:{role}");
-        let description = h.seal("catalog population role");
-        h.runtime
-            .block_on(record_account_role(
-                &mut h.db,
-                &cx,
-                &h.book,
-                &spec,
-                PREPARER,
-                key.as_bytes(),
-                description,
-                &Capability::embedded(PREPARER, &["schema_change"]).unwrap(),
-            ))
-            .expect("native role control")
-            .expect("registered role and account type admitted");
+        h.assign_role(account, role);
     }
     let rows = fa_lantern::catalog::registered().unwrap();
     assert_eq!(rows.len(), 71, "every registry row is listed");
@@ -3454,39 +3458,69 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         witnessed_anywhere.insert(run.procedure);
     }
 
-    // fa-1tvm: every registered procedure is witnessed on some corpus,
-    // except exactly these, which none of the fixtures can run. A procedure that
-    // stops running (or a listed one that starts) fails here, so the list is
-    // the honest gap.
-    const UNWITNESSED: &[(&str, &str)] = &[
+    // One open USD 12 posting supplies both sides. Only the journaled roles
+    // select its accounts. At March 31 its January 1 debit is 89 days old.
+    let mut h = harness();
+    let entry = h.post(&Spec::simple(day(2026, 1, 1), "1000", "1010", 1_200));
+    let cutoff = Some(day(2026, 3, 31));
+    let without_roles = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, cutoff).unwrap();
+    h.assign_role("1000", "suspense");
+    h.assign_role("1010", "intercompany");
+    let snapshot = Snapshot::read(&h.db, &h.ctx().query(), &h.book, None, cutoff).unwrap();
+    for (id, role, statistic, value, scale) in [
+        ("jet.suspense_aging", "suspense", "age_days", 89, 0),
         (
             "jet.intercompany_unmatched",
-            "no fa-gen chart account holds the intercompany role",
-        ),
-        (
-            "jet.suspense_aging",
-            "no fa-gen chart account holds the suspense role",
+            "intercompany",
+            "unmatched_mantissa",
+            1_200,
+            2,
         ),
         (
             "recon.intercompany",
-            "no fa-gen chart account holds the intercompany role",
+            "intercompany",
+            "intercompany_imbalance",
+            1_200,
+            2,
         ),
-    ];
-    let unwitnessed: Vec<String> = fa_lantern::catalog::registered()
+    ] {
+        let procedure =
+            fa_lantern::catalog::build(id, Params::defaults(id).unwrap(), Default::default())
+                .unwrap();
+        assert!(matches!(
+            run_over(&without_roles, &h.book, procedure.as_ref()),
+            Err(LanternError::RoleUnassigned { role: missing, .. }) if missing == role
+        ));
+        let run = run_over(&snapshot, &h.book, procedure.as_ref()).unwrap();
+        let [finding] = run.findings.as_slice() else {
+            panic!("{id} must find the open posting once");
+        };
+        assert_eq!(
+            finding.statistic,
+            Statistic {
+                name: statistic.into(),
+                value,
+                scale,
+                population: 1
+            }
+        );
+        assert!(finding.cites.contains(&Cite::Entry(entry)), "{id}");
+        let row = fa_lantern::bind(id).unwrap();
+        assert!(
+            run.work.within_registered_bound(&row.complexity, &snapshot),
+            "{id}: {:?}",
+            run.work
+        );
+        witnessed_anywhere.insert(run.procedure);
+    }
+    let registered: BTreeSet<_> = fa_lantern::catalog::registered()
         .unwrap()
         .into_iter()
         .map(|row| row.id)
-        .filter(|id| !witnessed_anywhere.contains(id))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let expected: Vec<String> = UNWITNESSED
-        .iter()
-        .map(|(id, _)| (*id).to_string())
         .collect();
     assert_eq!(
-        unwitnessed, expected,
-        "procedures with no complexity witness"
+        witnessed_anywhere, registered,
+        "every registered procedure must have a complexity witness"
     );
 }
 
