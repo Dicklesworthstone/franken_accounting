@@ -5338,6 +5338,9 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
     let ctx = h.ctx();
     let mut memo = fa_notary::CarriedAccumulator::default();
 
+    let empty_head = fa_journal::op_witness::begin();
+    assert!(latest(&h.db, None).unwrap().is_none());
+    assert_eq!(empty_head.finish().point_reads, 1);
     let first_entry = h.post(h.rent, 100, b"cp-carried-1");
     let g1 = fa_journal::op_witness::begin();
     let (first_res, first_work) = h
@@ -5350,6 +5353,13 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
     let first = first_res.expect("first carried checkpoint");
     assert_eq!(first_work.journal_full_reads, 1);
     assert_eq!(raw1.vertex_scans, 1);
+    assert!(
+        u64::from(raw1.point_reads) > first_work.immutability_point_reads as u64,
+        "cold checkpoint must count the publication root and every checked leaf: {raw1:?}, {first_work:?}"
+    );
+    let populated_head = fa_journal::op_witness::begin();
+    assert_eq!(latest(&h.db, None).unwrap().unwrap().oid, first.stored.oid);
+    assert_eq!(populated_head.finish().point_reads, 2);
 
     // Second sequential checkpoint extends incrementally from delta_since with
     // zero full-book vertex scans and matches independent verification.
@@ -5366,6 +5376,10 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
     assert_eq!(second_work.journal_full_reads, 0, "{second_work:?}");
     assert_eq!(raw2.vertex_scans, 0, "{raw2:?}");
     assert_eq!(raw2.scanned_rows, 0, "{raw2:?}");
+    assert!(
+        raw2.point_reads >= 4,
+        "the publication root, predecessor, prior absence and new record must all be counted: {raw2:?}"
+    );
     assert_eq!(second.stored.state.prev_state_oid, Some(first.stored.oid));
     assert_eq!(
         second.stored.state.leaf_count,

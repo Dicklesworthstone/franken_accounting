@@ -361,6 +361,26 @@ pub mod op_witness {
         });
     }
 
+    /// Count a historical point lookup, including an absent vertex or a read error.
+    pub fn vertex_at<V: asupersync::fs::Vfs + Clone>(
+        db: &fgdb::Database<V>,
+        vid: fgdb_types::VId,
+        at: fgdb_types::CommitSeq,
+    ) -> Result<Option<fgdb::VertexRow>, fgdb::ReadError> {
+        record_point_read(1);
+        db.vertex_at(vid, at)
+    }
+
+    /// Count a point lookup through the transaction's staged view.
+    pub fn txn_vertex<V: asupersync::fs::Vfs + Clone>(
+        txn: &fgdb::WriteTxn,
+        db: &fgdb::Database<V>,
+        vid: fgdb_types::VId,
+    ) -> Result<Option<fgdb::VertexRow>, fgdb::WriteTxnError> {
+        record_point_read(1);
+        txn.vertex(db, vid)
+    }
+
     /// Metered full-book current vertex scan. Every call records both the scan
     /// invocation and the returned row count in the active census.
     pub fn vertices<V: asupersync::fs::Vfs + Clone>(

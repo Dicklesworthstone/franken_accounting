@@ -59,6 +59,45 @@ double-entry general ledger. The helper tests the declared expense/offset
 analysis model; the offset account is explicit modeling, not a recovered
 departmental cash or payable account.
 
+## Multi-currency and inventory fixtures
+
+On 2026-11-23 the Linux `fa` from `cec2e391c86a9dbb64aea6b9d660e9a4b3357e6f`
+posted the ACME USD/EUR example and the governed weighted-average inventory
+example in separate synthetic books. At each coordinate the four-input oracle
+passed all ten comparisons across 14 external commands. The account cells
+include zero-net accounts that had activity.
+
+| Native fixture | Known at | Entries | Postings | Account/unit cells |
+|---|---:|---:|---:|---:|
+| ACME USD/EUR | 10 | 3 | 8 | 8 |
+| ACME after the additional SpotClose posting | 13 | 4 | 11 | 8 |
+| Weighted-average inventory after one disposal | 10 | 3 | 12 | 5 |
+| Weighted-average inventory after both disposals | 11 | 4 | 16 | 5 |
+
+The three-entry ACME balances also matched all eight cells in the published
+fixture matrix. The historical HalfUp example returned `FA-REF-100` before
+posting because the registered SpotClose law specifies HalfEven. Its refusal
+preserved the trial balance and the journal frontier. With HalfEven, two
+EUR 0.03 debits against one EUR 0.06 credit at USD 0.50 per EUR increased
+both functional USD totals by 0.04. The native quantity exports omit the FX
+price. Beancount reported EUR weights, and hledger retained EUR under
+`-X USD`. The functional USD result was checked against the native trial
+balance.
+
+The inventory fixture acquired ten shares for USD 100 and another ten for
+USD 20. The CLI produced a review and dry-run plan at a fixed frontier.
+Submitting with the required read grant posted the first disposal once, and
+retrying the review preserved the frontier. Both ten-share disposals charged
+USD 60 to cost of goods sold. The native lot register contained a USD 40
+cost-only relief and ended with zero quantity and cost in each lot. Both
+external tools reproduced the posted costs and quantities. A Beancount query
+of `cost_currency` and `cost_number` returned empty fields for all eight SHARE
+postings. The native lot register supplies the acquisition-to-relief lineage.
+
+The source fixtures are
+[`sample_multi_unit_journal`](../../crates/fa-formats/tests/formats_conformance.rs)
+and the [CLI disposal tests](../../crates/fa-cli/tests/cli/lot_disposal.rs).
+
 ## Install the exercised external tools
 
 Python 3.11 or newer runs the helper using only the standard library. External

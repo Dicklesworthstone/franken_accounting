@@ -306,7 +306,7 @@ fn load<V: asupersync::fs::Vfs + Clone>(
     oid: &Oid,
     at: CommitSeq,
 ) -> Result<StoredState, KernelError> {
-    let row = db.vertex_at(state_vid(oid), at)?.ok_or_else(|| {
+    let row = fa_journal::op_witness::vertex_at(db, state_vid(oid), at)?.ok_or_else(|| {
         KernelError::Corrupt(format!(
             "accumulator state {} is named but absent",
             hex(&oid.0)
@@ -467,7 +467,7 @@ fn load_checkpoint<V: asupersync::fs::Vfs + Clone>(
     at: CommitSeq,
 ) -> Result<Result<StoredCheckpoint, String>, KernelError> {
     let vid = checkpoint_vid(state_oid);
-    let Some(row) = db.vertex_at(vid, at)? else {
+    let Some(row) = fa_journal::op_witness::vertex_at(db, vid, at)? else {
         return Ok(Err(format!(
             "the state {} has no checkpoint",
             hex(&state_oid.0)
@@ -600,8 +600,7 @@ pub fn latest<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<Option<StoredState>, KernelError> {
     let at = known_at.unwrap_or(db.frontier()?);
-    let root = db
-        .vertex_at(book_root(), at)?
+    let root = fa_journal::op_witness::vertex_at(db, book_root(), at)?
         .ok_or_else(|| KernelError::Corrupt("the book root vertex is missing".into()))?;
     match head_of(&root)? {
         None => Ok(None),
@@ -638,8 +637,7 @@ fn walk<V: asupersync::fs::Vfs + Clone>(
         }
     }
     let mut out: Vec<StoredState> = Vec::new();
-    let root = db
-        .vertex_at(book_root(), at)?
+    let root = fa_journal::op_witness::vertex_at(db, book_root(), at)?
         .ok_or_else(|| KernelError::Corrupt("the book root vertex is missing".into()))?;
     let mut next = match head_of(&root) {
         Ok(head) => head,
@@ -858,16 +856,22 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
                             return Ok(None);
                         }
                         if crate::journal::has_record_labels(labels) {
-                            if db.vertex_at(*vid, carried.through_seq)?.is_some() {
+                            if fa_journal::op_witness::vertex_at(db, *vid, carried.through_seq)?
+                                .is_some()
+                            {
                                 return Ok(None);
                             }
-                            let Some(created_row) = db.vertex_at(*vid, seq)? else {
+                            let Some(created_row) =
+                                fa_journal::op_witness::vertex_at(db, *vid, seq)?
+                            else {
                                 return Ok(None);
                             };
-                            let Some(current_row) = db.vertex_at(*vid, through)? else {
-                                return Ok(None);
-                            };
-                            if created_row != current_row || created_row.created_at != seq {
+                            if created_row.created_at != seq
+                                || (seq != through
+                                    && fa_journal::op_witness::vertex_at(db, *vid, through)?
+                                        .as_ref()
+                                        != Some(&created_row))
+                            {
                                 return Ok(None);
                             }
                             if !new_protected.insert(*vid) {
@@ -959,7 +963,7 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
             work,
         ));
     }
-    let Some(root_row) = txn.vertex(db, book_root())? else {
+    let Some(root_row) = fa_journal::op_witness::txn_vertex(&txn, db, book_root())? else {
         txn.abort();
         return Err(KernelError::Corrupt(
             "the book root vertex is missing".into(),
@@ -970,15 +974,12 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
     // refused with exit 8, like a predecessor the journal does not extend.
     let prev = match head_of(&root_row) {
         Ok(None) => Ok(None),
-        Ok(Some(oid)) => {
-            fa_journal::op_witness::record_point_read(1);
-            match txn.vertex(db, state_vid(&oid))? {
-                None => Err(KernelError::Corrupt(
-                    "accumulator_head names an absent state".into(),
-                )),
-                Some(row) => stored(&row, &oid).map(Some),
-            }
-        }
+        Ok(Some(oid)) => match fa_journal::op_witness::txn_vertex(&txn, db, state_vid(&oid))? {
+            None => Err(KernelError::Corrupt(
+                "accumulator_head names an absent state".into(),
+            )),
+            Some(row) => stored(&row, &oid).map(Some),
+        },
         Err(e) => Err(e),
     };
     let prev = match prev {
@@ -1021,10 +1022,6 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
     };
 
     let (journal, protected) = if let Some((journal, protected)) = carried_hit {
-        let prev_leaves =
-            usize::try_from(prev.as_ref().map_or(0, |p| p.state.leaf_count)).unwrap_or(0);
-        let delta_leaves = journal.leaves.len().saturating_sub(prev_leaves);
-        fa_journal::op_witness::record_point_read(u32::try_from(delta_leaves).unwrap_or(u32::MAX));
         work.shared_prefixes = work.shared_prefixes.saturating_add(1);
         (journal, protected)
     } else {
@@ -1078,10 +1075,6 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
                 return Err(error);
             }
         };
-        let prev_leaves =
-            usize::try_from(prev.as_ref().map_or(0, |p| p.state.leaf_count)).unwrap_or(0);
-        let delta_leaves = journal.leaves.len().saturating_sub(prev_leaves);
-        fa_journal::op_witness::record_point_read(u32::try_from(delta_leaves).unwrap_or(u32::MAX));
         match journal.verify_unchanged_at_counted(db, through, &mut work.immutability_point_reads) {
             Ok(Ok(())) => {}
             Ok(Err(refusal)) => {

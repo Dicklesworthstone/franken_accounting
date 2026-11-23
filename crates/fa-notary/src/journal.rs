@@ -913,7 +913,7 @@ impl Journal {
                 ))
             };
             *point_reads = point_reads.saturating_add(1);
-            let Some(row) = db.vertex_at(leaf.vid, observed_at)? else {
+            let Some(row) = fa_journal::op_witness::vertex_at(db, leaf.vid, observed_at)? else {
                 return Ok(Err(changed("was retired or is absent")));
             };
             if !has_record_label(&row, leaf.envelope.kind) {
