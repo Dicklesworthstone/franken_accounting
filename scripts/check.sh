@@ -188,6 +188,9 @@ is_rch_offloader_unrun() {
   if [ -f "$log" ] && grep -Fq 'Remote command finished' "$log"; then
     return 1
   fi
+  if [ -f "$log" ] && grep -Eq '^\[RCH\] source topology incompatible; no command was executed\. .*RCH_SOURCE_TOPOLOGY_INCOMPATIBLE' "$log"; then
+    return 0
+  fi
   [ "$rc" -eq 100 ] && return 0
   if [ -f "$log" ] && grep -Eiq '(\[RCH(-E[0-9]+)?\]|rch::).*(SSH command timed out|refusing local fallback|no local fallback|no admissible worker|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED|Connection timed out|Connection refused|Broken pipe)|\[RCH-E[0-9]+\]|SSH command timed out|no admissible workers?|refusing local fallback|completion unconfirmed|RCH_SCOPED_COMPLETION_UNCONFIRMED' "$log"; then
     return 0

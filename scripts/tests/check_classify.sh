@@ -165,6 +165,7 @@ classifier_table_covers_rch_markers_and_exit_codes() {
     "[RCH] remote command completion unconfirmed"
     "RCH_SCOPED_COMPLETION_UNCONFIRMED: lost SSH stream"
     "rch::transfer: Connection timed out while syncing"
+    "[RCH] source topology incompatible; no command was executed. worker: RCH_SOURCE_TOPOLOGY_INCOMPATIBLE: conflicting_alias_base"
   )
   local marker rc f cases=0
   for marker in "${unrun_markers[@]}"; do
@@ -190,6 +191,9 @@ test foo::bar ... FAILED
 test result: FAILED. 0 passed; 1 failed
 Remote command finished: exit=1 in 900ms"
     "Diff in /data/projects/franken_accounting/src/lib.rs:1"
+    "error: source topology incompatible for this ledger"
+    "[RCH] source topology incompatible; no command was executed. worker: RCH_SOURCE_TOPOLOGY_INCOMPATIBLE
+Remote command finished: exit=101"
   )
   for marker in "${fail_logs[@]}"; do
     for rc in 1 101; do
