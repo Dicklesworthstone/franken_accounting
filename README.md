@@ -13,15 +13,14 @@
 
 </div>
 
-> <!-- fa-verified-status -->Verified at fb0e12018d10 (2026-11-01): RED
+> <!-- fa-verified-status -->Verified at 0b9004022041 (2026-11-23): RED
 
-> The complete repository gate at that revision recorded 23 passing steps, one failed
-> compile step and 12 unrun steps. It did not qualify the repository. A later
-> scoped daemon-library run at `977d81ca69b6` passed all 43 tests, including
-> expiry discovery over 10,000 admitted unrelated entries. Scoped results
-> do not replace the full gate.
+> Formatting, the public-ledger tests and Linux compilation of every Rust target passed.
+> Worker capacity prevented Clippy and the first of 205 workspace test targets from
+> starting. The gate stopped there with three passing steps, two unrun steps and
+> no workspace test inventory. The local verdict note is `89746f551e8c`.
 
-> **Status (2026-11-05): implementation in progress.**
+> **Status (2026-11-23): implementation in progress.**
 > The Rust workspace includes the embedded library, persistent CLI, book writer-lease daemon and registered MCP tools, exact money and calendar primitives, G0 constitutional registries and `tools/registry-check`, chart installation (with embedded chart templates), period transitions, posting and reasoned reversal, register folds and their verify targets (`fa verify book` runs every one of them), and an independent arithmetic and state-machine oracle. Trial balances support stock balances, period activity, civil-date cutoffs, and historical commit-sequence or retained-instant snapshots. Trial balances, balance explanations, statements and open-items reports retain certificates that replay their exact results; statements are issued as journaled StatementIssuances, and reads select AS ORIGINALLY REPORTED, AS ISSUED TO an audience or AS REPORTED IN a certificate. `fa explain` covers `balance`, `entry`, `evidence`, `refusal`, `period`, `register` and `lineage`. `fa query` runs GQL over the book's graph in the FrankenAccounting profile (`AS KNOWN AT`, `FOR PERIOD` for one period or a range, `EFFECTIVE AT|BETWEEN`, `AT BRANCH`, the restatement views, and `CALL fa.trial_balance|explain_balance|statement|open_items|access_log` or any registered Lantern procedure as `CALL fa.<family>('<name>', {...})`), with the amount law checked before anything runs, and ordinary native queries support `--certify` with byte-for-byte replay. A bounded per-row `CALL fa.open_amount(l) YIELD open, age_days` combines historical open-item residuals with native filtering and exact aggregation: it requires `EFFECTIVE AT`, preserves units and NULL non-items, and supports v2 certificates that replay both native stages and regenerate their journal-derived parameters. A token with any scope caveat is refused every query before the book opens; additional per-row procedures and broader pipeline shapes remain open (`fa-5c1`). Every published checkpoint is signed by the book's key; `fa proof` exports signed checkpoints and portable inclusion, consistency, prefix and balance proofs, and `fa bundle produce` writes `.fab` evidence bundles with signed production receipts, all checked offline by the standalone, std-only `fa-verify`. Lantern forensic procedures run as `fa procedure`, and `fa doctor`, `fa triage` and `fa next` diagnose a book and name the next command. Drafts promote to trunk in one batch; scenarios fork, run and certify a trial-balance diff over a scratch replay; restatement cases are journaled from open through determination, rehearsal, dual-control approval, posting, disclosure and close, and PriorPeriodAdjustment, Revision, Restatement and PolicyChangeRetrospective cases post their entries (a PolicyChangeRetrospective case's entries are Restatement entries). Year-end close and closing routes run as `fa close`. Reviewed CloseRuns now bind a bounded task DAG, execute unchanged draft promotions, verify an intrinsic year-end close and perform an optional final period transition, with each task and its completion receipt published atomically; `close status` survives restart and exact retries do not repeat effects. `close run` executes and resumes ready tasks, and `close dry-run --run` certifies their combined monetary effects in one scratch history. Automatic task generation, a global execution-certificate gate and statement packages remain open (`fa-4o0`). Capabilities are issued, listed and revoked with `fa capability` and bind an MCP session (`fa-mcp --token`); every command a bound session runs (an issued token or a fixed MCP launch authority, Agent and writing sessions included) is recorded as an AccessEvent before it reads the book, listed by `fa access log` (the token-less embedded owner is not recorded yet, `fa-7dw`); ordinary CLI and daemon calls can bind issued Human operator tokens for controller, approval and witness workflows; calls without a token retain the embedded-owner posture, where the host operator asserts the principal. The full Genesis acceptance criteria and the broader target-state workflows below remain open. Accrue and Defer now also invoke explicitly selected Canon rules in the Adjusting family, with portable review of the exact derived entry and optional reversal. This is the first rule-backed business-intent family; broader business-intent dispatch remains open (`fa-c34`).
 
 > **A note on tense.** The sections above `## TL;DR` document **what runs today** (and [`crates/fa-cli/tests/readme.rs`](./crates/fa-cli/tests/readme.rs) executes `### Try it today` and validates every present-tense `fa` command above `## TL;DR`). Starting at `## TL;DR`, the README describes the **1.0 target state** from [`COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md`](./COMPREHENSIVE_PLAN_FOR_THE_DESIGN_OF_FRANKENACCOUNTING.md), with target-only capabilities annotated with the bead (`fa-…`) that delivers them.
@@ -2989,6 +2988,12 @@ scripts/check.sh       the one gate (verdict contract: exit code is the verdict)
 docs/                  negative evidence, ADRs, threat & trust model
 templates/             chart-of-accounts and statement-definition templates (data)
 ```
+
+For developers, `bash scripts/install-hooks.sh` installs the push checks and
+configures Git to fetch incoming proof notes separately from local verification
+records. Run `bash scripts/install-hooks.sh --sync-notes` to fetch and merge
+published notes. Conflicting judgments on the same object require a Git notes
+merge decision.
 
 To check the five bounded TLA+ specifications, set `TLA2TOOLS_JAR` to a
 local copy of `tla2tools.jar` and run `bash scripts/check.sh --tlc-models`
