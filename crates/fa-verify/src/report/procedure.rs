@@ -1260,7 +1260,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let version = question.u16("procedure.version")?;
-    if !matches!(version, 1 | 2 | 3)
+    if !matches!(version, 1..=3)
         || (matches!(id, "events.subsequent" | "jet.suspense_aging") && version != 3)
         || (!matches!(id, "events.subsequent" | "jet.suspense_aging") && version == 3)
         || (matches!(
