@@ -1784,6 +1784,69 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
         7,
     );
     assert!(floor_refused.contains(&policy_oid), "{floor_refused}");
+    let preview = |subject: &str, day: &str| {
+        fa(
+            &book,
+            &[
+                "document",
+                "retention",
+                "cut",
+                subject,
+                "--seq",
+                "999999",
+                "--day",
+                day,
+                "--grant",
+                "erase",
+                "--dry-run",
+                "--json",
+            ],
+        )
+    };
+    let before = ok(&book, &["book", "info", "--json"]);
+    let (code, missing, _) = preview("ffffffffffffffffffffffffffffffff", "2028-01-02");
+    assert_eq!(code, 3, "{missing}");
+    assert_eq!(field(&missing, "refusal_id"), Some("FA-REF-141"));
+    let (code, denied, _) = preview(&invoice, "2026-06-01");
+    assert_eq!(code, 7, "{denied}");
+    assert_eq!(field(&denied, "refusal_id"), Some("FA-REF-199"));
+    let observer = fa_cli::authority::LaunchAuthority::new(
+        book.clone(),
+        None,
+        "retention-observer",
+        fa_cli::authority::LaunchProfile::Preparer,
+        &["read"],
+    )
+    .unwrap();
+    let preview_args = [
+        "document",
+        "retention",
+        "cut",
+        &invoice,
+        "--seq",
+        "999999",
+        "--day",
+        "2028-01-02",
+        "--dry-run",
+        "--json",
+    ]
+    .map(str::to_owned);
+    let (code, denied) = fa_cli::entry::fa_with_authority(
+        &preview_args,
+        fa_cli::cli::Files::default(),
+        &observer,
+        true,
+    );
+    assert_eq!(code, 7, "{denied:?}");
+    assert_eq!(field(&denied.stdout, "event"), Some("error"));
+    let (code, allowed, _) = preview(&invoice, "2028-01-02");
+    assert_eq!(code, 0, "{allowed}");
+    assert_eq!(field(&allowed, "event"), Some("retention_cut_evaluated"));
+    assert_eq!(field(&allowed, "admissible"), Some("true"));
+    assert_eq!(field(&allowed, "cut_day"), Some("2028-01-02"));
+    assert_eq!(field(&allowed, "cut_seq"), Some("999999"));
+    let after = ok(&book, &["book", "info", "--json"]);
+    assert_eq!(field(&before, "known_at"), field(&after, "known_at"));
 
     // Erasure check without corroborated tick past floor also hits FA-REF-199 before FA-REF-088.
     refused(
@@ -1850,5 +1913,8 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
         hold_refused.contains(&hold_vid) && hold_refused.contains(&policy_oid),
         "legal hold refusal must cite both active hold and active retention policy: {hold_refused}"
     );
+    let (code, held_preview, _) = preview(&invoice, "2028-01-02");
+    assert_eq!(code, 7, "{held_preview}");
+    assert_eq!(field(&held_preview, "refusal_id"), Some("FA-REF-117"));
     Ok(())
 }

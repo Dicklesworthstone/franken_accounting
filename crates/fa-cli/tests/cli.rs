@@ -11516,6 +11516,109 @@ fn three_way_matching_records_bound_access_before_delivery_and_preserves_replay(
     Ok(())
 }
 
+fn exercise_retention_events(dir: &Path, invoice: &str, run: &mut impl FnMut(&[&str]) -> String) {
+    let authority_file = write(
+        dir,
+        "retention-authority.txt",
+        "Invoices must be retained for 365 days.",
+    );
+    let authority = doc(&run(&[
+        "document",
+        "add",
+        &authority_file,
+        "--kind",
+        "Contract",
+        "--grade",
+        "HumanUpload",
+    ]));
+    let plan = dir.join("invoice-retention.plan");
+    let plan = plan.to_str().unwrap();
+    let review = doc(&run(&[
+        "document",
+        "retention",
+        "activate",
+        "--authority",
+        text(&authority, "oid"),
+        "--scope",
+        "book",
+        "--floor-days",
+        "365",
+        "--from",
+        "2026-01-01",
+        "--dry-run",
+        "--plan-out",
+        plan,
+        "--grant",
+        "rule_change",
+        "--as",
+        "operator",
+    ]));
+    let proposal = text(&review, "proposal_digest");
+    let first = doc(&run(&[
+        "approve",
+        "--proposal",
+        proposal,
+        "--as",
+        "controller",
+    ]));
+    let second = doc(&run(&[
+        "approve",
+        "--proposal",
+        proposal,
+        "--as",
+        "auditor",
+    ]));
+    run(&[
+        "document",
+        "retention",
+        "activate",
+        "--plan",
+        plan,
+        "--approval",
+        text(&first, "approval_vid"),
+        "--approval",
+        text(&second, "approval_vid"),
+        "--grant",
+        "rule_change",
+        "--as",
+        "operator",
+    ]);
+    assert_eq!(
+        int(&doc(&run(&["document", "retention", "list"])), "count"),
+        Some(1)
+    );
+    assert_eq!(
+        int(&doc(&run(&["verify", "retention"])), "policies_checked"),
+        Some(1)
+    );
+    run(&[
+        "document",
+        "retention",
+        "cadence",
+        "--cadence-commits",
+        "50",
+        "--cadence-days",
+        "30",
+    ]);
+    let head = field(&run(&["book", "info"]), "known_at")
+        .unwrap()
+        .to_string();
+    let preview = doc(&run(&[
+        "document",
+        "retention",
+        "cut",
+        invoice,
+        "--seq",
+        &head,
+        "--day",
+        "2028-01-02",
+        "--grant",
+        "erase",
+        "--dry-run",
+    ]));
+    assert_eq!(preview.get("admissible"), Some(&Json::Bool(true)));
+}
+
 #[test]
 fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     let reg = registry().expect("verbs.toml");
@@ -12118,6 +12221,33 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(code, 0, "{evaluated}");
     assert_eq!(run(true, &["procedure", "list"]).0, 0);
     assert_eq!(run(true, &["procedure", "run", "jet.round_amounts"]).0, 0);
+    let scores = write(
+        &dir,
+        "calibration.json",
+        r#"{
+        "clean_scores":[0,0,0,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,3,4],
+        "labeled_items":[{"score":0,"anomaly":false},{"score":1,"anomaly":false},
+          {"score":2,"anomaly":false},{"score":3,"anomaly":true},{"score":4,"anomaly":true}],
+        "candidate_thresholds":[1,2,3,4]}"#,
+    );
+    let (code, card) = run(
+        true,
+        &[
+            "procedure",
+            "calibrate",
+            "jet.round_amounts",
+            "--parameter",
+            "round_power",
+            "--file",
+            &scores,
+            "--alpha-bps",
+            "1500",
+            "--delta-bps",
+            "500",
+        ],
+    );
+    assert_eq!(code, 0, "{card}");
+    assert_eq!(text(&doc(&card), "procedure"), "jet.round_amounts");
     assert_eq!(run(true, &["jet"]).0, 0);
     assert_eq!(run(true, &["benford"]).0, 0);
     // Recorded findings: the Sunday rent is a jet.weekend observation; a
@@ -15353,6 +15483,44 @@ robot-opening,2025-12-20,Legacy Equity,,125.50,USD,Equity source,2025-12-20T12:3
     assert_eq!(text(&matched, "verdict"), "matched");
     assert_eq!(text(&matched, "invoice_total"), "10.00 USD");
     assert_eq!(matched.get("confirmed"), Some(&Json::Bool(false)));
+
+    let complete = doc(&run_matching(&[
+        "match",
+        "three-way",
+        "--purchase-order",
+        &purchase_order,
+        "--receiving-report",
+        &receipt,
+        "--invoice-document",
+        &invoice,
+        "--all-items",
+    ]));
+    assert_eq!(int(&complete, "matched_count"), Some(1));
+    assert_eq!(int(&complete, "exception_count"), Some(0));
+
+    exercise_retention_events(&dir, &invoice, &mut run_matching);
+
+    // The layout book has posted activity. Compare it to its adjustment layer
+    // at the same reporting period using the retained parent anchor.
+    run_matching(&["chart", "import", "--template", "us-gaap-smb"]);
+    run_matching(&["period", "create", "--fiscal-year", "2026"]);
+    let parent = layout.to_str().unwrap();
+    run_matching(&[
+        "recon",
+        "anchor",
+        "--parent-book",
+        parent,
+        "--grant",
+        "schema_change",
+    ]);
+    run_matching(&[
+        "recon",
+        "book-to-book",
+        "--period",
+        "FY2026-P03",
+        "--parent-book",
+        parent,
+    ]);
 
     // Lot policy, lot disposal and asset-cost schedules emit their registered
     // events through the real commands (083e1ccde, 23bd97ee1, f267b9a8b).

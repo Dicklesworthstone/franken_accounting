@@ -5068,8 +5068,20 @@ impl Book {
         ))
     }
 
-    /// Evaluate a retention cut on `subject` at `(cut_at_seq, cut_at_day)`,
-    /// honoring active legal holds before active retention floors (plan §8.5).
+    /// Check active holds and retention floors for a candidate cut without publishing.
+    pub fn evaluate_retention_cut(
+        &self,
+        capability: &fa_journal::Capability,
+        subject: VId,
+        cut_at_seq: CommitSeq,
+        cut_at_day: DateDay,
+    ) -> Outcome<()> {
+        with_store!(&self.store, core => core.evaluate_retention_cut(
+            &self.purposes(), capability, subject, cut_at_seq, cut_at_day,
+        ))
+    }
+
+    /// Request a retention cut, subject to active holds, floors and substrate support.
     pub fn retention_cut(
         &self,
         capability: &fa_journal::Capability,

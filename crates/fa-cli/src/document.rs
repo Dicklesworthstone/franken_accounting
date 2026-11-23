@@ -2906,7 +2906,7 @@ fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             Ok(())
         }
         Some("cut") => {
-            const FIX: &str = "fa document retention cut <subject_vid_or_oid> --seq <commit_seq> --day YYYY-MM-DD --book <dir> --json";
+            const FIX: &str = "fa document retention cut <subject_vid_or_oid> --seq <commit_seq> --day YYYY-MM-DD [--dry-run] --book <dir> --json";
             let subject_text = args
                 .positional
                 .get(3)
@@ -2942,7 +2942,11 @@ fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 book.admit_current(&capability)??;
                 Ok(())
             })?;
-            book.retention_cut(&capability, subject, cut_seq, cut_day)??;
+            if args.switch("--dry-run") {
+                book.evaluate_retention_cut(&capability, subject, cut_seq, cut_day)??;
+            } else {
+                book.retention_cut(&capability, subject, cut_seq, cut_day)??;
+            }
             ctx.out.at_book(&book)?;
             let subj_hex = format!("{:032x}", subject.0);
             ctx.out.event(
@@ -2954,7 +2958,7 @@ fn retention_doc(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     ("admissible", Json::Bool(true)),
                 ],
                 &format!(
-                    "retention cut for subject {subj_hex} at seq {} / day {} is admissible",
+                    "subject {subj_hex} at seq {} / day {} clears active holds and retention floors",
                     cut_seq.0,
                     cut_day.render()
                 ),

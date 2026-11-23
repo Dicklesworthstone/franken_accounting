@@ -449,6 +449,21 @@ fn holdable(row: &VertexRow) -> bool {
         .any(|l| row.labels.contains(l))
 }
 
+fn retention_subject(subject: VId, row: Option<&VertexRow>) -> Result<&VertexRow, Refusal> {
+    let reason = match row {
+        Some(row) if holdable(row) => return Ok(row),
+        Some(_) => "is not an entry, a document, or a party",
+        None => "is not in this book",
+    };
+    Err(Refusal::new(
+        code::LEGAL_HOLD_SUBJECT,
+        exit::REFUSAL,
+        format!("retention subject {:032x} {reason}", subject.0),
+        "plan §8.5 (retention policies govern recorded entries, documents, or parties)",
+        "name the vids of entries, documents, or parties recorded in this book",
+    ))
+}
+
 fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -686,28 +701,9 @@ pub async fn activate_retention_policy<V: asupersync::fs::Vfs + Clone>(
     }
     if let RetentionScope::Subjects(subjects) = &req.policy.scope {
         for subject in subjects {
-            let Some(row) = txn.vertex(db, *subject)? else {
+            if let Err(r) = retention_subject(*subject, txn.vertex(db, *subject)?.as_ref()) {
                 txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::LEGAL_HOLD_SUBJECT,
-                    exit::REFUSAL,
-                    format!("retention subject {:032x} is not in this book", subject.0),
-                    "plan §8.5 (subject-scoped retention policies govern recorded entries, documents, or parties)",
-                    "name the vids of entries, documents, or parties recorded in this book",
-                )));
-            };
-            if !holdable(&row) {
-                txn.abort();
-                return Ok(Err(Refusal::new(
-                    code::LEGAL_HOLD_SUBJECT,
-                    exit::REFUSAL,
-                    format!(
-                        "retention subject {:032x} is not an entry, a document, or a party",
-                        subject.0
-                    ),
-                    "plan §8.5 (subject-scoped retention policies govern recorded entries, documents, or parties)",
-                    "name the vids of entries, documents, or parties recorded in this book",
-                )));
+                return Ok(Err(r));
             }
         }
     }
@@ -1042,12 +1038,11 @@ fn subject_effective_day(subject_row: &VertexRow, fallback: DateDay) -> DateDay 
 
 fn judge_retention_floors(
     subject: VId,
-    subject_row: Option<&VertexRow>,
+    row: &VertexRow,
     covering_policies: &[&ActiveRetentionPolicy],
     cut_at_seq: CommitSeq,
     cut_at_day: Option<DateDay>,
 ) -> Option<Refusal> {
-    let row = subject_row?;
     for active in covering_policies {
         match active.policy.floor {
             RetentionFloor::Commits(floor_seq) => {
@@ -1155,11 +1150,7 @@ pub fn check_erasure_retention_floor<V: asupersync::fs::Vfs + Clone>(
         None => None,
     };
     Ok(judge_retention_floors(
-        subject,
-        Some(&row),
-        &covering,
-        cut_at_seq,
-        cut_at_day,
+        subject, &row, &covering, cut_at_seq, cut_at_day,
     ))
 }
 
@@ -1174,9 +1165,9 @@ pub fn check_erasure_retention_floor<V: asupersync::fs::Vfs + Clone>(
 ///    [`RetentionPolicy`] covering it, refuses with [`RETENTION_FLOOR_ACTIVE`]
 ///    (`FA-REF-199`, `exit::SAFETY`), naming the policy OID, control entry,
 ///    authority document, and floor.
-/// 4. Otherwise returns the substrate's registered-absence refusal (`FA-REF-088`
-///    `code::ERASURE_ABSENT`), matching [`crate::evidence::erasure_cut`].
-pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
+/// 4. Returns success if the policy permits the candidate coordinates. This
+///    evaluation does not publish, erase data, or establish substrate support.
+pub fn evaluate_retention_cut<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
     capability: &Capability,
@@ -1184,15 +1175,13 @@ pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
     cut_at_seq: CommitSeq,
     cut_at_day: DateDay,
 ) -> Outcome<()> {
-    let at = db.frontier()?;
     if let Err(d) = fa_policy::require(capability, Op::Erase, "evaluating a retention cut")
         .and_then(|()| fa_policy::scope(capability, book.book_id))
-        .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(false), None))
-        .and_then(|()| fa_policy::current(capability, at))
+        .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
     {
         return Ok(Err(refusal(&d)));
     }
-    if let Err(r) = capability_admitted(db, book, capability)? {
+    if let Err(r) = crate::policy::current_at(db, book, capability)? {
         return Ok(Err(r));
     }
 
@@ -1248,9 +1237,13 @@ pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
         )));
     }
 
+    let row = match retention_subject(subject, subject_row.as_ref()) {
+        Ok(row) => row,
+        Err(r) => return Ok(Err(r)),
+    };
     if let Some(r) = judge_retention_floors(
         subject,
-        subject_row.as_ref(),
+        row,
         &covering_policies,
         cut_at_seq,
         Some(cut_at_day),
@@ -1258,6 +1251,22 @@ pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
 
+    Ok(Ok(()))
+}
+
+/// Require the same policy admission as the preview before returning the
+/// registered absence of substrate erasure (Appendix H, R-ERASE).
+pub fn retention_cut<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    capability: &Capability,
+    subject: VId,
+    cut_at_seq: CommitSeq,
+    cut_at_day: DateDay,
+) -> Outcome<()> {
+    if let Err(r) = evaluate_retention_cut(db, book, capability, subject, cut_at_seq, cut_at_day)? {
+        return Ok(Err(r));
+    }
     Ok(Err(Refusal::new(
         code::ERASURE_ABSENT,
         exit::REFUSAL,
@@ -1521,6 +1530,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retention_preview_requires_current_whole_book_erase_authority() {
+        let mut env = TestEnv::new();
+        let day = DateDay::from_ymd(2026, 6, 1).unwrap();
+        let erase = TestEnv::cap(TestEnv::PREPARER, &["erase"]);
+        let preview = |env: &TestEnv, capability: &Capability, subject| {
+            evaluate_retention_cut(
+                &env.db,
+                &env.book,
+                capability,
+                subject,
+                CommitSeq(1000),
+                day,
+            )
+            .expect("kernel")
+        };
+        let head = env.db.frontier().unwrap();
+        preview(&env, &erase, env.subject_doc_vid).expect("eligible subject");
+        let trunk = erase.clone().on_branch(Id128::TRUNK).unwrap();
+        preview(&env, &trunk, env.subject_doc_vid).expect("retention is evaluated on trunk");
+        for (capability, expected) in [
+            (TestEnv::cap(TestEnv::PREPARER, &["read"]), code::CAPABILITY),
+            (
+                erase.clone().for_accounts(&["1000"]).unwrap(),
+                code::CAPABILITY,
+            ),
+            (
+                erase.clone().on_branch(Id128([0x44; 16])).unwrap(),
+                code::CAPABILITY,
+            ),
+            (
+                erase.clone().for_books(&[Id128([0xaa; 16])]).unwrap(),
+                code::CAPABILITY,
+            ),
+            (
+                erase.clone().expiring_at(head),
+                fa_policy::denial::code::EXPIRED,
+            ),
+        ] {
+            let existing = preview(&env, &capability, env.subject_doc_vid).unwrap_err();
+            let missing = preview(&env, &capability, VId(u128::MAX)).unwrap_err();
+            assert_eq!(existing.code, expected);
+            assert_eq!(existing, missing);
+        }
+        assert_eq!(env.db.frontier().unwrap(), head);
+
+        let cx = env.ctx();
+        let revoke = crate::policy::RevocationRequest {
+            capability: TestEnv::cap(TestEnv::BOB, &["issue_capability"]),
+            revoked: erase.commitment().unwrap(),
+            effective_date: day,
+            idempotency_key: b"revoke-preview".to_vec(),
+            description: env.seal("revoke retention observer"),
+        };
+        env.runtime
+            .block_on(crate::policy::revoke_capability(
+                &mut env.db,
+                &cx,
+                &env.book,
+                revoke,
+            ))
+            .unwrap()
+            .unwrap();
+        let head = env.db.frontier().unwrap();
+        let existing = preview(&env, &erase, env.subject_doc_vid).unwrap_err();
+        let missing = preview(&env, &erase, VId(u128::MAX)).unwrap_err();
+        assert_eq!(existing.code, fa_policy::denial::code::REVOKED);
+        assert_eq!(existing, missing);
+        assert_eq!(env.db.frontier().unwrap(), head);
+    }
+
+    #[test]
     fn retention_policy_round_trips_and_validates() {
         let policy = RetentionPolicy::new(
             Id128([3; 16]),
@@ -1570,6 +1650,21 @@ mod tests {
 
         // Cut inside the 50-commit floor is refused naming the policy OID.
         let erase_cap = TestEnv::cap(TestEnv::PREPARER, &["erase"]);
+        let policy_cell = retention_cell_vid(env.book.book_id);
+        assert!(env.db.vertex(policy_cell).unwrap().is_some());
+        for subject in [VId(u128::MAX), policy_cell] {
+            let refused = evaluate_retention_cut(
+                &env.db,
+                &env.book,
+                &erase_cap,
+                subject,
+                CommitSeq(1000),
+                effective_from,
+            )
+            .unwrap()
+            .expect_err("only a recorded entry, document, or party can clear its retention floor");
+            assert_eq!(refused.code, code::LEGAL_HOLD_SUBJECT);
+        }
         let refusal = retention_cut(
             &env.db,
             &env.book,
