@@ -863,6 +863,188 @@ fn reseal(certificate: &DueDateAgingCertificate, report: &DueDateAging) -> DueDa
 }
 
 #[test]
+fn due_date_workpapers_keep_installments_applications_and_unscheduled_amounts_distinct() {
+    for receivable in [false, true] {
+        let mut h = Harness::with_receivable(receivable);
+        let invoice = h.invoice();
+        h.post("partial-payment", "2026-03-20", 250, None, Some(invoice));
+        for (key, amount, terms) in [
+            ("DO_NOT_DISCLOSE_DESCRIPTION", 50, None),
+            (
+                "missing",
+                100,
+                Some((ObligationStatus::MissingMaturity, vec![])),
+            ),
+            (
+                "disputed",
+                150,
+                Some((ObligationStatus::Disputed { reason_code: 7 }, vec![])),
+            ),
+        ] {
+            h.post(key, "2026-03-02", amount, terms, None);
+        }
+        let certified = h.certify(&h.request("2026-04-01"));
+        let expected = certified.certificate.request().unwrap();
+        let export = |h: &Harness| {
+            h.book
+                .due_date_aging_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &certified.certificate,
+                    &expected,
+                )
+                .unwrap()
+                .unwrap()
+        };
+        let text = export(&h);
+        let rows = |event: &str| -> Vec<&str> {
+            let prefix = format!("{{\"event\":\"{event}\",");
+            text.lines()
+                .filter(|line| line.starts_with(&prefix))
+                .collect()
+        };
+        assert!(text.contains("\"format\":\"fa:due-date-aging-workpaper:v1\""));
+        assert!(text.contains("\"age_basis\":\"due_date\""));
+        assert!(text.contains("\"terms_basis\":\"journaled_maturity_terms\""));
+        assert!(!text.contains("DO_NOT_DISCLOSE_DESCRIPTION"));
+        assert!(!text.contains("Contract and installment schedule"));
+        let items = rows("aging_open_item");
+        assert_eq!(
+            items.len(),
+            4,
+            "one obligation row even with two installments"
+        );
+        let original = items
+            .iter()
+            .find(|line| line.contains("\"original_mantissa\":\"1000\""))
+            .unwrap();
+        assert!(original.contains("\"open_mantissa\":\"750\""));
+        assert!(original.contains("\"applied_mantissa\":\"250\""));
+        assert!(original.contains("\"application_count\":\"1\""));
+        let applications = rows("aging_application");
+        assert_eq!(
+            applications.len(),
+            1,
+            "a payment must not repeat per installment"
+        );
+        assert!(applications[0].contains("\"amount_mantissa\":\"250\""));
+        let installments = rows("due_date_aging_installment");
+        assert_eq!(installments.len(), 2);
+        for (date, amount, days, bucket) in [("2026-03-31", 350, 1, 1), ("2026-04-30", 400, 0, 0)] {
+            let row = installments
+                .iter()
+                .find(|line| line.contains(date))
+                .unwrap();
+            assert!(row.contains(&format!("\"open_mantissa\":\"{amount}\"")));
+            assert!(row.contains(&format!("\"days_past_due\":\"{days}\"")));
+            assert!(row.contains(&format!("\"bucket\":\"{bucket}\"")));
+        }
+        let unscheduled = rows("due_date_aging_unscheduled");
+        assert_eq!(unscheduled.len(), 3);
+        for reason in ["no_terms", "missing_maturity", "disputed"] {
+            assert!(
+                unscheduled
+                    .iter()
+                    .any(|line| line.contains(&format!("\"reason\":\"{reason}\"")))
+            );
+        }
+        assert!(
+            unscheduled
+                .iter()
+                .any(|line| line.contains("\"reason_code\":\"7\""))
+        );
+        assert!(
+            unscheduled
+                .iter()
+                .all(|line| !line.contains("\"due_date\":") && !line.contains("\"bucket\":"))
+        );
+        let side = if receivable { "debit" } else { "credit" };
+        assert!(
+            items
+                .iter()
+                .chain(installments.iter())
+                .chain(unscheduled.iter())
+                .all(|line| line.contains(&format!("\"side\":\"{side}\"")))
+        );
+        let totals = rows("due_date_aging_total");
+        assert_eq!(totals.len(), 1);
+        assert!(totals[0].contains(&format!("\"{side}_mantissa\":\"750\"")));
+        assert!(totals[0].contains("\"installment_count\":\"2\""));
+        let unscheduled_totals = rows("due_date_aging_unscheduled_total");
+        assert_eq!(unscheduled_totals.len(), 1);
+        assert!(unscheduled_totals[0].contains(&format!("\"{side}_mantissa\":\"300\"")));
+        assert!(unscheduled_totals[0].contains("\"item_count\":\"3\""));
+        let head = h.head();
+        assert_eq!(export(&h), text);
+        assert_eq!(h.head(), head);
+        h.post("later-backdated", "2026-03-15", 10, None, None);
+        let h = h.reopen();
+        assert_eq!(
+            export(&h),
+            text,
+            "the workpaper keeps its historical prefix"
+        );
+    }
+}
+
+#[test]
+fn due_date_workpapers_keep_unscheduled_only_metadata_exact_money_and_empty_accounts() {
+    let mut h = Harness::new();
+    let empty = h.certify(&h.request("2026-04-01"));
+    let export = |h: &Harness, certificate: &DueDateAgingCertificate| {
+        h.book
+            .due_date_aging_jsonl(
+                &h.cx(),
+                PRINCIPAL,
+                &cap(&["read", "produce"]),
+                certificate,
+                &certificate.request().unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let empty_text = export(&h, &empty.certificate);
+    assert!(empty_text.contains("\"name\":\"ap account\""));
+    assert!(!empty_text.contains("\"event\":\"aging_open_item\""));
+    h.post("usd-no-terms", "2026-03-01", 100, None, None);
+    h.usd = UnitRegistry::embedded().unwrap().lookup("EUR").unwrap();
+    let exact = (1_i128 << 90) + 1;
+    h.post("eur-no-terms", "2026-03-02", exact, None, None);
+    let mut request = h.request("2026-04-01");
+    request.account = None;
+    let certified = h.certify(&request);
+    assert!(certified.report.items.is_empty());
+    let text = export(&h, &certified.certificate);
+    for name in ["ap account", "expense account", "USD", "EUR"] {
+        assert!(text.contains(name), "unscheduled-only metadata: {name}");
+    }
+    assert!(text.contains(&format!("\"original_mantissa\":\"{exact}\"")));
+    assert!(text.contains(&format!("\"open_mantissa\":\"{exact}\"")));
+    assert!(!text.contains("\"event\":\"due_date_aging_installment\""));
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("{\"event\":\"aging_unit\","))
+            .count(),
+        2
+    );
+    let cx = h.cx();
+    let mut change = WriteBatch::new(relation::CHILD_OF);
+    change.compare_and_set_vertex_property(
+        account_vid(BOOK, "ap"),
+        property::NAME,
+        Some(CanonicalScalar::ucs_basic_text("ap account").unwrap()),
+        CanonicalScalar::ucs_basic_text("later account name").unwrap(),
+        WriteMismatchPolicy::AbortWrite,
+    );
+    h.runtime
+        .block_on(h.book.db.write(&cx.commit(), change))
+        .unwrap();
+    assert_eq!(export(&h, &certified.certificate), text);
+    assert_eq!(export(&h, &empty.certificate), empty_text);
+}
+
+#[test]
 fn repaired_digests_cannot_change_due_dates_relief_unscheduled_reasons_or_totals() {
     let mut h = Harness::new();
     let invoice = h.invoice();
@@ -900,6 +1082,21 @@ fn repaired_digests_cannot_change_due_dates_relief_unscheduled_reasons_or_totals
             .unwrap()
             .unwrap_err();
         assert_eq!(refusal.exit, exit::VERIFICATION, "{refusal:?}");
+        assert_eq!(
+            h.book
+                .due_date_aging_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
+                    &decoded,
+                    &certified.certificate.request().unwrap(),
+                )
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            exit::VERIFICATION,
+            "repaired digests must not release a false workpaper"
+        );
     }
 }
 
@@ -1076,6 +1273,29 @@ fn due_date_authorization_precedes_observation_on_every_entrypoint() {
             .unwrap()
             .unwrap_err();
         assert_eq!(result.exit, exit::SAFETY);
+        let result = h
+            .book
+            .due_date_aging_jsonl(&cx, PRINCIPAL, &capability, &certificate, &request)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(result.exit, exit::SAFETY);
+    }
+    for ops in [&["read"][..], &["produce"][..], &["post"][..]] {
+        assert_eq!(
+            h.book
+                .due_date_aging_jsonl(
+                    &cx,
+                    PRINCIPAL,
+                    &cap(ops),
+                    &certificate,
+                    &certificate.request().unwrap(),
+                )
+                .unwrap()
+                .unwrap_err()
+                .exit,
+            exit::SAFETY,
+            "read+produce is checked before observing corrupted history"
+        );
     }
     assert!(
         h.book
@@ -1166,6 +1386,18 @@ fn due_date_replay_binds_the_recipients_fixed_account_date_prefix_and_buckets() 
                     &h.cx(),
                     PRINCIPAL,
                     &cap(&["read"]),
+                    &certified.certificate,
+                    &request,
+                )
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            h.book
+                .due_date_aging_jsonl(
+                    &h.cx(),
+                    PRINCIPAL,
+                    &cap(&["read", "produce"]),
                     &certified.certificate,
                     &request,
                 )

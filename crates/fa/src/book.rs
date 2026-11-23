@@ -7134,6 +7134,20 @@ impl Book {
         ))
     }
 
+    /// Contractual due-date aging as bounded JSONL after recipient-bound replay.
+    /// Scheduled installments and unscheduled obligations remain distinct.
+    pub fn due_date_aging_jsonl(
+        &self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        certificate: &crate::DueDateAgingCertificate,
+        expected: &crate::AgingRequest,
+    ) -> Outcome<String> {
+        with_store!(&self.store, core => core.due_date_aging_jsonl(
+            &self.purposes(), principal, capability, certificate, expected
+        ))
+    }
+
     /// A statement trace as bounded JSONL, only after every source and link replays.
     pub fn statement_trace_jsonl(
         &self,

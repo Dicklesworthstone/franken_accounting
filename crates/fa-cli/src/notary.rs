@@ -611,12 +611,21 @@ fn emit_certificate(
 
 /// Families with a recipient-bound JSONL workpaper export (`--workpaper-out`).
 /// A roll-forward source needs `--view detail` (ledger lines) or `--view
-/// roll-forward` (the lead schedule); effective-date aging needs an aging
-/// `--expect`, because each export binds the recipient's own request.
-fn has_workpaper(family: ReportArtifactFamily, view_bound: bool, aging_expected: bool) -> bool {
+/// roll-forward` (the lead schedule); aging needs a basis-specific `--expect`,
+/// because each export binds the recipient's own request.
+fn has_workpaper(
+    family: ReportArtifactFamily,
+    view_bound: bool,
+    expected: &expectations::Expected,
+) -> bool {
     match family {
         ReportArtifactFamily::RollForward => view_bound,
-        ReportArtifactFamily::EffectiveDateAging => aging_expected,
+        ReportArtifactFamily::EffectiveDateAging => {
+            matches!(expected, expectations::Expected::Aging(_))
+        }
+        ReportArtifactFamily::DueDateAging => {
+            matches!(expected, expectations::Expected::DueDateAging(_))
+        }
         ReportArtifactFamily::CashFlow
         | ReportArtifactFamily::AgingReconciliation
         | ReportArtifactFamily::AgingPortfolio
@@ -634,6 +643,9 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
         ReportArtifactFamily::EffectiveDateAging => {
             "an effective-date-aging certificate's workpaper is bound to the recipient's aging --expect".to_string()
         }
+        ReportArtifactFamily::DueDateAging => {
+            "a due-date-aging certificate's workpaper is bound to the recipient's due-date-aging --expect".to_string()
+        }
         _ => format!(
             "{} certificates have no JSONL workpaper export",
             family.name()
@@ -641,7 +653,7 @@ fn unsupported_workpaper(family: ReportArtifactFamily) -> Fail {
     };
     usage(
         message,
-        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date aging (with its aging --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
+        "--workpaper-out exports a roll-forward source's ledger detail or lead schedule (replay it with --view detail or --view roll-forward), effective-date or due-date aging (with its basis-specific --expect), cash-flow, aging-reconciliation, aging-portfolio, statement-diff and statement-trace certificates",
     )
 }
 
@@ -699,6 +711,13 @@ fn workpaper_jsonl(
                 principal,
                 capability,
                 &fa::AgingCertificate::decode(bytes)?,
+                request,
+            )??,
+        (ReportArtifactFamily::DueDateAging, Expected::DueDateAging(request), _) => book
+            .due_date_aging_jsonl(
+                principal,
+                capability,
+                &fa::DueDateAgingCertificate::decode(bytes)?,
                 request,
             )??,
         (ReportArtifactFamily::StatementTrace, Expected::AsSupplied, _) => book
@@ -928,7 +947,15 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             artifact.family().name()
         )));
     }
-    if workpaper_requested && !has_workpaper(artifact.family(), view.is_some(), aging_expected) {
+    if matches!(expected, expectations::Expected::DueDateAging(_))
+        && artifact.family() != ReportArtifactFamily::DueDateAging
+    {
+        return Err(certificate_invalid(format!(
+            "a due-date-aging expectation names a due-date-aging certificate, not {}",
+            artifact.family().name()
+        )));
+    }
+    if workpaper_requested && !has_workpaper(artifact.family(), view.is_some(), &expected) {
         return Err(unsupported_workpaper(artifact.family()));
     }
     if artifact.family() == ReportArtifactFamily::CloseRunRehearsal {

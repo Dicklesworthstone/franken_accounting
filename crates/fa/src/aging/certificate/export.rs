@@ -8,6 +8,7 @@ use fa_model::symbols::label;
 use fa_money::{UnitId, UnitRegistry};
 
 use super::*;
+use crate::aging::{DueDateAging, DueDateAgingCertificate, Unscheduled};
 
 struct Jsonl {
     bytes: String,
@@ -235,7 +236,281 @@ fn render(
     Ok(out.bytes)
 }
 
+/// Scheduled rows are installment residuals, while open-item and application
+/// rows are emitted once per ledger leg. Summing the full obligation once per
+/// installment would overstate both exposure and payments.
+fn render_due_date(
+    report: &DueDateAging,
+    certificate: &DueDateAgingCertificate,
+    accounts: &[AccountRow],
+    units: &UnitRegistry,
+    mut checkpoint: impl FnMut() -> Result<(), BookError>,
+) -> Result<String, ExportError> {
+    let mut out = Jsonl::new(MAX_AGING_CERTIFICATE_BYTES);
+    out.begin("due_date_aging_workpaper")?;
+    out.text("format", "fa:due-date-aging-workpaper:v1")?;
+    out.text("scope", "retained_history_due_date_aging")?;
+    out.text("book_id", &hex(&report.book_id.0))?;
+    out.number("known_at", report.known_at.0)?;
+    out.text("effective_through", &report.effective_through.to_string())?;
+    if let Some(account) = report.account {
+        out.text("account_filter", &vid(account))?;
+    } else {
+        out.null("account_filter")?;
+    }
+    out.text("age_basis", "due_date")?;
+    out.text("terms_basis", "journaled_maturity_terms")?;
+    out.text("scheduled_count_basis", "outstanding_installments")?;
+    out.text("signatures", "unsigned")?;
+    out.text("certificate_digest", &hex(certificate.digest()))?;
+    out.text("source_digest", &hex(&certificate.source().digest))?;
+    out.text("journal_root", &hex(&certificate.source().journal_root))?;
+    out.number("journal_leaves", certificate.source().journal_leaves)?;
+    out.text("producer", &vid(certificate.producer()))?;
+    out.end()?;
+    for account in accounts {
+        checkpoint()?;
+        out.begin("aging_account")?;
+        out.text("account", &vid(account.vid))?;
+        out.text("code", &account.code)?;
+        out.text("name", &account.name)?;
+        out.number("account_type", account.account_type)?;
+        out.number("normal_balance", account.normal_balance)?;
+        out.number("created_at", account.created_at.0)?;
+        out.end()?;
+    }
+    let unit_ids: BTreeSet<_> = report
+        .items
+        .iter()
+        .map(|item| item.item.unit_id)
+        .chain(report.unscheduled.iter().map(|item| item.item.unit_id))
+        .collect();
+    for id in unit_ids {
+        checkpoint()?;
+        let unit = units
+            .get(UnitId(id))
+            .ok_or_else(|| invalid("aging workpaper names an unregistered unit"))?;
+        out.begin("aging_unit")?;
+        out.number("unit_id", id)?;
+        out.text("code", &unit.code)?;
+        out.number("scale", unit.scale)?;
+        out.number("version", unit.version)?;
+        out.end()?;
+    }
+    for (index, band) in report.bands.iter().enumerate() {
+        checkpoint()?;
+        out.begin("aging_band")?;
+        out.number("bucket", index)?;
+        out.number("lower_inclusive", band.lower_inclusive)?;
+        if let Some(upper) = band.upper_inclusive {
+            out.number("upper_inclusive", upper)?;
+        } else {
+            out.null("upper_inclusive")?;
+        }
+        out.end()?;
+    }
+    let mut written_items = BTreeSet::new();
+    for item in report
+        .items
+        .iter()
+        .map(|aged| &aged.item)
+        .chain(report.unscheduled.iter().map(|aged| &aged.item))
+    {
+        checkpoint()?;
+        if !written_items.insert((item.entry, item.ordinal)) {
+            continue;
+        }
+        out.begin("aging_open_item")?;
+        out.text("entry", &vid(item.entry))?;
+        out.number("ordinal", item.ordinal)?;
+        out.text("account", &vid(item.account))?;
+        out.number("unit_id", item.unit_id)?;
+        out.text(
+            "side",
+            if item.side == Side::Debit {
+                "debit"
+            } else {
+                "credit"
+            },
+        )?;
+        out.text("effective_date", &item.effective_date.to_string())?;
+        out.number("recorded_at", item.recorded_at.0)?;
+        out.number("original_mantissa", item.original)?;
+        out.number("applied_mantissa", item.applied)?;
+        out.number("applied_out_mantissa", item.applied_out)?;
+        out.number("open_mantissa", item.open)?;
+        out.number("application_count", item.applications.len())?;
+        out.end()?;
+        for application in &item.applications {
+            checkpoint()?;
+            out.begin("aging_application")?;
+            out.text("target_entry", &vid(item.entry))?;
+            out.number("target_ordinal", item.ordinal)?;
+            out.text("entry", &vid(application.entry))?;
+            out.number("ordinal", application.ordinal)?;
+            out.number("recorded_at", application.recorded_at.0)?;
+            out.number("amount_mantissa", application.amount)?;
+            out.boolean("live", application.live)?;
+            out.end()?;
+        }
+    }
+    for aged in &report.items {
+        checkpoint()?;
+        out.begin("due_date_aging_installment")?;
+        out.text("entry", &vid(aged.item.entry))?;
+        out.number("ordinal", aged.item.ordinal)?;
+        out.text("account", &vid(aged.item.account))?;
+        out.number("unit_id", aged.item.unit_id)?;
+        out.text(
+            "side",
+            if aged.item.side == Side::Debit {
+                "debit"
+            } else {
+                "credit"
+            },
+        )?;
+        out.text("due_date", &aged.due_date.to_string())?;
+        out.number("days_past_due", aged.days_past_due)?;
+        out.number("bucket", aged.bucket)?;
+        out.number("open_mantissa", aged.open)?;
+        out.end()?;
+    }
+    for unscheduled in &report.unscheduled {
+        checkpoint()?;
+        out.begin("due_date_aging_unscheduled")?;
+        out.text("entry", &vid(unscheduled.item.entry))?;
+        out.number("ordinal", unscheduled.item.ordinal)?;
+        out.text("account", &vid(unscheduled.item.account))?;
+        out.number("unit_id", unscheduled.item.unit_id)?;
+        out.text(
+            "side",
+            if unscheduled.item.side == Side::Debit {
+                "debit"
+            } else {
+                "credit"
+            },
+        )?;
+        out.number("open_mantissa", unscheduled.item.open)?;
+        match unscheduled.reason {
+            Unscheduled::NoTerms => out.text("reason", "no_terms")?,
+            Unscheduled::MissingMaturity => out.text("reason", "missing_maturity")?,
+            Unscheduled::Disputed { reason_code } => {
+                out.text("reason", "disputed")?;
+                out.number("reason_code", reason_code)?;
+            }
+        }
+        out.end()?;
+    }
+    for cell in &report.cells {
+        checkpoint()?;
+        out.begin("due_date_aging_cell")?;
+        out.text("account", &vid(cell.account))?;
+        out.number("unit_id", cell.unit_id)?;
+        out.number("bucket", cell.bucket)?;
+        out.number("debit_mantissa", cell.amounts.debits)?;
+        out.number("credit_mantissa", cell.amounts.credits)?;
+        out.number("installment_count", cell.amounts.item_count)?;
+        out.end()?;
+    }
+    for (event, count, totals) in [
+        ("due_date_aging_total", "installment_count", &report.totals),
+        (
+            "due_date_aging_unscheduled_total",
+            "item_count",
+            &report.unscheduled_totals,
+        ),
+    ] {
+        for total in totals {
+            checkpoint()?;
+            out.begin(event)?;
+            out.text("account", &vid(total.account))?;
+            out.number("unit_id", total.unit_id)?;
+            out.number("debit_mantissa", total.amounts.debits)?;
+            out.number("credit_mantissa", total.amounts.credits)?;
+            out.number(count, total.amounts.item_count)?;
+            out.end()?;
+        }
+    }
+    checkpoint()?;
+    Ok(out.bytes)
+}
+
 impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
+    /// Export the recipient's contractual due-date aging after complete replay.
+    /// Obligations and applications appear once; scheduled rows carry each
+    /// installment's remaining amount. Unscheduled amounts and reasons remain
+    /// separate from scheduled buckets, with no invented due dates. All money
+    /// and counters are decimal strings. Current whole-book read+produce is
+    /// required before observing history, and no partial text is returned.
+    pub fn due_date_aging_jsonl(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        certificate: &DueDateAgingCertificate,
+        expected: &AgingRequest,
+    ) -> Outcome<String> {
+        if let Err(r) = authorize(
+            self,
+            cx,
+            principal,
+            capability,
+            Some(certificate.source().known_at),
+            true,
+        )? {
+            return Ok(Err(r));
+        }
+        let report = match self.replay_due_date_aging_for(
+            cx,
+            principal,
+            capability,
+            certificate,
+            expected,
+        )? {
+            Ok(report) => report,
+            Err(r) => return Ok(Err(r)),
+        };
+        let mut ids: BTreeSet<_> = report
+            .items
+            .iter()
+            .map(|item| item.item.account)
+            .chain(report.unscheduled.iter().map(|item| item.item.account))
+            .collect();
+        if let Some(account) = report.account {
+            ids.insert(account);
+        }
+        let query = cx.query();
+        let accounts = query.with_restriction(|| -> Result<Vec<AccountRow>, BookError> {
+            let mut accounts = Vec::new();
+            for id in ids {
+                query.checkpoint().map_err(BookError::Context)?;
+                let row = self
+                    .db
+                    .vertex_at(id, report.known_at)
+                    .map_err(KernelError::from)?
+                    .filter(|row| row.labels.contains(&label::ACCOUNT))
+                    .ok_or_else(|| {
+                        KernelError::Corrupt(
+                            "certified aging account is absent at its prefix".into(),
+                        )
+                    })?;
+                accounts.push(AccountRow::decode(&row)?);
+            }
+            Ok(accounts)
+        })?;
+        match render_due_date(
+            &report,
+            certificate,
+            &accounts,
+            &self.context().units,
+            || query.checkpoint().map_err(BookError::Context),
+        ) {
+            Ok(text) => Ok(Ok(text)),
+            Err(ExportError::Refusal(r)) => Ok(Err(r)),
+            Err(ExportError::Book(e)) => Err(e),
+        }
+    }
+
     /// Replay only the exact recipient-selected account, cutoff, recorded
     /// sequence and buckets. An unresolved HEAD expectation is refused rather
     /// than letting an untrusted certificate choose the recipient's question.

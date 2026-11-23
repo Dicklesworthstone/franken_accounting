@@ -1146,9 +1146,18 @@ The `report_certificate` event supplies a replay command with independently
 retainable `--expect` JSON of kind `due-date-aging`. MCP accepts `basis: "due-date"`
 with `certify: true` through `fa_proof_gl`. Add `--reconcile` to bind the scheduled
 and unscheduled amounts to their native control balance; its retained
-certificate also replays and verifies offline. Due-date JSONL workpaper export
-remains unsupported; effective-date certificates retain their existing formats
-and behavior.
+certificate also replays and verifies offline.
+
+To deliver the due-date aging as a JSONL workpaper, append
+`--workpaper-out <new-file>` to its independently retained replay command, or
+`--workpaper` to receive the same text inline. The recipient must supply the
+complete `due-date-aging` expectation, including its fixed recorded prefix;
+current whole-book `read` and `produce` authority are required. The workpaper
+lists each original obligation and application once, followed by its remaining
+installments with due dates and days past due. Unscheduled items retain their
+explicit reasons and separate totals. All amounts and counters are exact decimal
+strings, with historical account and currency metadata. MCP `fa_read_replay`
+accepts the same independent `expect` JSON and `workpaper: true`.
 
 For plain effective-date or due-date aging, `bundle produce --expect '<request
 JSON>'` checks the independently retained request before exporting. A different

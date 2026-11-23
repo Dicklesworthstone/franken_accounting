@@ -702,6 +702,272 @@ fn receivable_due_date_aging_posts_replays_and_verifies_offline() {
 }
 
 #[test]
+fn due_date_aging_workpapers_export_to_file_and_inline_with_independent_request_pins() {
+    let fixture = Fixture::new();
+    let evidence = fixture.chart_and_evidence();
+    let chart = write(
+        &fixture.dir,
+        "workpaper-payables-chart.json",
+        r#"{"accounts":[{"code":"2000","name":"Payables","type":"Liability","unit":"USD"},{"code":"6000","name":"Expense","type":"Expense","unit":"USD"}]}"#,
+    );
+    ok(&fixture.book, &["chart", "import", &chart]);
+    let invoice = write(
+        &fixture.dir,
+        "workpaper-invoice.json",
+        r#"{"effective_date":"2026-03-01","idempotency_key":"workpaper-invoice","legs":[{"side":"debit","account":"6000","amount":"100.00 USD"},{"side":"credit","account":"2000","amount":"100.00 USD"}],"obligation_maturity":[{"ordinal":1,"status":"contractual","installments":[{"due_date":"2026-03-31","amount":"60.00 USD"},{"due_date":"2026-04-30","amount":"40.00 USD"}]}]}"#,
+    );
+    let posted = ok(
+        &fixture.book,
+        &["post", "--intent", &invoice, "--evidence", &evidence],
+    );
+    let payment = write(
+        &fixture.dir,
+        "workpaper-payment.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-20","idempotency_key":"workpaper-payment","legs":[{{"side":"debit","account":"2000","amount":"25.00 USD","settles":[{{"entry":"{}","ordinal":1,"amount":"25.00 USD"}}]}},{{"side":"credit","account":"1000","amount":"25.00 USD"}}]}}"#,
+            text(&posted, "vid"),
+        ),
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &payment, "--evidence", &evidence],
+    );
+    let unscheduled = write(
+        &fixture.dir,
+        "workpaper-no-terms.json",
+        r#"{"effective_date":"2026-03-02","idempotency_key":"workpaper-no-terms","legs":[{"side":"debit","account":"6000","amount":"10.00 USD"},{"side":"credit","account":"2000","amount":"10.00 USD"}]}"#,
+    );
+    ok(
+        &fixture.book,
+        &["post", "--intent", &unscheduled, "--evidence", &evidence],
+    );
+    let at = fixture.head();
+    let metadata = certify(
+        &fixture,
+        &[
+            "gl",
+            "aging",
+            "--account",
+            "2000",
+            "--basis",
+            "due-date",
+            "--as-of",
+            "2026-04-01",
+        ],
+    );
+    let certificate =
+        fa::DueDateAgingCertificate::decode(&unhex(text(&metadata, "bytes"))).unwrap();
+    let locator = format!("C:{}", text(&metadata, "oid"));
+    let expected = format!(
+        r#"{{"kind":"due-date-aging","account":"2000","through":"2026-04-01","known_at":{at},"buckets":[0,30,60,90]}}"#,
+    );
+    let replay = |arguments: &[&str]| -> Vec<Json> {
+        let output = Command::new(env!("CARGO_BIN_EXE_fa"))
+            .arg("--book")
+            .arg(&fixture.book)
+            .args(arguments)
+            .arg("--json")
+            .env_remove("FA_BOOK")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!(
+            "due-date workpaper argv={arguments:?} exit={:?}\n{stdout}\n{stderr}",
+            output.status.code()
+        );
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        let registry = fa_cli::verbs::registry().unwrap();
+        stdout
+            .lines()
+            .map(|line| {
+                registry.check_line(line).unwrap();
+                json::parse(line).unwrap()
+            })
+            .collect()
+    };
+    let workpaper_path = fixture.dir.join("due-date-workpaper.jsonl");
+    let report_path = fixture.dir.join("due-date-report.bin");
+    let before = fixture.head();
+    let events = replay(&[
+        "replay",
+        &locator,
+        "--expect",
+        &expected,
+        "--workpaper-out",
+        workpaper_path.to_str().unwrap(),
+        "--output",
+        report_path.to_str().unwrap(),
+    ]);
+    let exported = events
+        .iter()
+        .find(|event| text(event, "event") == "workpaper_exported")
+        .unwrap();
+    assert_eq!(text(exported, "family"), "due-date-aging");
+    assert_eq!(text(exported, "file"), workpaper_path.to_str().unwrap());
+    let workpaper = std::fs::read_to_string(&workpaper_path).unwrap();
+    assert_eq!(integer(exported, "bytes"), workpaper.len() as i128);
+    assert_eq!(
+        integer(exported, "lines"),
+        workpaper.lines().count() as i128
+    );
+    assert_eq!(std::fs::read(&report_path).unwrap(), certificate.output());
+    assert_eq!(fixture.head(), before, "workpaper export is a read");
+    let rows: Vec<_> = workpaper
+        .lines()
+        .map(|line| json::parse(line).unwrap())
+        .collect();
+    let selected = |event: &str| -> Vec<&Json> {
+        rows.iter()
+            .filter(|row| text(row, "event") == event)
+            .collect()
+    };
+    assert_eq!(text(&rows[0], "age_basis"), "due_date");
+    assert_eq!(text(&rows[0], "known_at"), at.to_string());
+    assert_eq!(selected("aging_open_item").len(), 2);
+    assert_eq!(selected("aging_application").len(), 1);
+    let installments = selected("due_date_aging_installment");
+    assert_eq!(installments.len(), 2);
+    for (date, open, days) in [("2026-03-31", "3500", "1"), ("2026-04-30", "4000", "0")] {
+        let row = installments
+            .iter()
+            .find(|row| text(row, "due_date") == date)
+            .unwrap();
+        assert_eq!(text(row, "open_mantissa"), open);
+        assert_eq!(text(row, "days_past_due"), days);
+    }
+    let unscheduled = selected("due_date_aging_unscheduled");
+    assert_eq!(unscheduled.len(), 1);
+    assert_eq!(text(unscheduled[0], "reason"), "no_terms");
+    assert_eq!(text(unscheduled[0], "open_mantissa"), "1000");
+    assert!(unscheduled[0].get("due_date").is_none());
+    assert_eq!(
+        text(selected("due_date_aging_total")[0], "credit_mantissa"),
+        "7500"
+    );
+    assert_eq!(
+        text(
+            selected("due_date_aging_unscheduled_total")[0],
+            "credit_mantissa"
+        ),
+        "1000"
+    );
+
+    fixture.post("later-workpaper-head", "2026-03-10", "9.00", &evidence);
+    let before = fixture.head();
+    let source_path = fixture.dir.join("due-date.certificate");
+    std::fs::write(&source_path, unhex(text(&metadata, "bytes"))).unwrap();
+    let events = replay(&[
+        "replay",
+        source_path.to_str().unwrap(),
+        "--expect",
+        &expected,
+        "--workpaper",
+    ]);
+    let inline = events
+        .iter()
+        .find(|event| text(event, "event") == "workpaper_exported")
+        .unwrap();
+    assert_eq!(text(inline, "text"), workpaper);
+    assert!(matches!(get(inline, "file"), Json::Null));
+    let refused_workpaper = fixture.dir.join("refused-workpaper.jsonl");
+    let refused_report = fixture.dir.join("refused-report.bin");
+    for (wrong, code) in [
+        (expected.replace("due-date-aging", "aging"), 8),
+        (expected.replace("2000", "6000"), 8),
+        (expected.replace("2026-04-01", "2026-04-02"), 8),
+        (expected.replace("[0,30,60,90]", "[0,60]"), 8),
+        (
+            expected.replace(&format!("\"known_at\":{at}"), "\"known_at\":null"),
+            2,
+        ),
+        (
+            expected.replace(
+                &format!("\"known_at\":{at}"),
+                &format!("\"known_at\":{}", at - 1),
+            ),
+            8,
+        ),
+    ] {
+        let args = [
+            "replay",
+            &locator,
+            "--expect",
+            &wrong,
+            "--workpaper-out",
+            refused_workpaper.to_str().unwrap(),
+            "--output",
+            refused_report.to_str().unwrap(),
+        ];
+        let (exit, error) = run(&fixture.book, &args);
+        eprintln!(
+            "due-date workpaper argv={args:?} exit={exit} event={}",
+            error.render()
+        );
+        assert_eq!(exit, code, "{}", error.render());
+        assert!(!refused_workpaper.exists());
+        assert!(!refused_report.exists());
+    }
+    let (exit, error) = run(&fixture.book, &["replay", &locator, "--workpaper"]);
+    assert_eq!(exit, 2, "{}", error.render());
+    let (exit, error) = run(
+        &fixture.book,
+        &[
+            "replay",
+            &locator,
+            "--expect",
+            &expected,
+            "--workpaper-out",
+            workpaper_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(exit, 2, "{}", error.render());
+    assert_eq!(std::fs::read_to_string(workpaper_path).unwrap(), workpaper);
+    let authority = LaunchAuthority::new(
+        fixture.book.clone(),
+        None,
+        "workpaper-reader",
+        LaunchProfile::Agent,
+        &["read"],
+    )
+    .unwrap();
+    let args = [
+        "replay",
+        &locator,
+        "--expect",
+        &expected,
+        "--workpaper",
+        "--json",
+    ]
+    .map(str::to_string);
+    let (exit, output) = fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(exit, 7, "{}{}", output.stdout, output.stderr);
+    assert!(!output.stdout.contains("workpaper_exported"));
+    let authority = LaunchAuthority::new(
+        fixture.book.clone(),
+        None,
+        "workpaper-producer",
+        LaunchProfile::Agent,
+        &["read", "produce"],
+    )
+    .unwrap();
+    let (exit, output) = fa_with_authority(&args, Files::default(), &authority, true);
+    assert_eq!(exit, 0, "{}{}", output.stdout, output.stderr);
+    let registry = fa_cli::verbs::registry().unwrap();
+    let inline = output
+        .stdout
+        .lines()
+        .map(|line| {
+            registry.check_line(line).unwrap();
+            json::parse(line).unwrap()
+        })
+        .find(|event| text(event, "event") == "workpaper_exported")
+        .unwrap();
+    assert_eq!(text(&inline, "text"), workpaper);
+    assert_eq!(fixture.head(), before, "failed exports never write history");
+}
+
+#[test]
 fn due_date_aging_bundle_verifies_offline() {
     let fixture = Fixture::new();
     let evidence = fixture.chart_and_evidence();
