@@ -5097,6 +5097,8 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
         "entities_verified",
         "registers_verified",
         "functional_registers_verified",
+        "retention_verified",
+        "search_verified",
         "replay_verified",
         "book_verification",
     ] {
@@ -5108,7 +5110,7 @@ fn verify_book_runs_every_verify_target() -> std::io::Result<()> {
     let verdict = doc(&out);
     assert_eq!(verdict.get("green"), Some(&Json::Bool(true)), "{out}");
     let targets = arr(&verdict, "targets");
-    assert_eq!(targets.len(), 12, "{out}");
+    assert_eq!(targets.len(), 14, "{out}");
     assert!(
         targets.iter().all(|t| text(t, "verdict") == "pass"),
         "{out}"

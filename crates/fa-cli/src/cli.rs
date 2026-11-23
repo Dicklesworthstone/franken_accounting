@@ -16297,9 +16297,9 @@ fn verify_usage_at(
 }
 
 /// The targets `fa verify book` runs, cheapest first (plan §15.3 Proofs;
-/// fa-waow). `verify close` is not one: it asks whether a fiscal year needs a
-/// close, which is not a question about the book's integrity.
-const BOOK_VERIFY_TARGETS: [&str; 12] = [
+/// fa-waow). Fiscal-year closing and external export verification require
+/// their own selected year or artifact.
+const BOOK_VERIFY_TARGETS: [&str; 14] = [
     "projections",
     "periods",
     "schedules",
@@ -16308,9 +16308,11 @@ const BOOK_VERIFY_TARGETS: [&str; 12] = [
     "availability",
     "usage",
     "fx-conversion",
+    "retention",
     "entities",
     "registers",
     "functional-registers",
+    "search",
     "replay",
 ];
 
@@ -16370,14 +16372,26 @@ fn verify_book(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             }
             match verify_cmd(ctx, &sub) {
                 Ok(()) => ("pass", String::new()),
-                Err(fail @ Fail::Verification { .. }) => {
-                    failed.push(target);
-                    ("fail", crate::triage::describe(&fail))
-                }
                 Err(fail) => {
                     let detail = crate::triage::describe(&fail);
-                    first_error.get_or_insert(fail);
-                    ("error", detail)
+                    // The document reader and certificate replay can report
+                    // verification failures through their typed refusal/error.
+                    let verification_failure = match &fail {
+                        Fail::Verification { .. } => true,
+                        Fail::Refusal(r) => r.exit == fa_journal::exit::VERIFICATION,
+                        Fail::RefusalDetail(boxed) => {
+                            boxed.0.exit == fa_journal::exit::VERIFICATION
+                        }
+                        Fail::Book(e) => e.exit() == fa_journal::exit::VERIFICATION,
+                        _ => false,
+                    };
+                    if verification_failure {
+                        failed.push(target);
+                        ("fail", detail)
+                    } else {
+                        first_error.get_or_insert(fail);
+                        ("error", detail)
+                    }
                 }
             }
         };

@@ -1164,6 +1164,22 @@ fn the_server_over_stdio_matches_the_cli_byte_for_byte_on_data() {
         json!({"target": "open-items"}),
     );
     assert!(!is_error, "read/verify remains available: {text}");
+    let (is_error, text, _) =
+        call_tool(&mut read_only, "fa_book_verify", json!({"target": "book"}));
+    assert!(!is_error, "{text}");
+    let events: Vec<JsonValue> = fastmcp_rust::serde_json::from_str(&text).unwrap();
+    let summary = events.last().expect("whole-book verdict");
+    assert_eq!(summary["green"], true, "{summary}");
+    for target in ["search", "retention"] {
+        assert!(
+            summary["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["target"] == target && row["verdict"] == "pass"),
+            "{summary}"
+        );
+    }
     assert_eq!(read_only.finish(), 0);
 
     // A trusted Preparer must explicitly receive maintenance authority.

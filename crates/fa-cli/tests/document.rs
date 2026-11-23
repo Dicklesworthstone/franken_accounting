@@ -1723,6 +1723,16 @@ fn retention_policy_dual_control_cut_cadence_and_verify_end_to_end() -> std::io:
         "{verified}"
     );
     let whole_book = ok(&book, &["verify", "book", "--json"]);
+    let retention = whole_book
+        .lines()
+        .find(|line| field(line, "event") == Some("retention_verified"))
+        .expect("whole-book verification checks the active retention policy");
+    assert_eq!(
+        field(retention, "policies_checked"),
+        Some("1"),
+        "{retention}"
+    );
+    assert!(retention.contains(&policy_oid), "{retention}");
     assert!(
         whole_book.contains("\"event\":\"book_verification\"")
             && whole_book.contains("\"green\":true"),

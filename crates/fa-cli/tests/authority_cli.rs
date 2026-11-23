@@ -256,6 +256,7 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
         ],
         vec!["approve", "--proposal", "not-yet-parsed", "--json"],
         vec!["checkpoint", "create", "--json"],
+        vec!["verify", "book", "--json"],
         vec!["verify", "registers", "--period", "FY2026-P03", "--json"],
         vec!["verify", "periods", "--json"],
         vec!["registers", "advance", "--period", "FY2026-P03", "--json"],
@@ -275,6 +276,7 @@ fn handlers_cannot_add_operations_omitted_from_the_launch_grant() {
         vec!["chart", "list", "--json"],
         vec!["period", "list", "--json"],
         vec!["tb", "--period", "FY2026-P03", "--json"],
+        vec!["verify", "book", "--json"],
         vec!["verify", "registers", "--period", "FY2026-P03", "--json"],
         vec!["verify", "periods", "--json"],
     ] {
@@ -662,6 +664,7 @@ fn revoked_report_and_evidence_authority_cannot_disclose_book_or_instant_metadat
         vec!["registers", "advance", "--period", "FY2026-P03"],
         vec!["registers", "materialize", "--period", "FY2026-P03"],
         vec!["verify", "registers", "--period", "FY2026-P03"],
+        vec!["verify", "book"],
         // Handlers that open the book without their own admission: the
         // bound session's token is admitted as current at the open itself.
         vec!["tb", "--period", "FY2026-P03"],

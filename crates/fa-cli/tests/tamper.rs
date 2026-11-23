@@ -452,7 +452,7 @@ fn tamper_evidence_red_team_matrix() {
             Some(Json::Arr(targets)) => targets.clone(),
             other => panic!("targets: {other:?}"),
         };
-        assert_eq!(targets.len(), 12, "{book_out}");
+        assert_eq!(targets.len(), 14, "{book_out}");
         assert!(
             targets
                 .iter()
@@ -819,6 +819,24 @@ fn tamper_evidence_red_team_matrix() {
         assert_eq!(code, 8, "{out}\n{err}");
         let parsed_out = parsed(&out);
         assert_eq!(text(&parsed_out, "refusal_id"), "FA-REF-085");
+        let (code, output, err) = run(&book, &["verify", "book", "--json"]);
+        assert_eq!(code, 8, "{output}\n{err}");
+        let summary = output
+            .lines()
+            .find(|line| line.contains("\"event\":\"book_verification\""))
+            .map(parsed)
+            .expect("whole-book verification completed");
+        let data = get(&summary, "data").unwrap();
+        assert_eq!(get(data, "green"), Some(&Json::Bool(false)), "{output}");
+        let Some(Json::Arr(targets)) = get(data, "targets") else {
+            panic!("missing verification targets: {output}");
+        };
+        assert!(
+            targets.iter().any(|row| text(row, "target") == "search"
+                && text(row, "verdict") == "fail"
+                && text(row, "detail").contains("FA-REF-085")),
+            "{output}"
+        );
         rows.push(MatrixRow {
             id: "T09",
             attack: "Swap inline `Document` payload bytes in the substrate",
