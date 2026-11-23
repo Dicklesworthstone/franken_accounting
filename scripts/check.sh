@@ -596,17 +596,17 @@ cargo_test_jobs() {
   passed_total="$(awk '/^test result: ok\./ { for (i = 1; i <= NF; i++) if ($i == "passed;") sum += $(i - 1) } END { print sum + 0 }' "$log")"
   local admission_detail=""
   if [ "${#unrun[@]}" -gt 0 ]; then
-    admission_detail="$label — submission stopped at ${unrun[*]} after $attempt attempt(s); $count of $planned targets attempted, $((planned - count)) not submitted; completion is unqualified; log: $log; inventory: $jobs"
-    printf '==== %s\n' "$admission_detail" >>"$log"
+    admission_detail="submission stopped at ${unrun[*]} after $attempt attempt(s); $count of $planned targets attempted, $((planned - count)) not submitted; completion is unqualified; inventory: $jobs"
+    printf '==== %s — %s\n' "$label" "$admission_detail" >>"$log"
   fi
   if [ "${#failed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
     record_step_verdict "$label" "FAIL" "$started" "$finished" "$dur" "$log"
-    gate_fail "$label (${#failed[@]} of $count jobs failed: ${failed[*]:-none}; isolated tests matching no test: ${stale[*]:-none}); log: $log"
+    gate_fail "$label (${#failed[@]} of $count jobs failed: ${failed[*]:-none}; isolated tests matching no test: ${stale[*]:-none}); ${admission_detail:+$admission_detail; }log: $log"
     gate_diag "---- $label: failed tests"
     grep -E '^test .+ \.\.\. FAILED$' "$log" >&2 || true
   elif [ "${#unrun[@]}" -gt 0 ]; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
-    gate_unrun "$admission_detail"
+    gate_unrun "$label — $admission_detail; log: $log"
   elif ! grep -Eq '^test result: ok\. ' "$log" || [ "${passed_total:-0}" -le 0 ]; then
     record_step_verdict "$label" "UNRUN" "$started" "$finished" "$dur" "$log"
     gate_unrun "$label — $count jobs exited 0 without a positive 'test result: ok. N passed' completion marker; log: $log"
@@ -615,11 +615,6 @@ cargo_test_jobs() {
     gate_pass "$label ($count jobs, $passed_total passed)"
   fi
   if [ "${#unrun[@]}" -gt 0 ]; then
-    # A real failure observed before admission was lost remains a failure.
-    # The existing verdict function preserves that precedence and tree checks.
-    if [ "${#failed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
-      gate_unrun "$admission_detail"
-    fi
     gate_verdict
     rc=$?
     exit "$rc"

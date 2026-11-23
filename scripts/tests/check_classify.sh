@@ -314,6 +314,14 @@ split_test_jobs_compose_one_step() {
       failures=$((failures + 1))
     fi
   done
+  local mixed="$base/jobs-fail-then-lost" detail='submission stopped at beta.test.x after 3 attempt(s); 2 of 3 targets attempted, 1 not submitted'
+  if [ "$(wc -l < "$mixed/step-verdicts.jsonl")" -ne 1 ] \
+    || [ "$(grep -Ec '^(PASS|FAIL|UNRUN) test([ (]|$)' "$mixed/stdout.log")" -ne 1 ] \
+    || ! grep '^FAIL test ' "$mixed/stdout.log" | grep -F 'jobs failed: alpha;' | grep -Fq "$detail" \
+    || ! grep -Fq "$detail" "$mixed/logs/test.log"; then
+    gate_fail "split_test_jobs_compose_one_step — mixed execution must report one failed step with both the failed target and the incomplete submission inventory"
+    return 1
+  fi
   # Only the isolated command carries its own budget; the others keep the
   # fleet's cap.
   local budgets
