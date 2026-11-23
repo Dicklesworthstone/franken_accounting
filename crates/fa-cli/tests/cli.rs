@@ -12354,6 +12354,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
     assert_eq!(run(true, &["verify", "open-items"]).0, 0);
     assert_eq!(run(true, &["verify", "replay"]).0, 0);
     assert_eq!(run(true, &["verify", "projections"]).0, 0);
+    assert_eq!(run(true, &["verify", "retention"]).0, 0);
+    assert_eq!(run(true, &["verify", "search"]).0, 0);
     assert_eq!(run(true, &["verify", "availability"]).0, 0);
     let (code, out) = run(true, &["verify", "usage"]);
     assert_eq!(code, 0, "{out}");
@@ -12385,9 +12387,11 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
             "availability",
             "usage",
             "fx-conversion",
+            "retention",
             "entities",
             "registers",
             "functional-registers",
+            "search",
             "replay"
         ]
     );
@@ -12401,6 +12405,8 @@ fn every_declared_event_is_emitted_by_the_binary() -> std::io::Result<()> {
         "projections_verified",
         "registers_verified",
         "functional_registers_verified",
+        "retention_verified",
+        "search_verified",
         "replay_verified",
     ] {
         assert!(

@@ -3362,6 +3362,70 @@ fn reads() -> &'static RunOutcome {
     RUN.get_or_init(|| *reads_run(&[]))
 }
 
+#[test]
+fn report_recipient_requires_its_own_book_and_the_selected_issuance() {
+    let files = fa_oracles::cases::CaseFiles {
+        id: "reads",
+        files: &READS,
+    };
+    let case = fa_oracles::cases::load(&files).unwrap();
+    let mut issuer = run::build_book(&case, "native", "default", files.files);
+    issuer.reads();
+    issuer.outsider_reads();
+    let balance_sheet = issuer.reads["reads-T-02/-"].certificates[0].clone();
+    let income = issuer.reads["reads-T-03/-"].certificates[0].clone();
+    assert_ne!(balance_sheet, income);
+    let delivery = issuer
+        .steps
+        .iter()
+        .find(|step| {
+            step.reference == "reads-T-03/-"
+                && step.certificate_kind.as_deref() == Some("FaVerifyReport")
+        })
+        .expect("delivered income statement");
+    assert_eq!(delivery.exit, 0);
+    let bundle = issuer
+        .work
+        .join(delivery.argv_redacted[1].strip_prefix("$WORK/").unwrap());
+    let receipt = bundle.with_extension("receipt");
+    let checkpoint = issuer.work.join("outsider-reads.checkpoint");
+    let verify = |recipient: &mut run::BookRun<'_>, pin: &str| {
+        recipient
+            .verify_selected_report(
+                "recipient-selection",
+                pin,
+                bundle.to_str().unwrap(),
+                checkpoint.to_str().unwrap(),
+                receipt.to_str().unwrap(),
+            )
+            .unwrap()
+    };
+    let correct = verify(&mut issuer, &income);
+    assert_eq!(correct.exit, 0, "{}", correct.stdout);
+    // The same book signed both issuances. Only the one the recipient
+    // selected answers the requested accounting question.
+    let wrong_issuance = verify(&mut issuer, &balance_sheet);
+    assert_eq!(wrong_issuance.exit, 8, "{}", wrong_issuance.stdout);
+    assert!(outsider::failed_check(&wrong_issuance.stdout).starts_with("recipient_certificate:"));
+    let mut other = run::BookRun::new(
+        &case,
+        &case.books["native"],
+        run::tmp("other-recipient"),
+        files.files,
+    );
+    other.build();
+    assert!(other.checkpoint_key.is_some());
+    assert_ne!(other.checkpoint_key, issuer.checkpoint_key);
+    // The foreign recipient gets the complete, authentically signed delivery.
+    let foreign = verify(&mut other, &income);
+    assert_eq!(foreign.exit, 8, "{}", foreign.stdout);
+    assert!(
+        outsider::failed_check(&foreign.stdout).starts_with("checkpoint:"),
+        "{}",
+        foreign.stdout
+    );
+}
+
 /// A7b (§5.3, §3.3 step 7): the per_account T reads its cell certified,
 /// equal to its published 1,250.00; its assert_balance step recorded B and
 /// both twins (B plus and minus one minor unit) were refused FA-REF-140; the

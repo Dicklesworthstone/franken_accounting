@@ -176,7 +176,7 @@ fn unit_id_of(unit: &str) -> Option<u32> {
 }
 
 /// The first check fa-verify did not pass, `<check>: <reason>`.
-fn failed_check(stdout: &str) -> String {
+pub(super) fn failed_check(stdout: &str) -> String {
     json::parse(stdout.trim())
         .ok()
         .and_then(|report| {
@@ -1017,37 +1017,22 @@ impl BookRun<'_> {
                 ],
             );
             self.certificate_kind("Bundle");
-            let Some(public_key) = produced.str_field("bundle_produced", "checkpoint_public_key")
-            else {
+            if produced.exit != 0 || produced.event("bundle_produced").is_none() {
                 self.lines.push(reproduce(&produced));
                 return Err(format!(
-                    "expected a bundle of C:{oid} with its checkpoint key observed exit={} {}",
+                    "expected a bundle of C:{oid} observed exit={} {}",
                     produced.exit,
                     produced.refusal_id().unwrap_or_default()
                 )
                 .trim_end()
                 .to_string());
-            };
+            }
             // A report bundle is `fa:report-bundle:v1`, which `fa-verify
             // report` authenticates (checkpoint, receipt, records) before it
             // recomputes; `fa-verify bundle` reads `fa:bundle:v1` evidence
             // bundles only and refuses this one (exit 8), so §12.1's `fa-verify
             // bundle` step does not apply to a certificate's bundle.
-            let report = self.fa_verify(
-                reference,
-                "FaVerifyReport",
-                vec![
-                    s("report"),
-                    fab,
-                    s("--key"),
-                    public_key,
-                    s("--checkpoint"),
-                    checkpoint.to_string(),
-                    s("--receipt"),
-                    receipt,
-                    s("--json"),
-                ],
-            );
+            let report = self.verify_selected_report(reference, oid, &fab, checkpoint, &receipt)?;
             if report.exit != 0 {
                 return Err(format!(
                     "expected fa-verify report of C:{oid} exit=0 observed exit={} {}",
@@ -1110,6 +1095,38 @@ impl BookRun<'_> {
                 format_amount(sum, scale)
             ))
         }
+    }
+
+    /// The recipient selects the certificate at issuance and trusts the key
+    /// captured from its book at genesis. The delivery supplies neither.
+    pub(super) fn verify_selected_report(
+        &mut self,
+        reference: &str,
+        oid: &str,
+        bundle: &str,
+        checkpoint: &str,
+        receipt: &str,
+    ) -> Result<fa_verify::cli::Output, String> {
+        let key = self
+            .checkpoint_key
+            .ok_or("no recipient checkpoint key for this book")?;
+        Ok(self.fa_verify(
+            reference,
+            "FaVerifyReport",
+            vec![
+                s("report"),
+                s(bundle),
+                s("--key"),
+                fa_verify::blake3::hex(&key),
+                s("--expect"),
+                s(oid),
+                s("--checkpoint"),
+                s(checkpoint),
+                s("--receipt"),
+                s(receipt),
+                s("--json"),
+            ],
+        ))
     }
 
     /// A literal `fa-verify` argv, run in process (`fa_verify::cli::run`)
@@ -1226,19 +1243,20 @@ impl BookRun<'_> {
             ],
         );
         self.certificate_kind("Bundle");
-        let Some(key) = produced
-            .str_field("bundle_produced", "checkpoint_public_key")
-            .as_deref()
-            .and_then(unhex)
-            .and_then(|k| <[u8; 32]>::try_from(k).ok())
-        else {
+        if produced.exit != 0 || produced.event("bundle_produced").is_none() {
             self.lines.push(reproduce(&produced));
             return Err(format!(
-                "expected a bundle with its checkpoint key observed exit={} {}",
+                "expected a bundle of C:{oid} observed exit={} {}",
                 produced.exit,
                 produced.refusal_id().unwrap_or_default()
             ));
-        };
+        }
+        let key = self
+            .checkpoint_key
+            .ok_or("no recipient checkpoint key for this book")?;
+        let pin = unhex(&oid)
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .ok_or("invalid certificate identifier from the certified balance sheet")?;
         let (mut bytes, receipt_bytes) = match (std::fs::read(&fab), std::fs::read(&receipt)) {
             (Ok(b), Ok(r)) => (b, r),
             (Err(e), _) | (_, Err(e)) => return Err(format!("read the bundle: {e}")),
@@ -1248,20 +1266,25 @@ impl BookRun<'_> {
         {
             *last ^= 1;
         }
-        let verdict =
-            match fa_verify::report::verify_report(&bytes, &[key], None, Some(&receipt_bytes)) {
-                Ok(report) => {
-                    let recomputed = fa_verify::blake3::hex(&report.output_digest);
-                    if recomputed == digest {
-                        Ok("verified".to_string())
-                    } else {
-                        Err(format!(
-                            "expected the recomputed output digest {digest} observed {recomputed}"
-                        ))
-                    }
+        let verdict = match fa_verify::report::verify_report_expected(
+            &bytes,
+            &[key],
+            None,
+            Some(&receipt_bytes),
+            Some(&pin),
+        ) {
+            Ok(report) => {
+                let recomputed = fa_verify::blake3::hex(&report.output_digest);
+                if recomputed == digest {
+                    Ok("verified".to_string())
+                } else {
+                    Err(format!(
+                        "expected the recomputed output digest {digest} observed {recomputed}"
+                    ))
                 }
-                Err(e) => Err(format!("the report bundle did not verify: {e}")),
-            };
+            }
+            Err(e) => Err(format!("the report bundle did not verify: {e}")),
+        };
         self.outsider_check("bundle", verdict);
         let out = self.work.join("outsider.replay");
         let replayed = self.call(

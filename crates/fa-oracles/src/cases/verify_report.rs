@@ -9,6 +9,7 @@
 
 use super::outsider_kind::Recomputed;
 use crate::json::{self, Json};
+use std::collections::BTreeMap;
 
 /// What one verified report recomputed for a read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,6 +18,127 @@ pub struct Recomputation {
     pub value: i128,
     /// The independently reconstructed canonical report's output digest.
     pub output_digest: String,
+}
+
+/// The common coordinate of a set of source-selected FIFO reports.
+pub struct FifoCoordinate<'a> {
+    pub book: &'a str,
+    pub branch: &'a str,
+    pub account: &'a str,
+    pub known_at: u64,
+    pub effective_through: i32,
+    pub intraday_order: u8,
+    pub unit: u32,
+    pub scale: u8,
+}
+
+/// The exact retained amount per selected deposit and their sum in minor units.
+pub struct FifoRecomputation {
+    pub sources: BTreeMap<String, i128>,
+    pub total: i128,
+}
+
+/// Reads stdout from actual offline `fa-verify report` calls. The recipient
+/// runs those calls with its own trust key, signed checkpoint, receipt and
+/// requested certificate. Each selected (source entry, certificate) must have
+/// exactly one matching verified report regardless of delivery order.
+///
+/// # Errors
+/// The selection is empty or ambiguous, a report fails a binding or a required
+/// check, a deposit is absent or counted twice, or its cohort total overflows.
+pub fn fifo_cohort(
+    at: &FifoCoordinate<'_>,
+    selected: &[(&str, &str)],
+    reports: &[String],
+) -> Result<FifoRecomputation, String> {
+    let pins: BTreeMap<_, _> = selected.iter().copied().collect();
+    if pins.is_empty() || pins.len() != selected.len() {
+        return Err("FIFO requires a nonempty selection of distinct source entries".into());
+    }
+    let mut sources = BTreeMap::new();
+    let mut total = 0_i128;
+    for stdout in reports {
+        let report =
+            json::parse(stdout.trim()).map_err(|e| format!("invalid fa-verify report: {e}"))?;
+        if report.get("verdict").and_then(Json::as_str) != Some("verified") {
+            return Err("FIFO source report did not verify".into());
+        }
+        let checks = report
+            .get("checks")
+            .and_then(Json::as_array)
+            .ok_or("missing fa-verify checks")?;
+        let detail = |name: &str| {
+            let mut rows = checks
+                .iter()
+                .filter(|c| c.get("check").and_then(Json::as_str) == Some(name));
+            let row = rows.next().ok_or_else(|| format!("missing {name}"))?;
+            if rows.next().is_some() || row.get("result").and_then(Json::as_str) != Some("pass") {
+                return Err(format!("expected exactly one passing {name}"));
+            }
+            row.get("detail").ok_or_else(|| format!("empty {name}"))
+        };
+        let checkpoint = detail("checkpoint")?;
+        let bundle = detail("report_bundle")?;
+        let summary = detail("procedure_summary")?;
+        let finding = detail("procedure_finding")?;
+        detail("production_receipt")?;
+        detail("canonical_report")?;
+        if checkpoint.get("book_id").and_then(Json::as_str) != Some(at.book)
+            || checkpoint.get("branch_id").and_then(Json::as_str) != Some(at.branch)
+            || summary.get("book").and_then(Json::as_str) != Some(at.book)
+            || summary.get("account").and_then(Json::as_str) != Some(at.account)
+            || summary.get("procedure").and_then(Json::as_str) != Some("trace.fifo")
+            || summary.get("version").and_then(Json::as_int) != Some(2)
+            || summary.get("known_at").and_then(Json::as_int) != Some(at.known_at.into())
+            || summary.get("effective_through").and_then(Json::as_int)
+                != Some(at.effective_through.into())
+            || summary.get("intraday_order").and_then(Json::as_int)
+                != Some(at.intraday_order.into())
+        {
+            return Err("FIFO source report belongs to a different procedure or coordinate".into());
+        }
+        let source = summary
+            .get("source")
+            .and_then(Json::as_str)
+            .ok_or("missing FIFO source entry")?;
+        let pin = pins
+            .get(source)
+            .ok_or_else(|| format!("unexpected FIFO source {source}"))?;
+        if bundle.get("certificate_digest").and_then(Json::as_str) != Some(*pin) {
+            return Err(format!("unselected certificate for FIFO source {source}"));
+        }
+        if finding.get("account").and_then(Json::as_str) != Some(at.account)
+            || finding.get("statistic").and_then(Json::as_str) != Some("traced_mantissa")
+            || finding.get("scale").and_then(Json::as_int) != Some(at.scale.into())
+            || finding.get("unit").and_then(Json::as_int) != Some(at.unit.into())
+            || finding
+                .get("entries")
+                .and_then(Json::as_array)
+                .and_then(|e| e.first())
+                .and_then(Json::as_str)
+                != Some(source)
+        {
+            return Err(format!(
+                "wrong FIFO statistic, unit or cited source for {source}"
+            ));
+        }
+        let amount = finding
+            .get("value")
+            .and_then(Json::as_str)
+            .and_then(|v| v.parse::<i128>().ok())
+            .filter(|&v| v >= 0)
+            .ok_or("invalid retained FIFO amount")?;
+        if sources.insert(source.to_string(), amount).is_some() {
+            return Err(format!("duplicate FIFO report for {source}"));
+        }
+        total = total
+            .checked_add(amount)
+            .ok_or("FIFO cohort total overflows")?;
+    }
+    if let Some(missing) = pins.keys().find(|s| !sources.contains_key(**s)) {
+        return Err(format!("missing FIFO report for {missing}"));
+    }
+    Ok(FifoRecomputation { sources, total })
 }
 
 /// The recomputation of `target` (an account or line code) in `unit` (the

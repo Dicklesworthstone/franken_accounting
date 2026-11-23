@@ -265,6 +265,8 @@ pub struct BookRun<'c> {
     /// The book directory.
     pub dir: PathBuf,
     pub book_id: Option<String>,
+    /// Recipient trust established at genesis, before any report is issued.
+    pub checkpoint_key: Option<[u8; 32]>,
     /// `[[period]] code` label → the book's period code.
     pub periods: BTreeMap<String, String>,
     /// `[[document]] id` → oid.
@@ -375,6 +377,7 @@ impl<'c> BookRun<'c> {
             work,
             dir,
             book_id: None,
+            checkpoint_key: None,
             periods: BTreeMap::new(),
             documents: BTreeMap::new(),
             vids: BTreeMap::new(),
@@ -582,6 +585,21 @@ impl<'c> BookRun<'c> {
         args.push(s("--json"));
         let created = self.setup("book", "book", args);
         self.book_id = created.and_then(|c| c.str_field("book_created", "book_id"));
+        if self.book_id.is_some() {
+            // Use the keys the case operator provisioned in this new book.
+            // Only its public checkpoint key reaches the offline recipient.
+            match fa::BookKeys::load(&self.dir.join("book.keys"))
+                .and_then(|keys| fa::Book::open_dir(&self.dir, keys, fa::Entropy::production()))
+            {
+                Ok(book) => self.checkpoint_key = Some(book.checkpoint_public_key()),
+                Err(err) => {
+                    self.fail(format!(
+                        "could not provision the new book's checkpoint key: {err}"
+                    ));
+                    return;
+                }
+            }
+        }
         for fy in years.keys() {
             self.setup(
                 &format!("FY{fy}"),

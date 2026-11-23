@@ -87,6 +87,11 @@ struct RecipientClaim {
     cents: i128,
 }
 
+struct RecipientCohort {
+    claims: Vec<RecipientClaim>,
+    total: i128,
+}
+
 // The recipient can open only these three exported files. The trusted key
 // comes from book creation, and the selected certificate comes from the
 // requested source and coordinate before the report bundle is produced.
@@ -115,21 +120,12 @@ fn judge(dir: &Path, source: &str, key: &str, pin: &str, receipt: &str) -> fa_ve
     )
 }
 
-fn check_detail<'a>(report: &'a Json, name: &str) -> &'a Json {
-    let checks = get(report, "checks").as_arr().unwrap();
-    let check = checks
-        .iter()
-        .find(|row| text(row, "check") == name)
-        .expect(name);
-    get(check, "detail")
-}
-
 fn verify_sources(
     fixture: &Fixture,
     group: &str,
     key: &str,
     sources: &[(&Movement<'_>, String)],
-) -> Vec<RecipientClaim> {
+) -> RecipientCohort {
     let known_at = fixture.head();
     let mut selected = Vec::new();
     for (_, source) in sources {
@@ -171,8 +167,8 @@ fn verify_sources(
         .unwrap()
         .lookup("USD")
         .unwrap();
-    let mut verified = Vec::new();
-    for ((movement, source), pin) in sources.iter().zip(selected) {
+    let mut reports = Vec::new();
+    for ((movement, source), pin) in sources.iter().zip(&selected) {
         let produced = ok(
             &fixture.book,
             &[
@@ -187,29 +183,9 @@ fn verify_sources(
         let receipt = format!("{source}.receipt");
         std::fs::write(dir.join(format!("{source}.fab")), bytes(&produced)).unwrap();
         std::fs::write(dir.join(&receipt), unhex(text(&produced, "receipt"))).unwrap();
-        let result = judge(&dir, source, key, &pin, &receipt);
+        let result = judge(&dir, source, key, pin, &receipt);
         assert_eq!(result.exit, 0, "{}\n{}", result.stdout, result.stderr);
-        let report = json::parse(&result.stdout).unwrap();
-        let summary = check_detail(&report, "procedure_summary");
-        assert_eq!(text(summary, "procedure"), "trace.fifo");
-        assert_eq!(integer(summary, "version"), 2);
-        assert_eq!(integer(summary, "known_at"), i128::from(known_at));
-        assert_eq!(
-            integer(summary, "effective_through"),
-            i128::from(fa_time::DateDay::parse(PETITION).unwrap().0)
-        );
-        assert_eq!(integer(summary, "intraday_order"), 0);
-        assert_eq!(text(summary, "account"), account);
-        assert_eq!(text(summary, "source"), source);
-        let finding = check_detail(&report, "procedure_finding");
-        assert_eq!(text(finding, "statistic"), "traced_mantissa");
-        assert_eq!(integer(finding, "scale"), 2);
-        assert_eq!(integer(finding, "unit"), i128::from(usd.0));
-        assert_eq!(
-            get(finding, "entries").as_arr().unwrap()[0].as_str(),
-            Some(source.as_str())
-        );
-        let cents = text(finding, "value").parse().unwrap();
+        reports.push(result.stdout);
         use std::fmt::Write as _;
         writeln!(
             &mut inventory,
@@ -217,14 +193,68 @@ fn verify_sources(
             movement.kind, movement.printed
         )
         .unwrap();
-        verified.push(RecipientClaim {
-            source: source.clone(),
-            pin,
-            cents,
-        });
     }
     std::fs::write(dir.join("sources.tsv"), inventory).unwrap();
-    verified
+    use fa_oracles::cases::verify_report::{FifoCoordinate, fifo_cohort};
+    let book = BOOK_ID.to_hex();
+    let coordinate = FifoCoordinate {
+        book: &book,
+        branch: "00000000000000000000000000000000",
+        account: &account,
+        known_at,
+        effective_through: fa_time::DateDay::parse(PETITION).unwrap().0,
+        intraday_order: 0,
+        unit: usd.0,
+        scale: 2,
+    };
+    let pins: Vec<_> = sources
+        .iter()
+        .zip(&selected)
+        .map(|((_, id), pin)| (id.as_str(), pin.as_str()))
+        .collect();
+    // The recipient's source selection is fixed before delivery. A validly
+    // signed but incomplete or repeated delivery cannot supply the cohort.
+    if reports.len() > 1 {
+        let missing = &reports[1..];
+        assert!(
+            fifo_cohort(&coordinate, &pins, missing)
+                .err()
+                .unwrap()
+                .starts_with("missing FIFO report")
+        );
+        reports.push(reports[0].clone());
+        assert!(
+            fifo_cohort(&coordinate, &pins, &reports)
+                .err()
+                .unwrap()
+                .starts_with("duplicate FIFO report")
+        );
+        reports.pop();
+        let mut swapped = pins.clone();
+        let wrong = swapped[1].1;
+        swapped[0].1 = wrong;
+        assert!(
+            fifo_cohort(&coordinate, &swapped, &reports)
+                .err()
+                .unwrap()
+                .starts_with("unselected certificate")
+        );
+        reports.reverse();
+    }
+    let observed = fifo_cohort(&coordinate, &pins, &reports).unwrap();
+    let claims = sources
+        .iter()
+        .zip(selected)
+        .map(|((_, source), pin)| RecipientClaim {
+            source: source.clone(),
+            pin,
+            cents: observed.sources[source],
+        })
+        .collect();
+    RecipientCohort {
+        claims,
+        total: observed.total,
+    }
 }
 
 #[test]
@@ -390,11 +420,13 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             "{endpoint}, opening other"
         );
 
-        let claims = verify_sources(&fixture, endpoint, &trusted_key, &sources);
+        let cohort = verify_sources(&fixture, endpoint, &trusted_key, &sources);
+        let claims = &cohort.claims;
         let (opening_claim, other_claims) = claims.split_first().unwrap();
         let recipient_other: i128 = other_claims.iter().map(|c| c.cents).sum();
         assert_eq!(recipient_other, court_other_cents);
         assert_eq!(recipient_other + opening_claim.cents, court_other_cents);
+        assert_eq!(cohort.total, court_other_cents);
 
         if endpoint == "schedule-debit" {
             // The hypotheses really differ before exhaustion: the April 25
@@ -441,7 +473,7 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             let original = &claims[at];
             let changed =
                 verify_sources(&fixture, "counterfactual", &trusted_key, &sources[at..=at]);
-            let changed = &changed[0];
+            let changed = &changed.claims[0];
             assert_eq!(changed.source, original.source);
             assert_eq!(changed.cents, original.cents - 1);
             let dir = fixture.dir.join("counterfactual");
