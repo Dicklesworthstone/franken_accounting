@@ -25,11 +25,12 @@ fn resident_report_population_rebuilds_when_migration_visibility_changes() {
             leg(fa_reference::Side::Credit, "2000", 100),
         ],
     );
-    let periods = vec![OPENING.to_string()];
+    // January's final day covers both P01 and Opening in the cumulative report.
+    let periods = [P01.to_string()];
     let cx = k.ctx();
     let before = k.db.frontier().unwrap();
     let mut memo = fa_registers::ReportHistoryMemo::default();
-    let (hidden, _) = fa_registers::trial_balance_served_at_carried(
+    let (hidden, served) = fa_registers::trial_balance_served_at_carried(
         &k.db,
         &cx.query(),
         &k.book,
@@ -39,7 +40,19 @@ fn resident_report_population_rebuilds_when_migration_visibility_changes() {
     )
     .unwrap();
     assert!(hidden.unit_totals.is_empty());
+    assert!(matches!(served, fa_registers::Served::Maintained(_)));
     assert_eq!(memo.read_work().population_scans, 1);
+    let repeated = fa_registers::trial_balance_served_at_carried(
+        &k.db,
+        &cx.query(),
+        &k.book,
+        &periods,
+        Some(before),
+        &mut memo,
+    )
+    .unwrap();
+    assert_eq!(repeated, (hidden.clone(), served));
+    assert_eq!(memo.read_work().population_scans, 0);
     let proposal = kernel_plan(&k, run, kind::FINALIZE, "report-finalize").unwrap();
     kernel_transition(&mut k, proposal, true).unwrap();
     let after = k.db.frontier().unwrap();
@@ -76,6 +89,27 @@ fn resident_report_population_rebuilds_when_migration_visibility_changes() {
     .unwrap();
     assert_eq!(historical.0, hidden);
     assert_eq!(memo.known_at(), Some(after));
+
+    // Opening alone ends inside P01. That date cut requires a literal fold
+    // even when the migration has populated the overlapping Opening period.
+    let mut opening_memo = fa_registers::ReportHistoryMemo::default();
+    for (at, totals) in [(before, None), (after, Some((100, 100)))] {
+        let (opening, served) = fa_registers::trial_balance_served_at_carried(
+            &k.db,
+            &cx.query(),
+            &k.book,
+            &[OPENING.to_string()],
+            Some(at),
+            &mut opening_memo,
+        )
+        .unwrap();
+        assert_eq!(opening.unit_totals.get(&usd().0).copied(), totals);
+        assert_eq!(
+            served,
+            fa_registers::Served::Literal(format!("period `{P01}` straddles 2026-01-01"))
+        );
+        assert_eq!(opening_memo.read_work().population_scans, 0);
+    }
     assert_eq!(k.db.frontier().unwrap(), after);
 }
 

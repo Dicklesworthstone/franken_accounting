@@ -171,7 +171,20 @@ fn migration_into_limited_account_reconstructs_its_limit_cell() {
         assert_cell(&k, &oracle, None, at, [100, 0, 0, 80], 2);
     }
     let plan = kernel_plan(&k, run.0, kind::FINALIZE, "activate").unwrap();
-    kernel_transition(&mut k, plan.clone(), true).unwrap();
+    let request = RunControlRequest {
+        approvals: approve(&mut k, plan.proposal_digest().unwrap()),
+        proposal: plan,
+        capability: capability(&["post", "migrate"]),
+    };
+    let submit = |k: &mut Kernel, request| {
+        let ctx = k.ctx();
+        k.runtime
+            .block_on(transition_run(&mut k.db, &ctx, &k.book, request))
+            .unwrap()
+    };
+    let finalized = submit(&mut k, request.clone()).unwrap();
+    assert!(!finalized.already_recorded);
+    assert_eq!(finalized.chunks.len(), 3);
     oracle
         .finalize_run(run.1, 3, b"activate", &ops(), 2)
         .unwrap();
@@ -181,11 +194,27 @@ fn migration_into_limited_account_reconstructs_its_limit_cell() {
         assert_cell(&k, &oracle, None, at, [100, 0, 0, 80], 2);
     }
 
-    // A recorded retry neither needs fresh approvals nor moves a cell.
-    kernel_transition(&mut k, plan, false).expect("recorded retry");
+    // Replay with the original approval references, without publishing new ones.
+    let replay = submit(&mut k, request.clone()).expect("recorded retry");
+    assert_eq!(
+        replay,
+        RunControlled {
+            already_recorded: true,
+            ..finalized
+        }
+    );
     oracle
-        .finalize_run(run.1, 3, b"activate", &ops(), 0)
+        .finalize_run(run.1, 3, b"activate", &ops(), 2)
         .expect("recorded model retry");
+    assert_eq!(cut(&k, &oracle), activated);
+    let mut missing = request;
+    missing.approvals.clear();
+    let refusal = submit(&mut k, missing).expect_err("retry dropped its approvals");
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-032", 6));
+    assert_eq!(
+        oracle.finalize_run(run.1, 3, b"activate", &ops(), 0),
+        Err("FA-REF-032")
+    );
     assert_eq!(cut(&k, &oracle), activated);
     assert_cell(&k, &oracle, None, activated, [185, 35, 0, 80], 3);
 

@@ -817,6 +817,7 @@ enum ControlContent {
         run: usize,
         finalize: bool,
         chunks: usize,
+        approvals: usize,
     },
 }
 
@@ -3694,6 +3695,7 @@ impl Oracle {
             run,
             finalize,
             chunks: planned_chunks,
+            approvals,
         };
         if let Some((recorded, _)) = self.control_keys.get(control_key) {
             return if *recorded == content {
@@ -5084,7 +5086,11 @@ mod tests {
             unchanged
         );
         let known = o.known();
-        o.finalize_run(run, 2, b"activate", &ops, 0).unwrap();
+        o.finalize_run(run, 2, b"activate", &ops, 2).unwrap();
+        assert_eq!(
+            o.finalize_run(run, 2, b"activate", &ops, 0),
+            Err(code::IDEMPOTENCY_CONFLICT)
+        );
         assert_eq!(o.known(), known);
         assert_eq!(amounts(o.availability("1500")), active);
 
