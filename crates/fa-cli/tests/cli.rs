@@ -3738,6 +3738,20 @@ fn verify_export_proves_every_format_against_the_book_at_its_coordinate() -> std
             "{created}"
         );
         let out = ok(&book, &["verify", "export", format, &path, "--json"]);
+        for response in [&created, &out] {
+            let parsed = robot_line(response);
+            let Some(Json::Arr(warnings)) = parsed.get("warnings") else {
+                panic!("missing warnings in {response}");
+            };
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .any(|text| text.contains("OECD SAF-T 2.00 requires a Journal parent")),
+                format == "saft",
+                "{response}"
+            );
+        }
         let envelope = robot_line(&out);
         assert_eq!(
             text(

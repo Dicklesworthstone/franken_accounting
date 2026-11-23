@@ -2205,6 +2205,10 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         .find(|check| text(check, "check") == "saft_extract")
         .expect("the extract is a named check");
     assert_eq!(text(extract, "result"), "pass");
+    assert_eq!(
+        get(get(extract, "detail"), "oecd_xsd_validated"),
+        &Json::Bool(false)
+    );
     assert_eq!(cli(&dropped, true).exit, 8);
     assert_eq!(cli(&xml, false).exit, 2);
 }

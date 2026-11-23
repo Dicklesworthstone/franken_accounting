@@ -581,6 +581,14 @@ proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_x
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
+The SAF-T export uses a FrankenAccounting XML profile. On all seven demo
+books, `fa verify export saft` reproduced the exported journal at its original
+coordinate. Across those files, all 81 transactions appeared directly under
+`GeneralLedgerEntries`. OECD SAF-T 2.00 places them inside `Journal`, so those
+files need conversion before use with a recipient that requires the OECD
+schema. The offline `fa-verify saft` result reports the signed ledger checks
+and whether OECD XSD validation took place. [OECD schema, Appendix B](https://web-archive-storage.oecd.org/aemint-web-archive-prod/web-archive/cc/ccd3b76ffdaf3c1f3e185a390dba41be2876b0e826925278bbb3e62ad37442bf.pdf)
+
 ### Exact XBRL calculation values
 
 Calculation-linkbase checks compare monetary facts at a common decimal scale,

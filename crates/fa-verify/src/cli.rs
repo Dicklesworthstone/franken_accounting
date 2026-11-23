@@ -160,9 +160,10 @@ commands:
                [--through D --expect-checkpoint HEX64 [--account CODE]]
                                                 require the whole chart or one chart account at
                                                 your effective cutoff and signed checkpoint
-  saft         <dir> --key K... [--receipt R]   a SAF-T 2.00 extract (fa export saft --with-proofs),
-                                                judged as ads: transactions, balance assertions and
-                                                accounts, read without the producer's parser
+  saft         <dir> --key K... [--receipt R]   a FrankenAccounting SAF-T extract and its proof.
+                                                Checks transactions, balance assertions and accounts
+                                                against the signed journal. OECD XSD validation
+                                                requires a separate standards validator.
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -5341,7 +5342,7 @@ impl<'a> AdsSelection<'a> {
 /// The bundle's checks, then the extract's: exactly the proven selection.
 fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
     let mut checks = bundle_checks(&report.bundle);
-    let detail = vec![
+    let mut detail = vec![
         ("effective_through", s(report.effective_through.as_str())),
         ("known_at_seq", report.known_at_seq.map_or(Json::Null, n)),
         (
@@ -5388,6 +5389,9 @@ fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
             ),
         ),
     ];
+    if name == "saft_extract" {
+        detail.push(("oecd_xsd_validated", Json::Bool(false)));
+    }
     checks.push(if report.verified() {
         Check::pass(name, "completeness", detail)
     } else {

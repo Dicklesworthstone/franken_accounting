@@ -22,6 +22,7 @@ const PROOF_RECEIPT: &str = "ADS_Proof.receipt";
 /// The same pair beside a SAF-T extract.
 const SAFT_PROOF_BUNDLE: &str = "SAFT_Proof.fab";
 const SAFT_PROOF_RECEIPT: &str = "SAFT_Proof.receipt";
+const SAFT_PROFILE: &str = "This extract uses the FrankenAccounting SAF-T profile. It writes transactions directly under GeneralLedgerEntries. OECD SAF-T 2.00 requires a Journal parent.";
 
 /// The bundle and receipt file names a proved `format` package carries.
 fn proof_files(format: &str) -> (&'static str, &'static str) {
@@ -382,6 +383,9 @@ pub(crate) fn export_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
     out.effective(format!("as-of:{}", coordinate.effective_through.render()));
     let listed = files_json(&files, output.is_none());
+    if format == "saft" {
+        out.warn(SAFT_PROFILE);
+    }
     out.event(
         "journal_exported",
         vec![
@@ -1359,6 +1363,9 @@ pub(crate) fn verify_export(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     out.at_book(&book)?;
     out.known_at(fgdb_types::CommitSeq(coordinate.known_at_seq));
     out.effective(format!("as-of:{}", coordinate.effective_through.render()));
+    if format == "saft" {
+        out.warn(SAFT_PROFILE);
+    }
     out.event(
         "export_verified",
         vec![
