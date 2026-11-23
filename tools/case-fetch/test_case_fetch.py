@@ -947,5 +947,63 @@ class Cli(unittest.TestCase):
             self.assertIn(word, out.stdout)
 
 
+class FifoWorksheetTests(unittest.TestCase):
+    def setUp(self):
+        def row(label, *cells):
+            return f"{label:<22}" + "".join(f"{cell:>20}" for cell in cells)
+
+        self.text = "OPINION APPENDIX 1\f" + "\n".join((
+            row("Date", "Account Balance", "Deposit:", "Deposit:", "Withdrawal:",
+                "Withdrawal:", "Resulting balance:", "Resulting balance:"),
+            row("", "", "Social Security", "Other", "Social Security", "Other",
+                "Social Security", "Other"),
+            row("01/01/24", "$100.00", "", "", "", "", "$100.00", "$0.00"),
+            row("01/02/24", "", "", "$9.10"),
+            row("1/3/24 thru", "", "", "", "$0.81", "0.09"),
+            row("01/05/24"),
+            row("unknown, but"),
+            row("before 1/10/24", "", "", "", "$0.10"),
+            row("balance T/ee says"),
+            row("($108.00)", "", "", "", "$0.20"),
+        )) + "\f"
+        self.tsv = b"\n".join((
+            b"2024-01-01\t01/01/24\topening\t10000",
+            b"2024-01-10\t01/02/24\tother\t910",
+            "2024-01-10\t01/03/24–01/05/24\tdebit\t90".encode(),
+            b"2024-01-10\tunknown, before petition\tschedule-debit\t10",
+            b"2024-01-10\tunknown, before petition\ttrustee-debit\t20",
+        )) + b"\n"
+
+    def check(self, text, tsv):
+        return cf.fifo_worksheet.verify(text, "Appendix 1|p2-2",
+                                       "scheme:sample-2024-01-2024-01", tsv)
+
+    def test_source_gross_and_separate_alternatives(self):
+        self.assertEqual(self.check(self.text, self.tsv), 5)
+        # A different resulting balance does not supply a movement.
+        self.assertEqual(self.check(self.text.replace("$0.00", "$9.99"), self.tsv), 5)
+
+    def test_changed_cent_class_date_order_and_omission_are_refused(self):
+        rows = self.tsv.splitlines(keepends=True)
+        for altered in (self.tsv.replace(b"910", b"911"), self.tsv.replace(b"other", b"social"),
+                        self.tsv.replace(b"2024-01-10", b"2024-01-08"),
+                        self.tsv.replace(b"01/02/24", b"01/03/24"),
+                        b"".join([rows[0], rows[2], rows[1], *rows[3:]]), b"".join(rows[:-1])):
+            with self.subTest(altered=altered), self.assertRaisesRegex(ValueError, "movement"):
+                self.check(self.text, altered)
+
+    def test_wrong_appendix_source_headings_and_trustee_label_are_refused(self):
+        for a, b in (("OPINION APPENDIX 1", "OPINION APPENDIX 2"),
+                     ("Social Security", "Salary"), ("balance T/ee says", "balance unnamed")):
+            with self.subTest(a=a), self.assertRaises(ValueError):
+                self.check(self.text.replace(a, b), self.tsv)
+
+    def test_date_outside_the_source_history_fails_even_when_the_file_matches(self):
+        for impossible in ("12/31/23", "01/11/24"):
+            with self.subTest(impossible=impossible), self.assertRaisesRegex(ValueError, "interval"):
+                self.check(self.text.replace("01/02/24", impossible),
+                           self.tsv.replace(b"01/02/24", impossible.encode()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -274,7 +274,24 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
     // The receipt binds the court's numerical result on p. 10. Only the
     // distinct gross movement transcription from its appendices enters a book.
     let court_other_cents: i128 = value.value.parse().unwrap();
-    let movement_table = files.text("fifo-movements.tsv").unwrap();
+    let movement_file = |id| {
+        assert!(binding.rows.iter().any(|row| row == id));
+        let exhibit = case
+            .facts
+            .iter()
+            .find(|f| f.id == id)
+            .unwrap()
+            .sourced()
+            .unwrap();
+        assert_eq!(
+            exhibit.rows_layout,
+            Some(fa_oracles::cases::fact::RowsLayout::CommingledFifoV1)
+        );
+        exhibit.rows_file.as_deref().unwrap()
+    };
+    let source_file = movement_file("MINC-APPENDIX-1");
+    assert_eq!(source_file, movement_file("MINC-APPENDIX-2"));
+    let movement_table = case.rows[source_file].as_str();
     for (endpoint, expected_balance) in
         [("schedule-debit", 3_778_946), ("trustee-debit", 3_753_741)]
     {

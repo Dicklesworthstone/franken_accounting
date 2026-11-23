@@ -4293,6 +4293,12 @@ balance sheet and income statement certificate digests. The 32 lab seeds,
 four live runs, schedule class, heads, folds, report payloads and verified
 bundle remain identical across these inputs.
 
+Native macOS ARM64 and Linux x86-64 runs with the corrected fixtures
+agreed on all 36 ordered Genesis witnesses and all eight book vectors.
+Both targets detected the deliberately width- and endian-dependent encodings.
+On macOS, changing only the FrankenGraphDB revision back to its previous
+value made both the Genesis witness and report certificate checks fail again.
+
 The original manifest, ledger and vector fixture are Git blobs
 `aa036dc05ecb098d53f621138555bb7cfc748bb1`,
 `82de6bd507e685321b4b51f1b3518815d217f320` and
@@ -4346,3 +4352,21 @@ visited 4,174 rows at 1,000 entries and 40,473 rows at 10,000 entries. A
 separate history with an inserted and retired control edge charged one and two
 candidates respectively. The benchmark smoke runner completed all nine cost
 witnesses. Its 19 SLO manifests still have no measured latency baseline.
+
+The due-date aging workpaper CLI test at `7349d69e` expected the journal
+to stay at sequence 11 after both rejected exports and an authorized replay.
+The real book reached 12. Its sole new record identified the bound producer
+and its replay at frontier 11. In a counterexample, the host returned the
+correct workpaper without journaling the producer's access, and the old test
+passed. The corrected test checks the frontier immediately after the refusals
+and checks the successful replay's principal, operations and two sequences.
+The authorized replay passes and the same missing-receipt control fails.
+
+At `bf235f46` the MCP test expected both due-date certification calls to
+return two objects. The ordinary call returned its schedule and certificate.
+The reconciled call also returned the requested GL control comparison, and
+the old test failed on three objects. Removing just the reconciliation event
+from the MCP adapter made that old test pass. The corrected test requires
+the schedule, the same-account and same-frontier reconciliation when requested,
+and the selected certificate. All three aging stdio tests passed. Removing
+the same event now fails the reconciled call.

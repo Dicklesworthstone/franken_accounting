@@ -37,6 +37,13 @@ closed_set! {
 }
 
 closed_set! {
+    /// The generated movement layout checked against a complete source exhibit.
+    RowsLayout {
+        CommingledFifoV1 => "commingled_fifo_v1",
+    }
+}
+
+closed_set! {
     /// The literal rule a `[[value]]` is read under (§2.4).
     LiteralRule {
         Scale => "scale",
@@ -50,7 +57,7 @@ closed_set! {
 }
 
 /// The fields of each provenance kind besides `id` and `provenance`.
-const SOURCED_FIELDS: [&str; 13] = [
+const SOURCED_FIELDS: [&str; 14] = [
     "source",
     "anchor_kind",
     "anchor",
@@ -62,6 +69,7 @@ const SOURCED_FIELDS: [&str; 13] = [
     "cell",
     "rows_file",
     "complaint",
+    "rows_layout",
     "assurance",
     "assurance_fact",
 ];
@@ -100,6 +108,8 @@ pub struct Sourced {
     /// series), and the source whose rows block it holds.
     pub rows_file: Option<String>,
     pub complaint: Option<String>,
+    /// A whole-file transcription layout, as an alternative to a complaint block.
+    pub rows_layout: Option<RowsLayout>,
     /// Whether `rows_file` is committed (whole tables wait on OD 2b).
     pub rows_committed: bool,
     /// A fact's own assurance, narrowing its filing's (§2.2), with the
@@ -264,6 +274,10 @@ fn parse_sourced(r: &mut Row<'_>, rows_files: &[&str], errs: &mut Vec<LoadError>
     let cell = r.opt_str("cell", errs);
     let rows_file = r.opt_str("rows_file", errs);
     let complaint = r.opt_str("complaint", errs);
+    let layout_raw = r.opt_str("rows_layout", errs);
+    let rows_layout = layout_raw
+        .as_deref()
+        .and_then(|s| closed(r, "rows_layout", s, RowsLayout::parse, errs));
     let assurance_raw = r.opt_str("assurance", errs);
     let assurance_fact = r.opt_str("assurance_fact", errs);
 
@@ -311,7 +325,15 @@ fn parse_sourced(r: &mut Row<'_>, rows_files: &[&str], errs: &mut Vec<LoadError>
         granularity,
         Granularity::LedgerRow | Granularity::DatedAggregate
     );
-    if (rows_file.is_some() || complaint.is_some()) && !table_fact {
+    if layout_raw.is_some() {
+        if rows_file.is_none() || complaint.is_some() || granularity != Granularity::DatedAggregate
+        {
+            errs.push(r.err(
+                LoadErrorKind::WrongType,
+                "`rows_layout` requires a dated_aggregate with `rows_file` and no `complaint`",
+            ));
+        }
+    } else if (rows_file.is_some() || complaint.is_some()) && !table_fact {
         errs.push(r.err(
             LoadErrorKind::UnknownField,
             format!(
@@ -343,6 +365,15 @@ fn parse_sourced(r: &mut Row<'_>, rows_files: &[&str], errs: &mut Vec<LoadError>
     let rows_committed = rows_file
         .as_deref()
         .is_some_and(|f| rows_files.contains(&f));
+    if rows_layout.is_some()
+        && let Some(file) = &rows_file
+        && !rows_committed
+    {
+        errs.push(r.err(
+            LoadErrorKind::DanglingKey,
+            format!("the declared movement transcription `{file}` is missing from the case"),
+        ));
+    }
     let assurance = assurance_raw
         .as_deref()
         .and_then(|a| closed(r, "assurance", a, Assurance::parse, errs));
@@ -370,6 +401,7 @@ fn parse_sourced(r: &mut Row<'_>, rows_files: &[&str], errs: &mut Vec<LoadError>
         cell,
         rows_file,
         complaint,
+        rows_layout,
         rows_committed,
         assurance,
         assurance_fact,
@@ -601,6 +633,7 @@ impl Fact {
                 put_opt(&mut t, "cell", s.cell.as_deref());
                 put_opt(&mut t, "rows_file", s.rows_file.as_deref());
                 put_opt(&mut t, "complaint", s.complaint.as_deref());
+                put_opt(&mut t, "rows_layout", s.rows_layout.map(RowsLayout::as_str));
                 put_opt(&mut t, "assurance", s.assurance.map(Assurance::as_str));
                 put_opt(&mut t, "assurance_fact", s.assurance_fact.as_deref());
             }

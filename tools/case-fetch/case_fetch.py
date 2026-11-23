@@ -77,6 +77,8 @@ import zlib
 from fractions import Fraction
 from pathlib import Path
 
+import fifo_worksheet
+
 TOOL_VERSION = "case-fetch-v3"
 STRIP_VERSION = "case-fetch-strip-v1"
 SCOPE_VERSION = "case-fetch-scope-v2"
@@ -1945,7 +1947,8 @@ def verify(case, report):
                         f"(facts may cite only OK sources)")
             continue
         kind = fact.get("anchor_kind", "")
-        if kind not in PROSE_ANCHORS + VALUE_ANCHORS:
+        worksheet = kind == "exhibit" and fact.get("rows_layout") == "commingled_fifo_v1"
+        if kind not in PROSE_ANCHORS + VALUE_ANCHORS and not worksheet:
             report.unrun(f"{fid}: `{kind}` anchors are verified by M2t's exhibit-b, not here")
             continue
         if sid not in texts:
@@ -1969,10 +1972,33 @@ def verify(case, report):
             continue
         text, loc, extraction_sha, fetched_utc = got
         rows = values.get(fid, [])
-        b = bind(fact, rows, src, text, loc, scales, scope_ctx)
+        if worksheet:
+            b = Binding(fact)
+            try:
+                filename = fact.get("rows_file", "")
+                if not filename or Path(filename).name != filename or filename in (".", ".."):
+                    raise ValueError("worksheet rows_file must name a case file")
+                source_file = (case / filename).resolve(strict=True)
+                if source_file.parent != case.resolve():
+                    raise ValueError("worksheet rows_file is outside the case")
+                if src.get("format") != "pdf" or "exhibit" not in src.get("anchor_scheme", []):
+                    raise ValueError("worksheet source must declare PDF exhibit anchors")
+                if rows or fact.get("granularity") != "dated_aggregate":
+                    raise ValueError("worksheet fact binds its complete dated aggregate row file")
+                data = source_file.read_bytes()
+                if sha256_hex(data) != fact.get("quote_sha256"):
+                    raise ValueError("worksheet file digest differs from the fact's quote_sha256")
+                fifo_worksheet.verify(text, b.anchor, fact.get("about_scope", ""), data)
+                b.anchor = b.anchor.split("|")[1]
+                b.found_once = b.aligned = b.values = b.scope = True
+            except (OSError, ValueError) as e:
+                b.problems.append(str(e))
+        else:
+            b = bind(fact, rows, src, text, loc, scales, scope_ctx)
         receipts.append({
             "source": sid, "fact": fid, "anchor": b.anchor, "verified_utc": fetched_utc,
-            "tool_version": TOOL_VERSION, "extraction_sha256": extraction_sha,
+            "tool_version": f"{TOOL_VERSION}/commingled_fifo_v1" if worksheet else TOOL_VERSION,
+            "extraction_sha256": extraction_sha,
             "quote_sha256": b.quote_sha256,
             "values_sha256": sha256_hex(values_canonical(fact.get("about_scope", ""), rows)),
             "alignment": "sentence" if kind in PROSE_ANCHORS else "value",

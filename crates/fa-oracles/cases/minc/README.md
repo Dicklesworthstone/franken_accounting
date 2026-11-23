@@ -21,3 +21,5 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | Fact | Source | Anchor | Value | Status | Granularity |
 |---|---|---|---|---|---|
 | `MINC-FIFO-RESULT` | `SRC-MINC-001` | `p10:l5-11` | 10,203.54 USD | the court held | dated_aggregate |
+| `MINC-APPENDIX-1` | `SRC-MINC-001` | `Appendix 1\|p44-49` | - | the court held | dated_aggregate |
+| `MINC-APPENDIX-2` | `SRC-MINC-001` | `Appendix 2\|p51-56` | - | the court held | dated_aggregate |

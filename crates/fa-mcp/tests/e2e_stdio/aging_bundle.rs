@@ -579,11 +579,27 @@ fn retained_due_date_workpapers_and_reconciliation_bind_requests_over_stdio() {
         );
         assert!(!error, "{output}");
         let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
-        assert_eq!(certified.as_array().unwrap().len(), 2, "{output}");
-        assert_eq!(certified[1]["output_format"], json!(output_format));
+        let (certificate, reports) = certified.as_array().unwrap().split_last().unwrap();
+        assert_eq!(reports.len(), if reconcile { 2 } else { 1 }, "{output}");
+        assert_eq!(reports[0]["account"], json!("1100"));
+        assert_eq!(reports[0]["known_at"], json!(known_at));
+        assert_eq!(reports[0]["effective_through"], json!("2026-04-01"));
+        assert!(reports[0]["items"].is_array());
+        if reconcile {
+            assert_eq!(reports[1]["basis"], json!("due-date"));
+            assert_eq!(reports[1]["account"], reports[0]["account"]);
+            assert_eq!(reports[1]["known_at"], reports[0]["known_at"]);
+            assert_eq!(
+                reports[1]["effective_through"],
+                reports[0]["effective_through"]
+            );
+            assert_eq!(reports[1]["reconciled"], json!(true));
+        }
+        assert_eq!(certificate["known_at"], json!(known_at));
+        assert_eq!(certificate["output_format"], json!(output_format));
         certificates.push((
             family,
-            format!("C:{}", certified[1]["oid"].as_str().unwrap()),
+            format!("C:{}", certificate["oid"].as_str().unwrap()),
             expected,
         ));
     }

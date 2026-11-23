@@ -17,3 +17,28 @@ rule = "scale"
 param = 0
 value = "1020354"
 unit = "USD"
+
+# Each worksheet independently supports the common gross movements.
+[[fact]]
+id = "MINC-APPENDIX-1"
+provenance = "sourced"
+source = "SRC-MINC-001"
+anchor_kind = "exhibit"
+anchor = "Appendix 1|p44-49"
+quote_sha256 = "dd0914a642480468115dd2bed1f70683c1dfb8a09ba92d3692439bf5bc4541ff"
+about_scope = "scheme:minc-fifo-2023-03-2024-09"
+granularity = "dated_aggregate"
+rows_file = "fifo-movements.tsv"
+rows_layout = "commingled_fifo_v1"
+
+[[fact]]
+id = "MINC-APPENDIX-2"
+provenance = "sourced"
+source = "SRC-MINC-001"
+anchor_kind = "exhibit"
+anchor = "Appendix 2|p51-56"
+quote_sha256 = "dd0914a642480468115dd2bed1f70683c1dfb8a09ba92d3692439bf5bc4541ff"
+about_scope = "scheme:minc-fifo-2023-03-2024-09"
+granularity = "dated_aggregate"
+rows_file = "fifo-movements.tsv"
+rows_layout = "commingled_fifo_v1"

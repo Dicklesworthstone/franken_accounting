@@ -16,12 +16,13 @@
 //!   SHA-256 of its complaint's contiguous `[[row]]` block, from its first
 //!   `[[row]]` header line through the newline ending its last field line
 //!   (M2t); an uncommitted one is pending (owner decision 2b), its receipt
-//!   still checked.
+//!   still checked. A committed commingled-account transcription binds the
+//!   complete TSV bytes that the source verifier checked against the exhibit.
 //!
 //! With a fixture extraction at hand ([`Context::extraction`]), the quote is
 //! also located in it: found exactly once, and sentence-aligned for prose.
 
-use super::super::fact::{Sourced, Value, values_canonical};
+use super::super::fact::{RowsLayout, Sourced, Value, values_canonical};
 use super::super::normalize::{normalize_str, quote_sha256};
 use super::super::sentence::{FindError, Sentences};
 use super::super::source::AnchorKind;
@@ -69,6 +70,15 @@ fn receipt_problems(cx: &Context<'_>, id: &str, s: &Sourced, values: &[&Value]) 
         return vec!["no receipt binds the fact (run `case_fetch.py verify`)".into()];
     };
     let mut out = Vec::new();
+    if let Some(layout) = s.rows_layout {
+        let expected = format!("case-fetch-v3/{}", layout.as_str());
+        if rc.tool_version != expected {
+            out.push(format!(
+                "movement exhibit requires the source-comparison receipt {expected}, observed {}",
+                rc.tool_version
+            ));
+        }
+    }
     if rc.quote_sha256 != s.quote_sha256 {
         out.push(format!(
             "the receipt's quote_sha256 {} is not the fact's {}",
@@ -226,13 +236,24 @@ fn extraction_problems(cx: &Context<'_>, s: &Sourced) -> Vec<String> {
     out
 }
 
-/// A committed rows fact: its complaint's block hash is its quote_sha256.
+/// A committed exhibit binds its registered byte range.
 fn rows_problems(cx: &Context<'_>, s: &Sourced, rows_file: &str) -> Vec<String> {
     let Some(text) = cx.case.rows.get(rows_file) else {
         return vec![format!(
             "rows file `{rows_file}` is committed but not loaded"
         )];
     };
+    if s.rows_layout == Some(RowsLayout::CommingledFifoV1) {
+        let digest = sha256::hex(&sha256::digest(text.as_bytes()));
+        return if digest == s.quote_sha256 {
+            Vec::new()
+        } else {
+            vec![format!(
+                "movement transcription {rows_file} hashes to {digest}, not the fact's quote_sha256 {}",
+                s.quote_sha256
+            )]
+        };
+    }
     let Some(complaint) = &s.complaint else {
         return vec!["a rows fact names its `complaint`".into()];
     };

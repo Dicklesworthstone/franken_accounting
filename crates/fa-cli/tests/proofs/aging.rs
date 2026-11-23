@@ -943,6 +943,7 @@ fn due_date_aging_workpapers_export_to_file_and_inline_with_independent_request_
     let (exit, output) = fa_with_authority(&args, Files::default(), &authority, true);
     assert_eq!(exit, 7, "{}{}", output.stdout, output.stderr);
     assert!(!output.stdout.contains("workpaper_exported"));
+    assert_eq!(fixture.head(), before, "failed exports never write history");
     let authority = LaunchAuthority::new(
         fixture.book.clone(),
         None,
@@ -973,6 +974,8 @@ fn due_date_aging_workpapers_export_to_file_and_inline_with_independent_request_
     );
     assert_eq!(accesses[0].record.command, "replay");
     assert_eq!(accesses[0].record.principal_name, "workpaper-producer");
+    assert_eq!(accesses[0].record.principal, authority.principal_vid());
+    assert_eq!(accesses[0].record.ops, ["produce", "read"]);
     assert_eq!(accesses[0].observed_at.0, before);
     assert_eq!(accesses[0].recorded_at.0, before + 1);
     assert_eq!(book.head().unwrap().0, before + 1);

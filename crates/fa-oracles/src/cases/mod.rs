@@ -579,6 +579,12 @@ fn cross_check(
                 LoadErrorKind::DanglingKey,
                 format!("`[[value]]` names unknown fact `{}`", v.fact),
             ));
+        } else if by_fact[v.fact.as_str()]
+            .sourced()
+            .is_some_and(|s| s.rows_layout.is_some())
+        {
+            errs.push(row_err(FACTS_FILE, v.line, &v.fact, LoadErrorKind::WrongType,
+                "a movement exhibit binds its rows file; a scalar comparison belongs to a separate fact".into()));
         }
         if !ordinals.insert((v.fact.as_str(), v.ordinal)) {
             errs.push(row_err(

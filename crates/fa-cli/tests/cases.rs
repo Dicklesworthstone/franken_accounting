@@ -99,8 +99,8 @@ fn _selftest() {
     );
 }
 
-/// Minc's admitted runner evidence is the court's receipt-bound published
-/// figure. The signed FIFO exercise consumes that same case fact separately.
+/// The normal case binds the independent comparison and each worksheet for
+/// the gross movements posted by the signed FIFO exercise.
 #[test]
 fn minc() {
     let o = outcome("minc");
@@ -109,8 +109,10 @@ fn minc() {
     for check in ["K-PROV", "K-BIND", "K-SCOPE", "K-ANCHOR"] {
         assert!(
             o.lines.windows(2).any(|pair| {
-                pair[0].starts_with(&format!("CHECK minc {check} PASS "))
-                    && pair[1].contains("MINC-FIFO-RESULT")
+                pair[0] == format!("CHECK minc {check} PASS examined=3/3")
+                    && ["MINC-FIFO-RESULT", "MINC-APPENDIX-1", "MINC-APPENDIX-2"]
+                        .iter()
+                        .all(|id| pair[1].contains(id))
             }),
             "{text}"
         );
@@ -126,6 +128,32 @@ fn minc() {
         };
         let rendered = render_readme(&case, &records).unwrap();
         println!("BEGIN README minc\n{rendered}END README minc");
+    }
+}
+
+#[test]
+fn minc_neg_one_cent_movement_edit_fails_both_source_bindings() {
+    let changed = run_planted(
+        "minc",
+        &[PlantedEdit {
+            file: "fifo-movements.tsv",
+            old: "04/18/23\tother\t433333",
+            new: "04/18/23\tother\t433332",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("a one-cent input edit differs from both worksheets");
+    for id in ["MINC-APPENDIX-1", "MINC-APPENDIX-2"] {
+        assert!(
+            changed
+                .lines
+                .iter()
+                .any(|line| line.starts_with("FAIL K-BIND ")
+                    && line.contains(id)
+                    && line.contains("movement transcription fifo-movements.tsv hashes to")),
+            "{}",
+            changed.text()
+        );
     }
 }
 

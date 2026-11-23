@@ -161,6 +161,7 @@ fn with_rows_fact(case: &mut Case, quote_sha256: &str, committed: bool) {
             cell: None,
             rows_file: Some(ROWS_FILE.into()),
             complaint: Some("SRC-A".into()),
+            rows_layout: None,
             rows_committed: committed,
             assurance: None,
             assurance_fact: None,

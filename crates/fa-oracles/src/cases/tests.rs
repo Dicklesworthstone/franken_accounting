@@ -556,6 +556,58 @@ fn with_ledger_fact(granularity: &str) -> Files {
 }
 
 #[test]
+fn commingled_exhibits_round_trip_and_refuse_a_missing_transcription() {
+    let files = embedded::MINC.case_files();
+    let case = load(&files).unwrap();
+    assert_eq!(
+        fact::to_document(&case.facts, &case.values).canonical_bytes(),
+        fa_registry::toml::parse(files.text(FACTS_FILE).unwrap())
+            .unwrap()
+            .canonical_bytes(),
+    );
+    let without_table: Vec<_> = files
+        .files
+        .iter()
+        .copied()
+        .filter(|(name, _)| *name != "fifo-movements.tsv")
+        .collect();
+    let errors = load(&CaseFiles {
+        id: files.id,
+        files: &without_table,
+    })
+    .unwrap_err();
+    for id in ["MINC-APPENDIX-1", "MINC-APPENDIX-2"] {
+        assert!(
+            errors.iter().any(|e| e.kind == LoadErrorKind::DanglingKey
+                && e.row.as_deref() == Some(id)
+                && e.to_string()
+                    .contains("movement transcription `fifo-movements.tsv` is missing")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn commingled_exhibit_refuses_a_receipt_that_did_not_compare_the_worksheet() {
+    let mut case = load(&embedded::MINC.case_files()).unwrap();
+    let receipt = case
+        .receipts
+        .iter_mut()
+        .find(|r| r.fact == "MINC-APPENDIX-1")
+        .unwrap();
+    receipt.tool_version = "case-fetch-v3".into();
+    let report = check::bind::check(&check::Context::new(&case));
+    assert_eq!(report.verdict, check::Verdict::Fail);
+    assert_eq!(report.failures.len(), 1, "{report}");
+    assert!(
+        report
+            .to_string()
+            .contains("movement exhibit requires the source-comparison receipt"),
+        "{report}"
+    );
+}
+
+#[test]
 fn rows_file_on_a_journal_entry_fact_is_refused() {
     let files = with_ledger_fact("journal_entry");
     let line = row_line(text_of(&files, FACTS_FILE), "fact", 8);
@@ -564,6 +616,25 @@ fn rows_file_on_a_journal_entry_fact_is_refused() {
         FACTS_FILE,
         LoadErrorKind::UnknownField,
         line,
+    );
+}
+
+#[test]
+fn a_movement_layout_cannot_reclassify_an_existing_complaint_block() {
+    let mut files = with_ledger_fact("dated_aggregate");
+    files[2]
+        .1
+        .push_str("rows_layout = \"commingled_fifo_v1\"\n");
+    files.push((
+        "exhibit_b_rows.toml",
+        "[[row]]\ncomplaint = \"SRC-WC-001\"\n".into(),
+    ));
+    let errors = load_files("worldcom", &files, CASE_EXTENSIONS).unwrap_err();
+    assert!(
+        errors.iter().any(|e| e.row.as_deref() == Some("EXB")
+            && e.kind == LoadErrorKind::WrongType
+            && e.detail.contains("no `complaint`")),
+        "{errors:?}"
     );
 }
 

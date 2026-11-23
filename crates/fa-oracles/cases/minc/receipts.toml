@@ -3,6 +3,38 @@
 
 [[receipt]]
 source = "SRC-MINC-001"
+fact = "MINC-APPENDIX-1"
+anchor = "p44-49"
+verified_utc = "2026-11-23T18:54:48Z"
+tool_version = "case-fetch-v3/commingled_fifo_v1"
+extraction_sha256 = "07020ce7d8c8dec5a1100a0502fc661c4d25bfd91579816a61a63a09b89fdb08"
+quote_sha256 = "dd0914a642480468115dd2bed1f70683c1dfb8a09ba92d3692439bf5bc4541ff"
+values_sha256 = "b9d263b5d1f95d52b33974ec7c054a7fe273d354c7aff181ef37641aa3c0f3aa"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = true
+
+[[receipt]]
+source = "SRC-MINC-001"
+fact = "MINC-APPENDIX-2"
+anchor = "p51-56"
+verified_utc = "2026-11-23T18:54:48Z"
+tool_version = "case-fetch-v3/commingled_fifo_v1"
+extraction_sha256 = "07020ce7d8c8dec5a1100a0502fc661c4d25bfd91579816a61a63a09b89fdb08"
+quote_sha256 = "dd0914a642480468115dd2bed1f70683c1dfb8a09ba92d3692439bf5bc4541ff"
+values_sha256 = "b9d263b5d1f95d52b33974ec7c054a7fe273d354c7aff181ef37641aa3c0f3aa"
+alignment = "value"
+quote_found_once = true
+aligned = true
+values_in_quote = true
+scope_ok = true
+original_hash_compared = true
+
+[[receipt]]
+source = "SRC-MINC-001"
 fact = "MINC-FIFO-RESULT"
 anchor = "p10:l5-11"
 verified_utc = "2026-11-23T18:54:48Z"
