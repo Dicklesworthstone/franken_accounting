@@ -2445,7 +2445,12 @@ mod tests {
                     ))
                 })
                 .expect("cold post at scale");
-            check_cold_post_reads(&op_costs, op_count_from_live_witness(live), raw, populated_entries);
+            check_cold_post_reads(
+                &op_costs,
+                op_count_from_live_witness(live),
+                raw,
+                populated_entries,
+            );
         };
 
         // Populate 1,000 real entries into FY2026-P02 and measure all 9 operations.
@@ -2534,22 +2539,35 @@ mod tests {
         raw: fa_journal::op_witness::RawOpCensus,
         minimum_book_rows: u32,
     ) {
-        let ceiling = op_costs.witness("post").expect("registered post").point_reads;
+        let ceiling = op_costs
+            .witness("post")
+            .expect("registered post")
+            .point_reads;
         // Each full scan of this populated prefix must charge at least its
         // known population. A path that avoids scanning can meet the ceiling.
         assert_eq!(raw.vertex_scans == 0, raw.scanned_rows == 0, "{raw:?}");
         assert_eq!(raw.edge_scans == 0, raw.scanned_edges == 0, "{raw:?}");
-        assert!(raw.scanned_rows >= raw.vertex_scans * minimum_book_rows, "{raw:?}");
+        assert!(
+            raw.scanned_rows >= raw.vertex_scans * minimum_book_rows,
+            "{raw:?}"
+        );
         let scanned = raw.scanned_rows + raw.scanned_edges;
-        assert!(counts.point_reads >= scanned, "{counts:?}, {raw:?}");
+        assert_eq!(
+            counts.point_reads,
+            raw.point_reads + raw.register_cell_touches + scanned,
+            "{raw:?}"
+        );
         if scanned == 0 {
             assert!(counts.point_reads <= ceiling, "{counts:?}, {raw:?}");
         } else if counts.point_reads > ceiling {
             let verdict = verify_kernel_op_witness("post", &counts, op_costs);
-            assert!(matches!(
-                verdict, Err(BenchError::WitnessDrift { field: "point_reads", expected, actual, .. })
-                if expected == ceiling && actual == counts.point_reads
-            ), "cold post should report its excess reads: {verdict:?}");
+            assert!(
+                matches!(
+                    verdict, Err(BenchError::WitnessDrift { field: "point_reads", expected, actual, .. })
+                    if expected == ceiling && actual == counts.point_reads
+                ),
+                "cold post should report its excess reads: {verdict:?}"
+            );
         }
     }
 
@@ -2629,7 +2647,12 @@ mod tests {
                 .map_err(|r| r.message)
             })
             .expect("cold post");
-        check_cold_post_reads(&op_costs, op_count_from_live_witness(live_cold), raw_cold, 12);
+        check_cold_post_reads(
+            &op_costs,
+            op_count_from_live_witness(live_cold),
+            raw_cold,
+            12,
+        );
 
         // Second post on the same warm handle uses CarriedHistory with zero scans.
         let warm_prop = make_proposal(b"cold:second");
@@ -2655,7 +2678,9 @@ mod tests {
             (0, 0, 0, 0),
             "warm post must perform zero scans: {raw_warm:?}"
         );
-        verify_kernel_op_witness("post", &op_count_from_live_witness(live_warm), &op_costs)
+        let warm_counts = op_count_from_live_witness(live_warm);
+        check_cold_post_reads(&op_costs, warm_counts, raw_warm, 12);
+        verify_kernel_op_witness("post", &warm_counts, &op_costs)
             .expect("warm post matches operation_costs");
     }
 
@@ -2785,7 +2810,11 @@ mod tests {
             "real book frontier has >30 vertices, got {scanned}"
         );
         assert_eq!(raw.vertex_scans, 1, "{raw:?}");
-        assert_eq!(usize::try_from(raw.scanned_rows).unwrap(), scanned, "{raw:?}");
+        assert_eq!(
+            usize::try_from(raw.scanned_rows).unwrap(),
+            scanned,
+            "{raw:?}"
+        );
         let actual = op_count_from_live_witness(live);
         let err = verify_kernel_op_witness("post", &actual, &op_costs)
             .expect_err("injected vertex scan must trip operation_costs ceiling");
