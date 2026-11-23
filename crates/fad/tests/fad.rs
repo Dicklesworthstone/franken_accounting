@@ -2223,6 +2223,277 @@ fn socket_mcp_refuses_stdio_only_flags_naming_the_route() {
 /// fad exits 0 and reports `fad_stopped` (on stderr: stdout is the MCP
 /// transport). A stand-in child that only waits makes the kill certain.
 #[test]
+fn hosted_mcp_keeps_scoped_draft_proposals_off_trunk_until_socket_promotion() {
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use fa_cli::json::{Json, obj, parse, s};
+
+    let dir = tmp("hosted-draft");
+    let (book, evidence) = book(&dir);
+    let b = book.to_str().expect("book path");
+    let name = "march-rent";
+    let info = ok(&["book", "info", "--book", b, "--json"]);
+    let id = field(&info, "book_id").expect("book id");
+    let book_id = fa_model::Id128(u128::from_str_radix(id, 16).unwrap().to_be_bytes());
+    let branch = fa_model::draft_branch(book_id, name).to_hex();
+    ok(&["period", "open", "FY2026-P04", "--book", b, "--json"]);
+    let agent = dir.join("agent.token");
+    let reviewer = dir.join("reviewer.token");
+    let agent = agent.to_str().unwrap();
+    let reviewer = reviewer.to_str().unwrap();
+    for (holder, profile, op, output) in [
+        ("hosted-agent", "agent", "post", agent),
+        ("hosted-reviewer", "approver", "approve", reviewer),
+    ] {
+        let mut args = vec![
+            "capability",
+            "issue",
+            "--holder",
+            holder,
+            "--profile",
+            profile,
+            "--op",
+            "read",
+            "--op",
+            op,
+            "--account",
+            "1000",
+            "--account",
+            "6000",
+            "--period",
+            "FY2026-P03",
+            "--out",
+            output,
+            "--as",
+            "steward",
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+            "--grant",
+            op,
+            "--book",
+            b,
+            "--json",
+        ];
+        if profile == "agent" {
+            args.extend(["--branch", &branch, "--effective-through", "2026-03-31"]);
+        }
+        ok(&args);
+    }
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_fad"))
+        .args([
+            "serve",
+            "--book",
+            b,
+            "--mcp",
+            "stdio",
+            "--cluster",
+            "fa.draft",
+            "--token",
+            agent,
+            "--json",
+        ])
+        .env_remove("FA_BOOK")
+        .env_remove("FA_TOKEN")
+        .env("FA_MCP_BIN", env!("CARGO_BIN_FILE_FA_MCP"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("launch fad with the actual fa-mcp binary");
+    let mut stdin = daemon.stdin.take().expect("MCP stdin");
+    let stdout = BufReader::new(daemon.stdout.take().expect("MCP stdout"));
+    let (send, recv) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in stdout.lines() {
+            if send.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut id = 0;
+    let mut request = |method: &str, params: Vec<(&str, Json)>| {
+        id += 1;
+        let mut params = params;
+        params.push((
+            "_meta",
+            obj(vec![
+                ("io.modelcontextprotocol/protocolVersion", s("2026-07-28")),
+                ("io.modelcontextprotocol/clientCapabilities", obj(vec![])),
+            ]),
+        ));
+        let request = obj(vec![
+            ("jsonrpc", s("2.0")),
+            ("id", Json::Int(id)),
+            ("method", s(method)),
+            ("params", obj(params)),
+        ]);
+        writeln!(stdin, "{}", request.render()).unwrap();
+        stdin.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let line = recv
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("MCP response")
+                .unwrap();
+            let reply = parse(&line).expect("JSON-RPC transport contains only JSON");
+            if reply.get("id") == Some(&Json::Int(id)) {
+                return reply
+                    .get("result")
+                    .unwrap_or_else(|| panic!("{reply:?}"))
+                    .clone();
+            }
+        }
+    };
+    let discovery = request("server/discover", vec![]);
+    assert_eq!(
+        discovery.get("supportedVersions"),
+        Some(&Json::Arr(vec![s("2026-07-28")]))
+    );
+    let mut tool = |name, arguments| {
+        request(
+            "tools/call",
+            vec![("name", s(name)), ("arguments", arguments)],
+        )
+    };
+    let manage = |action, name| obj(vec![("action", s(action)), ("name", s(name))]);
+    let read_content = |response: &Json| {
+        let contents = response
+            .get("content")
+            .and_then(Json::as_arr)
+            .expect("tool content");
+        parse(
+            contents[0]
+                .get("text")
+                .and_then(Json::as_str)
+                .expect("content text"),
+        )
+        .unwrap()
+    };
+    let refuse = |response: Json, caveat: &str| {
+        assert_eq!(
+            response.get("isError"),
+            Some(&Json::Bool(true)),
+            "{response:?}"
+        );
+        let detail = read_content(&response);
+        assert_eq!(
+            detail.get("refusal_id").and_then(Json::as_str),
+            Some("FA-REF-011"),
+            "{detail:?}"
+        );
+        assert!(
+            detail
+                .get("message")
+                .and_then(Json::as_str)
+                .is_some_and(|message| message.contains(caveat)),
+            "{detail:?}"
+        );
+    };
+    refuse(
+        tool("fa_draft_manage", manage("new", "other-draft")),
+        "`branch` caveat",
+    );
+    let opened = tool("fa_draft_manage", manage("new", name));
+    assert_ne!(opened.get("isError"), Some(&Json::Bool(true)), "{opened:?}");
+
+    let intent = |day, key, credit| {
+        let leg = |side, account| {
+            obj(vec![
+                ("side", s(side)),
+                ("account", s(account)),
+                ("amount", s("125.00 USD")),
+            ])
+        };
+        obj(vec![
+            ("draft", s(name)),
+            ("evidence", Json::Arr(vec![s(&evidence)])),
+            (
+                "intent",
+                obj(vec![
+                    ("class", s("Original")),
+                    ("effective_date", s(day)),
+                    ("idempotency_key", s(key)),
+                    (
+                        "legs",
+                        Json::Arr(vec![leg("debit", "6000"), leg("credit", credit)]),
+                    ),
+                ]),
+            ),
+        ])
+    };
+    refuse(
+        tool(
+            "fa_post_post",
+            intent("2026-03-15", "wrong-account", "4000"),
+        ),
+        "`accounts` caveat",
+    );
+    refuse(
+        tool("fa_post_post", intent("2026-04-01", "wrong-period", "1000")),
+        "`periods` caveat",
+    );
+    let planned = tool("fa_post_post", intent("2026-03-15", "allowed-rent", "1000"));
+    assert_ne!(
+        planned.get("isError"),
+        Some(&Json::Bool(true)),
+        "{planned:?}"
+    );
+    let entry = read_content(&planned)
+        .get("entry")
+        .cloned()
+        .expect("planned entry");
+    let shown = read_content(&tool("fa_draft_manage", manage("show", name)));
+    assert_eq!(
+        shown.get("intents").and_then(Json::as_arr).map(<[_]>::len),
+        Some(1)
+    );
+
+    let rent_total = || {
+        let out = ok(&[
+            "tb",
+            "--as-of",
+            "2026-03-31",
+            "--via",
+            "fad",
+            "--book",
+            b,
+            "--json",
+        ]);
+        let tb = parse(out.trim()).unwrap();
+        let rows = tb
+            .get("data")
+            .and_then(|data| data.get("rows"))
+            .and_then(Json::as_arr)
+            .unwrap();
+        rows.iter()
+            .find(|r| r.get("code").and_then(Json::as_str) == Some("6000"))
+            .and_then(|r| r.get("debits"))
+            .cloned()
+            .expect("Rent was posted")
+    };
+    let before = rent_total();
+    let promoted = ok(&[
+        "draft", "promote", name, "--yes", "--via", "fad", "--token", reviewer, "--book", b,
+        "--json",
+    ]);
+    let promoted = parse(promoted.trim()).unwrap();
+    assert_eq!(
+        promoted.get("data").and_then(|data| data.get("entries")),
+        Some(&Json::Arr(vec![entry]))
+    );
+    let after = rent_total();
+    assert_eq!(before.as_str(), Some("10.00 USD"));
+    assert_eq!(after.as_str(), Some("135.00 USD"));
+    drop(stdin);
+    assert!(daemon.wait().expect("wait for hosted fad").success());
+    reader.join().expect("MCP stdout reader");
+}
+
+#[test]
 fn stopping_an_mcp_hosted_daemon_exits_cleanly() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tmp("mcp-stop");

@@ -1225,6 +1225,7 @@ dependencies = [
  "fa",
  "fa-cli",
  "fa-journal",
+ "fa-mcp",
  "fa-model",
  "fa-money",
  "fa-time",

@@ -1913,10 +1913,11 @@ Each book operation takes the configured writer lease. If a running `fad` or
 another writer holds it, the server refuses instead of forwarding authority
 through the daemon's unauthenticated protocol. This is a trusted launch binding.
 An issued capability token (`fa capability issue`, `fa-mcp --token`) binds a
-session to an issued identity instead; MCP hosted by `fad serve --mcp stdio
---token` has no end-to-end test yet (`fa-z5u`). Host
-file arguments are not confined to a filesystem sandbox, so deployments must
-still control the server process's filesystem access.
+session to an issued identity. In the hosted workflow, `fad serve --mcp stdio
+--token` admits a scoped Agent to its draft and refuses a different branch,
+account or period. The allowed proposal reaches trunk only when an
+independent approver promotes it over the same daemon's socket. Host file
+arguments use the server process's filesystem access.
 
 ### Embedded execution
 
