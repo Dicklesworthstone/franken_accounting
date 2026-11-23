@@ -5538,17 +5538,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })? {
             return Ok(Err(refusal));
         }
-        let prev_through = self.query(cx, |db, book| match fa_notary::latest(db, None) {
-            Ok(Some(prev))
-                if prev.state.book_id == book.book_id
-                    && prev.state.branch_id == fa_model::Id128::TRUNK
-                    && prev.recorded_at > prev.state.through_seq =>
-            {
-                Ok(Some(prev.state.through_seq))
-            }
-            Ok(_) | Err(KernelError::Corrupt(_)) => Ok(None),
-            Err(error) => Err(error.into()),
-        })?;
+        let prev_through = match self.accumulator_memo.history_floor_hint() {
+            Some(through) => Some(through),
+            None => self.query(cx, |db, book| match fa_notary::latest(db, None) {
+                Ok(Some(prev))
+                    if prev.state.book_id == book.book_id
+                        && prev.state.branch_id == fa_model::Id128::TRUNK
+                        && prev.recorded_at > prev.state.through_seq =>
+                {
+                    Ok(Some(prev.state.through_seq))
+                }
+                Ok(_) | Err(KernelError::Corrupt(_)) => Ok(None),
+                Err(error) => Err(error.into()),
+            })?,
+        };
         if let Some(prev_through) = prev_through
             && let Err(fgdb::RebuildError::Interrupted(error)) = self
                 .db

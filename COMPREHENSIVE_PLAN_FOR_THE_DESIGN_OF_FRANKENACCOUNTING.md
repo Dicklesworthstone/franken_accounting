@@ -1329,13 +1329,20 @@ The Linux reference differential exercised eight generated histories and
 replay examined 320 races, including 119 conflicts. The planted mutation
 and two invalid serial histories were detected. A 50-seed macOS run reached
 147 distinct combinations and replayed 2,000 races. Of 951 contended races,
-794 conflicted and 253 retries were admitted. The native batch test also
+794 conflicted and 253 retries were admitted. The same native binary then
+completed all 1,000 seed indices in 20 disjoint shards. The union reached
+149 combinations. Of 40,000 races, 19,897 contended, 16,868 conflicted
+and 5,299 retries were admitted. These counts describe the implemented
+history generator. The native batch test also
 reopened after seven publication faults and checked all-or-none recovery
 and idempotent retry. These runs supply evidence for parts of G1-04 and
 G1-05. Their scoreboard rows still lack these executable probes.
 
-The corrected checkpoint meter exposed eight reads at 1,000 entries and
-ten at 10,000 against a ceiling of two. The native Genesis campaign also
+The checkpoint meter exposed eight reads at 1,000 entries and ten at
+10,000. Binding the cached prefix to its signed publication and reusing its
+delta floor brought both counts to the registered two on the macOS scale
+run. The forensic procedure still exceeded its own ceiling with 9,187 reads
+at 1,000 entries. The native Genesis campaign also
 exposed a stale historical witness that the stored-artifact scoreboard
 accepted. The fiscal-year and chart outcome vertices account for the
 certificate changes. The original financial outputs and the two controlled

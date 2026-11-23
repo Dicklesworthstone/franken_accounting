@@ -4267,3 +4267,34 @@ The prior manifest, registry and cross-target fixture remain available as
 Git blobs `76bacd614cc0bb2e4875554b7d21eeb92544ef32`,
 `7d458606f1752762e958634f9b45d367ef5497eb` and
 `58bbcfc14d9fe898dcba4d506068905ce49a1d12`.
+
+## 2026-11-23 — warm checkpoint reads grew with the number of predecessors
+
+At `38ad02c1`, six consecutive warm checkpoints needed 6, 7, 8, 9,
+10 and 11 vertex reads. Each appended one entry. The unchanged public
+scale test measured 8 reads at 1,000 entries and 10 at 10,000, against
+the registered ceiling of 2. The mechanism has three parts. The writer
+reread the boundary chain, it looked up record rows already present in
+the committed delta, and the facade looked up the predecessor to choose a
+history window before the transaction read it again.
+
+Protecting the accepted ancestor states flattened the scale result at
+8 reads. Binding the carried journal to the Chronicle marker for the
+signed publication and decoding births from an uninterrupted delta reduced
+the public count to 4. Using the carried history floor after authorization
+removed the facade's duplicate lookup. The original scale gate then
+accepted 2 reads, zero full-book scans, one compare-and-set, two edge
+writes, two vertex writes and one transaction at both sizes. Its next
+failure was `query_procedure`, with 9,187 reads against 1. The independent
+smoke command reached the same operation and measured 137 against 1.
+
+The earlier warm-path regression required at least four lookups, including
+two for the new leaf. Its unchanged assertion failed on a measured two
+when the delta supplied that leaf. It now requires exactly the root and
+predecessor reads and one decoded record. It also measures explicit historical
+miss and birth lookups separately, requiring both calls to count. The new
+depth regression rejects the incumbent at six successive warm depths and
+compares all seven state payloads and signed checkpoints with literal
+recomputation. A changed ancestor and a checkpoint signed by another key
+at the same accounting coordinate both require the literal path. Their
+refusals preserve the frontier.

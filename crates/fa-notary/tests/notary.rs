@@ -5363,7 +5363,7 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
 
     // Second sequential checkpoint extends incrementally from delta_since with
     // zero full-book vertex scans and matches independent verification.
-    h.post(h.rent, 200, b"cp-carried-2");
+    let second_entry = h.post(h.rent, 200, b"cp-carried-2");
     let g2 = fa_journal::op_witness::begin();
     let (second_res, second_work) = h
         .runtime
@@ -5376,9 +5376,26 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
     assert_eq!(second_work.journal_full_reads, 0, "{second_work:?}");
     assert_eq!(raw2.vertex_scans, 0, "{raw2:?}");
     assert_eq!(raw2.scanned_rows, 0, "{raw2:?}");
+    assert_eq!(
+        raw2.point_reads, 2,
+        "publication root and predecessor: {raw2:?}"
+    );
+    assert_eq!(second_work.journal_records_decoded, 1);
+    let direct = fa_journal::op_witness::begin();
     assert!(
-        raw2.point_reads >= 4,
-        "the publication root, predecessor, prior absence and new record must all be counted: {raw2:?}"
+        fa_journal::op_witness::vertex_at(&h.db, second_entry, first.stored.state.through_seq)
+            .unwrap()
+            .is_none()
+    );
+    let birth =
+        fa_journal::op_witness::vertex_at(&h.db, second_entry, second.stored.state.through_seq)
+            .unwrap()
+            .unwrap();
+    assert_eq!(birth.created_at, second.stored.state.through_seq);
+    assert_eq!(
+        direct.finish().point_reads,
+        2,
+        "count both the miss and the birth lookup"
     );
     assert_eq!(second.stored.state.prev_state_oid, Some(first.stored.oid));
     assert_eq!(
@@ -5448,6 +5465,132 @@ fn carried_accumulator_extends_without_full_scan_and_still_refuses_tampering() {
 
 #[path = "notary/access_events.rs"]
 mod access_events;
+
+#[test]
+fn carried_checkpoint_reads_stay_flat_with_depth_and_refuse_a_changed_ancestor() {
+    let mut h = harness();
+    let ctx = h.ctx();
+    let mut literal = harness();
+    let literal_ctx = literal.ctx();
+    let mut memo = fa_notary::CarriedAccumulator::default();
+    let mut reads = Vec::new();
+    let mut first_state = None;
+    for index in 0..7u8 {
+        h.post(h.rent, 100, &[b'd', index]);
+        literal.post(literal.rent, 100, &[b'd', index]);
+        let meter = fa_journal::op_witness::begin();
+        let (outcome, work) = h
+            .runtime
+            .block_on(fa_notary::checkpoint_carried_counted(
+                &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+            ))
+            .unwrap();
+        let census = meter.finish();
+        let checkpoint = outcome.expect("valid checkpoint");
+        let (reference, _) = literal
+            .runtime
+            .block_on(fa_notary::checkpoint_counted(
+                &mut literal.db,
+                &literal_ctx,
+                &literal.book,
+                &literal.signer,
+            ))
+            .unwrap();
+        let reference = reference.expect("literal checkpoint");
+        assert_eq!(checkpoint.stored.bytes, reference.stored.bytes);
+        assert_eq!(checkpoint.checkpoint.bytes, reference.checkpoint.bytes);
+        if index == 0 {
+            first_state = Some(checkpoint.stored.vid);
+        } else {
+            assert_eq!(work.journal_full_reads, 0, "{work:?}");
+            assert_eq!(census.vertex_scans, 0, "{census:?}");
+            reads.push(census.point_reads);
+        }
+    }
+    let mut change = WriteBatch::new(relation::DERIVED_FROM);
+    change.set_vertex_property(
+        first_state.unwrap(),
+        property::FA_PAYLOAD,
+        Some(CanonicalScalar::bytes(vec![0x77; 8]).unwrap()),
+    );
+    h.write_raw(change);
+    let head = h.db.frontier().unwrap();
+    let (outcome, work) = h
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut h.db, &ctx, &h.book, &h.signer, &mut memo,
+        ))
+        .unwrap();
+    let refusal = outcome.expect_err("a changed ancestor invalidates the cached chain");
+    assert_eq!(refusal.code, code::ACCUMULATOR_DRIFT);
+    assert_eq!(work.journal_full_reads, 1);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(reads, [2; 6]);
+}
+
+#[test]
+fn carried_checkpoint_requires_the_same_signed_publication_on_an_identical_accounting_prefix() {
+    let mut source = harness();
+    let mut other = harness();
+    source.post(source.rent, 100, b"same-entry");
+    other.post(other.rent, 100, b"same-entry");
+    let source_ctx = source.ctx();
+    let other_ctx = other.ctx();
+    let mut memo = fa_notary::CarriedAccumulator::default();
+    let (source_result, _) = source
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut source.db,
+            &source_ctx,
+            &source.book,
+            &source.signer,
+            &mut memo,
+        ))
+        .unwrap();
+    let source_checkpoint = source_result.unwrap();
+    let other_key = fa_notary::SigningKey::from_seed(&[0x77; 32]);
+    let (other_result, _) = other
+        .runtime
+        .block_on(fa_notary::checkpoint_counted(
+            &mut other.db,
+            &other_ctx,
+            &other.book,
+            &other_key,
+        ))
+        .unwrap();
+    let other_checkpoint = other_result.unwrap();
+    assert_eq!(source_checkpoint.stored, other_checkpoint.stored);
+    assert_ne!(
+        source_checkpoint.checkpoint.bytes,
+        other_checkpoint.checkpoint.bytes
+    );
+    let head = other.db.frontier().unwrap();
+    let (next, work) = other
+        .runtime
+        .block_on(fa_notary::checkpoint_carried_counted(
+            &mut other.db,
+            &other_ctx,
+            &other.book,
+            &source.signer,
+            &mut memo,
+        ))
+        .unwrap();
+    assert_eq!(next.unwrap_err().code, code::CHECKPOINT_INVALID);
+    let (literal, literal_work) = other
+        .runtime
+        .block_on(fa_notary::checkpoint_counted(
+            &mut other.db,
+            &other_ctx,
+            &other.book,
+            &source.signer,
+        ))
+        .unwrap();
+    assert_eq!(literal.unwrap_err().code, code::CHECKPOINT_INVALID);
+    assert_eq!(work.shared_prefixes, 0);
+    assert_eq!(work.literal_prefixes, 1);
+    assert_eq!(work.journal_full_reads, literal_work.journal_full_reads);
+    assert_eq!(other.db.frontier().unwrap(), head);
+}
 
 #[path = "notary/supplemented_production.rs"]
 mod supplemented_production;

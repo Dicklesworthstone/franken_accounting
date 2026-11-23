@@ -699,21 +699,29 @@ pub fn chained_access_boundary(prev: Option<&AccumulatorState>) -> CommitSeq {
 
 /// Disposable handle-owned accumulator state carried across sequential
 /// checkpoints on a resident book (`fa-0hs4.6`, `fa-u3zf`). Bound to `db`'s
-/// Chronicle marker at `through_seq` and extended only over a gap-free,
-/// mutation-free `delta_since` suffix. Any tamper, delta retirement, or
-/// discrepancy clears the memo and falls back to the full literal scan.
+/// Chronicle marker for the signed publication immediately after its covered
+/// prefix. Reuse requires a gap-free `delta_since` suffix with no changes
+/// to protected vertices. The literal path handles a missing or invalid memo.
 #[derive(Clone, Debug, Default)]
 pub struct CarriedAccumulator {
     state: Option<CarriedState>,
+}
+
+impl CarriedAccumulator {
+    /// Earliest retained delta the last publication may need on the next
+    /// checkpoint. The writer still reads the actual head inside its transaction.
+    #[must_use]
+    pub fn history_floor_hint(&self) -> Option<CommitSeq> {
+        self.state.as_ref().map(|state| state.through_seq)
+    }
 }
 
 #[derive(Clone, Debug)]
 struct CarriedState {
     book_id: Id128,
     through_seq: CommitSeq,
-    marker: fgdb_types::MarkerRef,
+    publication: fgdb_types::MarkerRef,
     state_oid: Oid,
-    checkpoint_oid: Oid,
     signer_public_key: [u8; 32],
     journal: Journal,
     protected: BTreeSet<VId>,
@@ -796,30 +804,23 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
         || carried.state_oid != stored_prev.oid
         || carried.signer_public_key != signer.public_key()
         || carried.through_seq != prev.through_seq
-        || stored_prev.recorded_at <= prev.through_seq
+        || stored_prev.recorded_at != carried.publication.commit_seq
         || prev.through_seq >= through
         || carried.journal.evidence_after != Some(boundary)
         || carried.journal.access_after != Some(access_boundary)
     {
         return Ok(None);
     }
-    if fa_journal::rows::marker_at(db, carried.through_seq)? != Some(carried.marker) {
+    if fa_journal::rows::marker_at(db, stored_prev.recorded_at)? != Some(carried.publication) {
         return Ok(None);
     }
-    if admit_boundary_chain(db, book, prev, through)?.is_err() {
-        return Ok(None);
-    }
-    let Ok(stored_cp) = load_unchanged_checkpoint(db, stored_prev, through)? else {
+    // The Chronicle marker commits to the checked prefix and to our signed
+    // checkpoint's own publication. Audit every subsequent delta for writes to
+    // protected state, checkpoint, record and fragment vertices.
+    let Ok(batches) = db.delta_since(stored_prev.recorded_at) else {
         return Ok(None);
     };
-    if stored_cp.oid != carried.checkpoint_oid {
-        return Ok(None);
-    }
-    let Ok(batches) = db.delta_since(carried.through_seq) else {
-        return Ok(None);
-    };
-    let prev_cp_vid = checkpoint_vid(&stored_prev.oid);
-    let mut cursor = carried.through_seq;
+    let mut cursor = stored_prev.recorded_at;
     let mut new_protected = BTreeSet::new();
     let mut new_records = Vec::new();
     for batch in batches {
@@ -839,56 +840,45 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
                 match delta {
                     DeltaRow::CreateVertex {
                         vid,
+                        birth_ordinal,
                         labels,
+                        props,
                         valid_time,
-                        ..
                     } => {
-                        let is_prev_checkpoint_birth = seq == stored_prev.recorded_at
-                            && (*vid == stored_prev.vid || *vid == prev_cp_vid);
-                        if valid_time.is_some()
-                            || carried.protected.contains(vid)
-                            || (!is_prev_checkpoint_birth
-                                && (*vid == stored_prev.vid || *vid == prev_cp_vid))
+                        if valid_time.is_some() || carried.protected.contains(vid) {
+                            return Ok(None);
+                        }
+                        if (labels.contains(&label::ACCUMULATOR_STATE)
+                            || labels.contains(&label::ENTRY_FRAGMENT))
+                            && !new_protected.insert(*vid)
                         {
                             return Ok(None);
                         }
-                        if labels.contains(&label::ENTRY_FRAGMENT) && !new_protected.insert(*vid) {
-                            return Ok(None);
-                        }
                         if crate::journal::has_record_labels(labels) {
-                            if fa_journal::op_witness::vertex_at(db, *vid, carried.through_seq)?
-                                .is_some()
-                            {
-                                return Ok(None);
-                            }
-                            let Some(created_row) =
-                                fa_journal::op_witness::vertex_at(db, *vid, seq)?
-                            else {
-                                return Ok(None);
-                            };
-                            if created_row.created_at != seq
-                                || (seq != through
-                                    && fa_journal::op_witness::vertex_at(db, *vid, through)?
-                                        .as_ref()
-                                        != Some(&created_row))
-                            {
-                                return Ok(None);
-                            }
                             if !new_protected.insert(*vid) {
                                 return Ok(None);
                             }
-                            let is_entry = created_row.labels.contains(&label::ENTRY);
-                            let effective_boundary =
-                                if created_row.labels.contains(&label::ACCESS_EVENT) {
-                                    Some(access_boundary)
-                                } else {
-                                    Some(boundary)
-                                };
-                            if !is_entry && effective_boundary.is_none_or(|b| seq <= b) {
+                            let is_entry = labels.contains(&label::ENTRY);
+                            let effective_boundary = if labels.contains(&label::ACCESS_EVENT) {
+                                access_boundary
+                            } else {
+                                boundary
+                            };
+                            if !is_entry && seq <= effective_boundary {
                                 continue;
                             }
                             work.journal_records_decoded =
                                 work.journal_records_decoded.saturating_add(1);
+                            // CreateVertex carries the committed labels and values at birth.
+                            // The remaining suffix must leave this identity untouched.
+                            let created_row = VertexRow {
+                                vid: *vid,
+                                birth_ordinal: *birth_ordinal,
+                                created_at: seq,
+                                retired_at: None,
+                                labels: labels.clone(),
+                                props: props.clone(),
+                            };
                             if let Some(record) = Record::of_row_at(db, &created_row, through)? {
                                 new_records.push((*vid, record, seq));
                             }
@@ -898,11 +888,7 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
                         elem: ElementId::Vertex(vid),
                         ..
                     } => {
-                        if carried.protected.contains(vid)
-                            || new_protected.contains(vid)
-                            || *vid == stored_prev.vid
-                            || *vid == prev_cp_vid
-                        {
+                        if carried.protected.contains(vid) || new_protected.contains(vid) {
                             return Ok(None);
                         }
                     }
@@ -1042,7 +1028,9 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
         };
         let protected: BTreeSet<_> = rows
             .iter()
-            .filter(|row| protected_record_row(row))
+            .filter(|row| {
+                protected_record_row(row) || row.labels.contains(&label::ACCUMULATOR_STATE)
+            })
             .map(|row| row.vid)
             .collect();
         let read = Journal::from_native_rows(
@@ -1246,33 +1234,34 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
         svid,
         vec![],
     );
-    // A reopened book can retain its current state without the preceding delta.
-    // The marker only seeds the next checkpoint's memo. Resolve it before
-    // publication so a cache read cannot turn a committed write into an error.
-    let memo_marker = if memo.is_some() {
-        match fa_journal::rows::marker_at(db, through) {
-            Ok(marker) => marker,
-            Err(KernelError::Read(fgdb::ReadError::DeltaCursorRetired { .. })) => None,
-            Err(error) => return Err(error),
-        }
-    } else {
-        None
-    };
     txn.write_ordered(db, vec![batch, checkpoints])?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => {
             let leaf_kinds = journal.leaf_kinds();
             if let Some(memo) = memo {
-                memo.state = memo_marker.map(|marker| CarriedState {
-                    book_id: book.book_id,
-                    through_seq: through,
-                    marker,
-                    state_oid: oid,
-                    checkpoint_oid: cp_oid,
-                    signer_public_key: signer.public_key(),
-                    journal,
-                    protected,
-                });
+                // This commit already succeeded. Without a retained marker for
+                // its immediate successor to the verified prefix, leave the next
+                // checkpoint on the literal path.
+                memo.state = if through.0.checked_add(1) == Some(seq.0) {
+                    fa_journal::rows::marker_at(db, seq)
+                        .ok()
+                        .flatten()
+                        .map(|publication| {
+                            let mut protected = protected;
+                            protected.extend([svid, cvid]);
+                            CarriedState {
+                                book_id: book.book_id,
+                                through_seq: through,
+                                publication,
+                                state_oid: oid,
+                                signer_public_key: signer.public_key(),
+                                journal,
+                                protected,
+                            }
+                        })
+                } else {
+                    None
+                };
             }
             Ok((
                 Ok(Checkpointed {
