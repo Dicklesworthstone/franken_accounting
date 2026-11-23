@@ -5,8 +5,8 @@
 //! clusters and resources on stdin/stdout (newline-delimited JSON-RPC, the
 //! MCP stdio transport) until the host closes stdin. `--book` (or `FA_BOOK`)
 //! fixes the book for this session. Identity and operations are trusted
-//! launch configuration, never tool arguments. Calls retain their typed
-//! capability and refuse daemon forwarding until session binding is available.
+//! launch configuration, never tool arguments. A holder token also binds
+//! requests sent to the book's running daemon.
 //!
 //! stdout is the transport; diagnostics go to stderr. Exit codes follow the
 //! `fa` dictionary: 2 usage, 5 foundation (the registry or the server could
@@ -24,7 +24,32 @@ use asupersync::runtime::reactor::create_reactor;
 use fa_cli::authority::LaunchProfile;
 use fa_mcp::server::{ServerConfig, build_server};
 
-const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)\n\nusage\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]\n         [--profile agent|preparer] [--grant <op>]...\n  fa-mcp --book <dir> [--keys <file>] [--files <dir>] --token <file>\n  (either form) [--cluster <on-demand cluster|all>]...   e.g. --cluster fa.draft\n  fa-mcp --help\n  fa-mcp --version\n\nFA_BOOK may supply the launch book; FA_TOKEN may supply --token <file> when no\n--principal/--profile/--grant flags are passed. The default principal is\nmcp-agent and the default profile is agent. Default operations are read, post,\nverify; an explicit --grant list narrows the session to the named operations\nwithin its profile. Identity, profile, operations, book, keys and optional\n--files containment root are fixed at launch. Tool arguments cannot override\nthem or confirm dangerous operations. Agent writes to trunk are refused by the\nkernel; drafts remain pending (fa-s7x). When launched with --token <file> (or\nhosted by `fad serve --book <dir> --mcp stdio --token <file>`), requests route\nthrough a running fad over `<dir>/fad.sock` with the session's issued token.\n";
+const USAGE: &str = "fa-mcp — the FrankenAccounting MCP server (stdio)
+
+usage
+  fa-mcp --book <dir> [--keys <file>] [--files <dir>] [--principal <name>]
+         [--profile agent|preparer] [--grant <op>]...
+  fa-mcp --book <dir> [--keys <file>] [--files <dir>] --token <file>
+  (either form) [--cluster <on-demand cluster|all>]...
+  fa-mcp --help
+  fa-mcp --version
+
+FA_BOOK may supply the book. FA_TOKEN may supply the holder token with the
+default launch identity. The default principal is mcp-agent and the default
+profile is agent. Default operations are read, post and verify. An explicit
+--grant list selects the session's operations within its profile. The book,
+keys, identity, operations and optional --files root are fixed at launch.
+Tool arguments cannot override them or confirm dangerous operations.
+
+Start with --cluster fa.draft to create a draft with fa_draft_manage and plan
+entries into it with fa_post_post. Agent sessions cannot post to trunk. A
+different Human principal with approval authority promotes an ordinary draft
+on the host with `fa draft promote <name> --as <approver> --yes`.
+
+An issued token binds each request to its holder. When fad holds the book's
+writer lease, a token-bound session routes through <dir>/fad.sock. To host
+stdio on the daemon, run `fad serve --book <dir> --mcp stdio --token <file>`.
+";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();

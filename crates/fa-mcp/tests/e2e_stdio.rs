@@ -3373,6 +3373,21 @@ fn an_issued_token_binds_the_session_and_its_revocation_is_enforced() {
 /// Agent as its principal.
 #[test]
 fn an_agent_plans_into_a_draft_and_a_host_controller_promotes_it() {
+    let help = Command::new(env!("CARGO_BIN_EXE_fa-mcp"))
+        .arg("--help")
+        .output()
+        .expect("run fa-mcp --help");
+    assert!(help.status.success(), "{help:?}");
+    let usage = String::from_utf8(help.stdout).unwrap();
+    for command in [
+        "--cluster fa.draft",
+        "fa_draft_manage",
+        "fa_post_post",
+        "fa draft promote",
+    ] {
+        assert!(usage.contains(command), "missing {command} in {usage}");
+    }
+
     let dir = tmp("agent-draft");
     let book = dir.join("book");
     let b = book.display().to_string();
