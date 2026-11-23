@@ -779,7 +779,7 @@ public_ledger_unit() {
   [ "$rc" -eq 0 ] || return "$rc"
   (
     cd "$ROOT/scripts/tests" || exit 1
-    python3 -B -m unittest -v test_plaintext_oracle.ExactControlsTests
+    python3 -B -m unittest -v test_plaintext_oracle.ExactControlsTests test_xbrl_fasb_oracle
   )
   rc=$?
   return "$rc"

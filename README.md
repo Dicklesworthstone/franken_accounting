@@ -555,7 +555,14 @@ in the on-demand `fa.subledger` MCP cluster, with launch authority enforced.
 This native reconciliation does not retain a report certificate or validate
 external summary-feed detail digests; those remain open work under `fa-03s`.
 
-### ADS export text versions
+### ADS export columns and text versions
+
+`fa export ads` writes the FrankenAccounting GL profile. Its GL detail uses
+`Journal_Entry_Line_Number` and `Debit_Credit_Indicator`. The AICPA July 2015
+standard calls those fields `Journal_ID_Line_Number` and
+`Amount_Credit_Debit_Indicator` and also calls for the functional-currency
+amount, fiscal period and entry metadata. A recipient requiring that layout
+needs a field and currency mapping. [AICPA General Ledger Standard](https://www.aicpa-cima.com/resources/download/general-ledger-standard-audit-data-standards)
 
 The writer retains literal `aicpa_ads_gl_v2` bytes for representable ordinary
 text. Text containing pipes, backslashes, quotes or control characters selects
@@ -573,11 +580,12 @@ names use `book_name_utf8_hex` and `base_unit_code_utf8_hex`, preserving UTF-8
 without depending on the small TOML parser's supported escape subset.
 
 The same text law applies to identifiers in the chart, GL and trial balance.
-The std-only offline verifier has its own decoder and continues to verify the
-same proven selection, accounts, units, amounts and trial-balance refold. It
-does not authenticate description/memo text or chart names; escaping does not
-raise that proof class. The executable regression names and their limited
-proof class are recorded in [the conformance matrix](docs/conformance/ads_saft_xbrl.md).
+The std-only offline verifier has its own decoder and verifies the proven
+selection, accounts, units, amounts and trial-balance refold. A full-chart
+proof also checks chart names against the signed checkpoint. With an
+account-index proof, chart names are informational. Description and memo
+text fall outside both checks. The regression tests are recorded in
+[the conformance matrix](docs/conformance/ads_saft_xbrl.md).
 Current-source execution status must be taken from the corresponding gate,
 not from this format description.
 
@@ -608,6 +616,22 @@ they do not select among different values merely because their XBRL accuracy
 intervals overlap. General filing accuracy and duplicate-resolution semantics
 remain outside this profile. The executable controls are in
 [formats_conformance.rs](crates/fa-formats/tests/formats_conformance.rs).
+
+For an independent calculation check, supply the original FASB US-GAAP 2026
+ZIP and the instance written by `fa export xbrl`. The command below requires
+the income attributable to the parent to reconcile in the exported instance.
+The archive is read locally and checked against its SHA-256. [FASB 2026 taxonomy](https://xbrl.fasb.org/us-gaap/2026/us-gaap-2026.zip)
+
+```bash
+python3 scripts/xbrl_fasb_oracle.py --taxonomy us-gaap-2026.zip \
+  --require NetIncomeLoss instance.xbrl
+```
+
+The JSON lists each exact sum and its contributing amounts in the published
+classified balance sheet and income statement roles. A family with omitted
+contributors is listed as incomplete. An incorrect sum or missing required
+parent exits 1. A missing taxonomy or a file with no eligible sums and no
+required parent exits 4. Whole-filing validation remains open.
 
 ### Dimension-preserving accounting extracts
 
@@ -2388,7 +2412,7 @@ fa-verify checkpoint fy2025-cpa.cp --key <checkpoint_public_key> --witness <cpa 
 # A certified GL detail for the file; `fa replay C:<oid>` reproduces it after later postings (available today; also roll-forward and aging).
 fa gl detail --account 1000 --from 2025-01-01 --to 2025-12-31 --certify --book acme.fabook --json
 
-# The auditor's extract: the AICPA ADS GL package (also saft, csv-gl, beancount, hledger), what the trial balance folds, with its export coordinate certificate (available today).
+# Export the journal and trial balance in the FrankenAccounting ADS profile with its coordinate certificate.
 fa export ads --period FY2025-P12 --out ads-fy2025-12 --book acme.fabook --json
 # The full-chart proof checks the journal rows, their trial balance, and the chart declarations at the signed checkpoint.
 fa export ads --period FY2025-P12 --out ads-fy2025-12-proved --with-proofs --book acme.fabook --json
