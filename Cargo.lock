@@ -1246,8 +1246,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-client"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8a7cd2865e29ca34e76dd29362b88a37954582bca51cffc0228a4b869b3f98"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "asupersync",
  "dirs",
@@ -1264,8 +1263,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-console"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1a68538ac1f995a3800279746d0c39d30131fd428f42b0a54c9d72a2321c763"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "fastmcp-core",
  "fastmcp-protocol",
@@ -1283,8 +1281,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-core"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99607ae1afb10464356d5243ceadafd5515cd54a7f0cdddd331a9a0719b28823"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "asupersync",
  "chacha20poly1305",
@@ -1301,8 +1298,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-derive"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "400d0f21be2034d945fdc95ad68b488d3e3f7ea7c34b6a7ec6bc889fdac50414"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "fastmcp-protocol",
  "proc-macro-crate",
@@ -1314,8 +1310,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-protocol"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "807877fb8076d5ab3a9b33fc81c1d79a482c347ff86478c4e18e38a033e643d3"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "base64",
  "fastmcp-core",
@@ -1329,8 +1324,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-rust"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f87848d809e71ed158b932460660079f91fb2a358a4204c77f5d8b10307cba2f"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "asupersync",
  "fastmcp-client",
@@ -1347,8 +1341,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-server"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e2c23f182fe3c1ce54c3832834d47540054600df6ad46a9515a0a5c3ab615ad"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "asupersync",
  "base64",
@@ -1370,8 +1363,7 @@ dependencies = [
 [[package]]
 name = "fastmcp-transport"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d225ce681b9c820e14539e7f8f23154a914914e1c27a60a366008f285a7b646"
+source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6#1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6"
 dependencies = [
  "asupersync",
  "fastmcp-core",
@@ -1662,9 +1654,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -3431,9 +3423,9 @@ checksum = "16062d030850f35054e37746427b9febb74a2f24c9c6dd6fa2d0c13c5f53221e"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

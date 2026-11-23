@@ -95,7 +95,7 @@ exceptions = [
   { crate = "franken-decision", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "franken-evidence", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "franken-kernel", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
-  # fastmcp-rust 0.12.0 (crates.io; the fa-mcp posture, plan §2.4): the owner's
+  # fastmcp-rust 0.12.0 (upstream Git pin, fa-mcp posture, plan §2.4): the owner's
   # MIT-with-rider text, byte-identical to this repository's LICENSE.
   { crate = "fastmcp-rust@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
   { crate = "fastmcp-core@0.12.0", allow = ["LicenseRef-MIT-OpenAI-Anthropic-Rider"] },
@@ -448,42 +448,42 @@ license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 [[licenses.clarify]]
 crate = "fastmcp-rust@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-core@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-protocol@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-transport@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-server@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-client@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-derive@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [[licenses.clarify]]
 crate = "fastmcp-console@0.12.0"
 expression = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
-license-files = [{ path = "LICENSE", hash = 0x3e2e0c66 }]
+license-files = [{ path = "../../LICENSE", hash = 0x3e2e0c66 }]
 
 [bans]
 multiple-versions = "deny"
@@ -577,6 +577,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 required-git-spec = "rev"
 allow-git = [
+  "https://github.com/Dicklesworthstone/fastmcp_rust",
   "https://github.com/Dicklesworthstone/asupersync",
   "https://github.com/Dicklesworthstone/frankengraphdb",
   "https://github.com/Dicklesworthstone/franken_networkx",

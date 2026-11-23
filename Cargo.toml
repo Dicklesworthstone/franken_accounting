@@ -77,12 +77,12 @@ fgdb-bigint = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev
 # (fa-txf B, CobaltGull 3452/3462; fa-0fl reuses it).
 fgdb-sim = { git = "https://github.com/Dicklesworthstone/frankengraphdb", rev = "b323bd17ceaf81e97ce89e43d8d9f6d5151695cf", version = "=0.0.1" }
 
-# The MCP framework (plan §2.4, §18.4): crates.io, exact version, consumed by
-# the fa-mcp posture only. Its registry pin of asupersync `=0.5.0` resolves
+# The fa-mcp posture uses the upstream 0.12.0 backport of the URL security fix.
+# Its registry pin of asupersync `=0.5.0` resolves
 # to the git revision above through [patch.crates-io] below, so fastmcp and
 # the substrate link one `Cx` (§0.4 decision 9); `cargo metadata` shows one
 # asupersync package id.
-fastmcp-rust = { version = "=0.12.0" }
+fastmcp-rust = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "1fd4b6c4f874ae05b8d34ecb5a334fe22d28dad6", version = "=0.12.0" }
 
 # Exact rate coefficients and cooperatively metered arithmetic (fa-pri).
 fsym-bigint = { git = "https://github.com/Dicklesworthstone/frankensympy", rev = "bd1ad68a3a06e0a0ed6ee4a9bc76d85dc9e67e2e", version = "=0.1.0" }
