@@ -306,6 +306,9 @@ pub(crate) async fn witness_control_record<V: Vfs + Clone>(
         let row = txn.vertex(db, expected_entry)?.ok_or_else(|| {
             KernelError::Corrupt("a control entry vanished during its point read".into())
         })?;
+        if !crate::entry_storage::has_class_mirror(&row, class) {
+            return Ok(Err(key_conflict()));
+        }
         return Ok(Ok(Some(row)));
     }
     let outcome = intent_outcome_vid(book.book_id, &principal.0.to_le_bytes(), key);
@@ -1186,14 +1189,13 @@ fn verify_control_claim<V: Vfs + Clone>(
         // publication must itself predate the common-key claim protocol.
         return Ok(db.vertex_at(outcome, row.created_at)?.is_none());
     };
-    if !is_entry_claim(&claim_row) {
+    // A later version cannot authenticate a retry or its source control.
+    // Refuse that version before interpreting its potentially damaged bytes.
+    if claim_row.created_at != row.created_at || !original(db, &claim_row)? {
         return Ok(false);
     }
-    Ok(
-        claim_of(&claim_row)? == EntryClaim::new(entry, row.vid, None)?
-            && original(db, &claim_row)?
-            && claim_row.created_at == row.created_at,
-    )
+    Ok(is_entry_claim(&claim_row)
+        && claim_of(&claim_row)? == EntryClaim::new(entry, row.vid, None)?)
 }
 
 /// A concurrent newly published winner must have its original atomic claim.

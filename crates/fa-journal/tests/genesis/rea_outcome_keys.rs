@@ -207,6 +207,25 @@ fn refused_without_publication(h: &mut Harness, request: &Request, expected: &st
 }
 
 #[test]
+fn rea_key_refuses_a_multi_label_row_before_opening_its_entry_payload() {
+    let mut h = harness();
+    let key = b"REA-invalid-entry-root";
+    let request = request(&h, 0, key);
+    let vid = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.create_vertex(
+        vid,
+        vec![label::ENTRY, label::PARTY],
+        vec![(
+            property::CLASS,
+            CanonicalScalar::Int(i64::from(EntryClass::SCHEMA_CONTROL.0)),
+        )],
+    );
+    h.write_raw(damage);
+    refused_without_publication(&mut h, &request, code::IDEMPOTENCY_CONFLICT);
+}
+
+#[test]
 fn posting_family_keys_cannot_publish_any_rea_schema_control() {
     let mut h = harness();
     setup(&mut h);
@@ -586,18 +605,42 @@ fn recovered_legacy_reversal_key_refuses_every_rea_control_after_reopen() {
     let target = outcome_recovery_tests::write_legacy(&mut h, original);
     let key = b"REA-legacy-reversal-key";
     let reversal = h.reversal_of_entry(target, key);
-    outcome_recovery_tests::write_legacy(&mut h, reversal);
-    recover(&mut h);
-    setup(&mut h);
-    reopen(&mut h);
+    let reversal = outcome_recovery_tests::write_legacy(&mut h, reversal);
     let common_key = fa_model::intent_outcome_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
     let normal_entry = entry_vid(h.book.book_id, &PRINCIPAL.0.to_le_bytes(), key);
     assert!(h.db.vertex(common_key).unwrap().is_none());
+    recover(&mut h);
+    setup(&mut h);
+    reopen(&mut h);
+    let recovered = h.db.vertex(common_key).unwrap().expect("recovered claim");
+    assert!(matches!(
+        fa_journal::rows::prop(&recovered, property::TARGET_REF),
+        Some(CanonicalScalar::Bytes(target)) if target.as_slice() == reversal.vid.0.to_le_bytes()
+    ));
     assert!(h.db.vertex(normal_entry).unwrap().is_none());
     for kind in 0..8 {
         let req = request(&h, kind, key);
         refused_without_publication(&mut h, &req, code::IDEMPOTENCY_CONFLICT);
     }
+
+    // If the point claim is lost, the authenticated legacy-key index must
+    // still reserve this target-derived reversal's ordinary principal key.
+    let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+    damage.delete_vertex(common_key);
+    h.write_raw(damage);
+    assert!(h.db.vertex(common_key).unwrap().is_none());
+    assert!(h.db.vertex(normal_entry).unwrap().is_none());
+    for kind in 0..8 {
+        reopen(&mut h);
+        let req = request(&h, kind, key);
+        refused_without_publication(&mut h, &req, code::IDEMPOTENCY_CONFLICT);
+    }
+    reopen(&mut h);
+    let fresh = request(&h, 0, b"REA-unoccupied-after-recovery");
+    let head = h.db.frontier().unwrap();
+    let recorded = record(&mut h, &fresh).unwrap();
+    assert!(!recorded.already_recorded);
+    assert_eq!(recorded.recorded_at.0, head.0 + 1);
 }
 
 #[test]

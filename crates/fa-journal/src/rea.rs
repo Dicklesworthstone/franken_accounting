@@ -396,12 +396,8 @@ fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     row: &VertexRow,
     target_vid: VId,
-    proposal: &EntryPayload,
-    proposal_digest: &[u8; 32],
+    requested: &Entry,
 ) -> Outcome<ReaControlRecorded> {
-    if !crate::entry_storage::has_class_mirror(row, proposal.class) {
-        return Ok(Err(crate::outcome::key_conflict()));
-    }
     let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
     if !stored.approvals.is_empty()
         || stored.plan_certificate.is_some()
@@ -409,8 +405,8 @@ fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(Err(crate::outcome::key_conflict()));
     }
-    let same = &stored.proposal_digest == proposal_digest
-        || same_rea_control(book, &stored.proposal, proposal);
+    let same = stored.proposal_digest == requested.proposal_digest
+        || same_rea_control(book, &stored.proposal, &requested.proposal);
     if same {
         Ok(Ok(ReaControlRecorded {
             recorded_at: row.created_at,
@@ -436,38 +432,31 @@ fn check_rea_idempotency<V: asupersync::fs::Vfs + Clone>(
 /// Every caller has already checked current capability and policy witnesses.
 /// An immutable legacy normal-key entry remains its own retry anchor; a fresh
 /// control must also prove its key absent from recovered historical outcomes.
-fn witness_rea_key<V: asupersync::fs::Vfs + Clone>(
-    txn: &fgdb::WriteTxn,
-    db: &Database<V>,
+async fn witness_rea_key<V: asupersync::fs::Vfs + Clone>(
+    txn: &mut fgdb::WriteTxn,
+    db: &mut Database<V>,
+    ctx: &PurposeContexts,
     book: &BookContext,
     evid: VId,
     target_vid: VId,
-    proposal: &EntryPayload,
-    proposal_digest: &[u8; 32],
+    entry: &Entry,
 ) -> Result<Option<Result<ReaControlRecorded, Refusal>>, KernelError> {
-    if let Err(refusal) = crate::outcome::witness_named_key(
+    match crate::outcome::witness_control_record(
         txn,
         db,
-        book.book_id,
-        proposal.principal_ref,
-        &proposal.idempotency_key,
-        evid,
-    )? {
-        return Ok(Some(Err(refusal)));
-    }
-    if let Some(row) = txn.vertex(db, evid)? {
-        return check_rea_idempotency(db, book, &row, target_vid, proposal, proposal_digest)
-            .map(Some);
-    }
-    if let Err(refusal) = crate::outcome::require_unused_legacy_key(
-        txn,
-        db,
+        ctx,
         book,
-        crate::outcome::entry_outcome_vid(proposal),
-    )? {
-        return Ok(Some(Err(refusal)));
+        entry.proposal.principal_ref,
+        &entry.proposal.idempotency_key,
+        evid,
+        entry.proposal.class,
+    )
+    .await?
+    {
+        Ok(Some(row)) => check_rea_idempotency(db, book, &row, target_vid, entry).map(Some),
+        Ok(None) => Ok(None),
+        Err(refusal) => Ok(Some(Err(refusal))),
     }
-    Ok(None)
 }
 
 fn open_external_ids(
@@ -725,8 +714,7 @@ pub async fn create_party<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -743,9 +731,7 @@ pub async fn create_party<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, pvid, &proposal, &proposal_digest)?
-    {
+    if let Some(recorded) = witness_rea_key(&mut txn, db, ctx, book, evid, pvid, &entry).await? {
         txn.abort();
         return Ok(recorded);
     }
@@ -932,8 +918,7 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -948,9 +933,7 @@ pub async fn create_instrument<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, ivid, &proposal, &proposal_digest)?
-    {
+    if let Some(recorded) = witness_rea_key(&mut txn, db, ctx, book, evid, ivid, &entry).await? {
         txn.abort();
         return Ok(recorded);
     }
@@ -1235,8 +1218,7 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -1253,9 +1235,7 @@ pub async fn create_legal_entity<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, levid, &proposal, &proposal_digest)?
-    {
+    if let Some(recorded) = witness_rea_key(&mut txn, db, ctx, book, evid, levid, &entry).await? {
         txn.abort();
         return Ok(recorded);
     }
@@ -1444,8 +1424,7 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -1459,9 +1438,7 @@ pub async fn bind_external_id<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, ext_vid, &proposal, &proposal_digest)?
-    {
+    if let Some(recorded) = witness_rea_key(&mut txn, db, ctx, book, evid, ext_vid, &entry).await? {
         txn.abort();
         return Ok(recorded);
     }
@@ -1624,8 +1601,7 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -1640,7 +1616,7 @@ pub async fn record_relationship<V: asupersync::fs::Vfs + Clone>(
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
     if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, spec.from, &proposal, &proposal_digest)?
+        witness_rea_key(&mut txn, db, ctx, book, evid, spec.from, &entry).await?
     {
         txn.abort();
         return Ok(recorded);
@@ -1760,8 +1736,7 @@ pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -1775,15 +1750,9 @@ pub async fn record_deposit_profile<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) = witness_rea_key(
-        &txn,
-        db,
-        book,
-        evid,
-        spec.instrument,
-        &proposal,
-        &proposal_digest,
-    )? {
+    if let Some(recorded) =
+        witness_rea_key(&mut txn, db, ctx, book, evid, spec.instrument, &entry).await?
+    {
         txn.abort();
         return Ok(recorded);
     }
@@ -1959,8 +1928,7 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
         idempotency_key,
         description,
     );
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -1974,15 +1942,9 @@ pub async fn update_party_identifiers<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) = witness_rea_key(
-        &txn,
-        db,
-        book,
-        evid,
-        update.party_vid,
-        &proposal,
-        &proposal_digest,
-    )? {
+    if let Some(recorded) =
+        witness_rea_key(&mut txn, db, ctx, book, evid, update.party_vid, &entry).await?
+    {
         txn.abort();
         return Ok(recorded);
     }
@@ -2258,8 +2220,7 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
         description,
     );
     proposal.evidence.clone_from(&spec.evidence);
-    let proposal_digest = proposal.proposal_digest()?;
-    let entry: Entry = proposal.clone().seal(Vec::new(), None)?;
+    let entry = proposal.seal(Vec::new(), None)?;
     let evid = entry_vid(
         book.book_id,
         &principal_ref.0.to_le_bytes(),
@@ -2277,9 +2238,7 @@ pub async fn record_event<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(r));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(recorded) =
-        witness_rea_key(&txn, db, book, evid, ev_vid, &proposal, &proposal_digest)?
-    {
+    if let Some(recorded) = witness_rea_key(&mut txn, db, ctx, book, evid, ev_vid, &entry).await? {
         txn.abort();
         return Ok(recorded);
     }
