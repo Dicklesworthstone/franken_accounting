@@ -82,12 +82,12 @@ fn promote(f: &mut Fixture) -> Result<fa_journal::DraftPromoted, fa_journal::Ref
         .unwrap()
 }
 
-fn ordinary(f: &Fixture, principal: VId, key: &[u8]) -> PostIntent {
+fn ordinary(f: &Fixture, principal: VId, key: &[u8], debit: &str) -> PostIntent {
     let mut proposal = f.template(key, EntryClass::ORIGINAL, day(10));
     proposal.principal_ref = principal;
     proposal.evidence = vec![f.invoice];
     proposal.legs = vec![
-        LegPayload::simple(Side::Debit, f.account("6700"), Amount::new(f.usd, 100)),
+        LegPayload::simple(Side::Debit, f.account(debit), Amount::new(f.usd, 100)),
         LegPayload::simple(Side::Credit, f.account("4700"), Amount::new(f.usd, 100)),
     ];
     proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
@@ -303,19 +303,27 @@ fn source_bound_fx_draft_rehearses_and_promotes_the_original_signed_delta_once()
 
 #[test]
 fn fx_draft_and_native_batches_refuse_mixed_or_repeated_sources_without_partial_records() {
-    for mode in ["fx-first", "ordinary-first", "two-fx"] {
+    // Ordinary postings may share the batch unless they touch the revaluation's
+    // source or valuation account. 6700 is independent; 1290 is its valuation leaf.
+    let cases = [
+        ("fx-first", false, Some("6700")),
+        ("ordinary-first", true, Some("6700")),
+        ("fx-before-protected", false, Some("1290")),
+        ("protected-before-fx", true, Some("1290")),
+        ("two-fx", false, None),
+    ];
+    for (mode, other_first, debit) in cases {
         let mut f = Fixture::new();
         f.post_source(b"singleton-exposure", false, 10_000);
         let rate = f.closing_rate(12);
         let agent = planner();
         open(&mut f, &agent, DRAFT);
         let fx = review(&mut f, &agent, "1200", rate.oid, b"singleton-fx");
-        let other = if mode == "two-fx" {
-            review(&mut f, &agent, "1200", rate.oid, b"duplicate-fx-source")
-        } else {
-            ordinary(&f, PLANNER, b"ordinary-draft-member")
+        let other = match debit {
+            Some(account) => ordinary(&f, PLANNER, b"ordinary-draft-member", account),
+            None => review(&mut f, &agent, "1200", rate.oid, b"duplicate-fx-source"),
         };
-        let (first, second) = if mode == "ordinary-first" {
+        let (first, second) = if other_first {
             (other, fx)
         } else {
             (fx, other)
@@ -323,6 +331,16 @@ fn fx_draft_and_native_batches_refuse_mixed_or_repeated_sources_without_partial_
         append(&mut f, &agent, first);
         let before = f.book.head().unwrap();
         let retained = f.book.draft(DRAFT).unwrap().unwrap();
+        if debit == Some("6700") {
+            append(&mut f, &agent, second);
+            let promoted = promote(&mut f).unwrap();
+            assert_eq!(promoted.entries.len(), 2, "{mode}");
+            for entry in promoted.entries {
+                let (_, at) = f.book.read_entry(entry.vid).unwrap().unwrap();
+                assert_eq!(at, promoted.recorded_at, "{mode}");
+            }
+            continue;
+        }
         let refusal = f
             .book
             .plan_into_draft(agent, DRAFT, second)
@@ -335,29 +353,47 @@ fn fx_draft_and_native_batches_refuse_mixed_or_repeated_sources_without_partial_
         );
         assert_open_unchanged(&f, before, &retained);
     }
-    for mode in ["fx-first", "ordinary-first", "two-fx"] {
+    for (mode, other_first, debit) in cases {
         let mut f = Fixture::new();
         f.post_source(b"native-batch-exposure", false, 10_000);
         let rate = f.closing_rate(12);
         let fx = review(&mut f, &author(), "1200", rate.oid, b"native-batch-fx");
-        let other = if mode == "two-fx" {
-            review(
+        let other = match debit {
+            Some(account) => ordinary(&f, PRINCIPAL, b"ordinary-native-member", account),
+            None => review(
                 &mut f,
                 &author(),
                 "1200",
                 rate.oid,
                 b"duplicate-native-source",
-            )
-        } else {
-            ordinary(&f, PRINCIPAL, b"ordinary-native-member")
+            ),
         };
-        let members = if mode == "ordinary-first" {
+        let members = if other_first {
             vec![other, fx]
         } else {
             vec![fx, other]
         };
-        let batch = fa_intents::PostBatch::new(b"refused-native-fx".to_vec(), members).unwrap();
+        let batch = fa_intents::PostBatch::new(b"native-fx-companions".to_vec(), members).unwrap();
         let before = f.book.head().unwrap();
+        if debit == Some("6700") {
+            let plan = f
+                .book
+                .plan_batch(batch.clone(), &author())
+                .unwrap()
+                .unwrap();
+            assert_eq!(f.book.head().unwrap(), before, "{mode}");
+            let posted = f.book.commit_batch_plan(plan, &author()).unwrap().unwrap();
+            assert_eq!(posted.entries.len(), 2, "{mode}");
+            for entry in &posted.entries {
+                let (_, at) = f.book.read_entry(entry.vid).unwrap().unwrap();
+                assert_eq!(at, posted.recorded_at, "{mode}");
+            }
+            let retry = f.book.post_batch(batch, &author()).unwrap().unwrap();
+            assert!(retry.already_recorded, "{mode}");
+            assert_eq!(retry.entries, posted.entries, "{mode}");
+            assert_eq!(f.book.head().unwrap(), posted.recorded_at, "{mode}");
+            continue;
+        }
         let refusal = f
             .book
             .plan_batch(batch.clone(), &author())

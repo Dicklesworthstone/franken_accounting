@@ -685,9 +685,19 @@ fn raw_close_creation_replays_the_exact_retained_review_before_publishing() {
     assert!(run.tasks[0].completion.is_none());
     let created = f.book.head().unwrap();
     assert!(created > before);
+    let conflict = f
+        .book
+        .create_close_run(&definition, &closer, "different description")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        conflict.code,
+        fa_journal::refusal::code::IDEMPOTENCY_CONFLICT
+    );
+    assert_eq!(f.book.head().unwrap(), created);
     assert_eq!(
         f.book
-            .create_close_run(&definition, &closer, "exact retry")
+            .create_close_run(&definition, &closer, "reviewed expenses")
             .unwrap()
             .unwrap(),
         run

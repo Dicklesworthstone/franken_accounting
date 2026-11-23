@@ -41,7 +41,7 @@ fn reconcile(f: &mut Fixture, manifest_oid: Oid) -> fa::bank::BankReconciliation
     let evaluated_known_at = f.book.head().unwrap();
     f.book
         .reconcile_bank_statement(
-            &bank_closer(),
+            &cap(CLOSER, &["read", "reconcile", "privileged"]),
             BankReconciliationRequest {
                 manifest_oid,
                 evaluated_known_at,
@@ -260,6 +260,23 @@ fn bank_checkpoint_review_survives_retention_and_finishes_the_native_close() {
 fn bank_checkpoint_requires_reconcile_before_observing_the_selected_statement() {
     let mut f = Fixture::new(220);
     let manifest_oid = empty_statement(&mut f, "260131");
+    let imported_at = f.book.head().unwrap();
+    let denied_source = f
+        .book
+        .reconcile_bank_statement(
+            &bank_closer(),
+            BankReconciliationRequest {
+                manifest_oid,
+                evaluated_known_at: imported_at,
+            },
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        denied_source.code,
+        fa_journal::refusal::code::REDACTED_VIEW_ABSENT
+    );
+    assert_eq!(f.book.head().unwrap(), imported_at);
     reconcile(&mut f, manifest_oid);
     let before = f.book.head().unwrap();
     let denied = f
