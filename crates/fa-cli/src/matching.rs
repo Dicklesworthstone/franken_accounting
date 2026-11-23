@@ -16,7 +16,7 @@ use fa_registry::evidence_policy::EvidencePolicy;
 use fgdb_types::CommitSeq;
 
 use crate::args::Args;
-use crate::cli::{Ctx, Fail, hex, parse_digest, untrusted_text_json, usage};
+use crate::cli::{Ctx, Fail, Out, hex, parse_digest, untrusted_text_json, usage};
 use crate::json::{Json, obj, s};
 
 const EXAMPLE: &str = "fa match three-way --purchase-order D:<oid> --receiving-report D:<oid> --invoice-document D:<oid> (--item <exact-item-code> | --all-items) [--as-known-at HEAD|<seq>] [--expect-digest <retained-result-digest>] --json";
@@ -123,7 +123,7 @@ pub(crate) fn match_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 expected_digest,
             },
         )??;
-        return render_documents(ctx, &book, report);
+        return render_documents(&ctx.out, &book, report);
     }
     let item_code = item_code
         .ok_or_else(|| usage("select --item or --all-items", EXAMPLE))?
@@ -278,7 +278,7 @@ fn document_source_json(source: &ThreeWayDocumentSource, policy: &EvidencePolicy
 }
 
 fn render_documents(
-    ctx: &mut Ctx<'_>,
+    out: &Out,
     book: &fa::Book,
     report: ThreeWayDocumentMatchReport,
 ) -> Result<(), Fail> {
@@ -453,9 +453,9 @@ fn render_documents(
         ("result_digest", s(digest)),
         ("replay_argv", Json::Arr(replay_argv)),
     ];
-    ctx.out.at_book(book)?;
-    ctx.out.known_at(report.known_at);
-    ctx.out.event("three_way_document_match", fields, &format!(
+    out.at_book(book)?;
+    out.known_at(report.known_at);
+    out.event("three_way_document_match", fields, &format!(
         "complete three-way match at sequence {}: {matched_count} of {} items matched; {missing_count} items have missing source lines; advisory comparison of retained documents",
         report.known_at.0, report.items.len(),
     ));
