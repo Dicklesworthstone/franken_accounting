@@ -956,8 +956,14 @@ fn undeclared_procedures_ignore_the_effective_date() {
     println!(
         "{undeclared} undeclared procedures ignore the date; {declared} declare it; optional ones that move on this corpus: {moved:?}"
     );
-    // The round-amount and period-end v2 folds also take an optional cutoff.
-    assert_eq!(declared, 25);
+    // The bank cycle's float interval can begin after the selected date.
+    assert_eq!(
+        fa_lantern::bind(fa_lantern::kiting::Kiting::ID)
+            .unwrap()
+            .effective_through,
+        EffectiveThrough::Optional
+    );
+    assert_eq!(declared, 26);
     assert!(undeclared >= 40, "{undeclared}");
     // The comparison can see a date: declared procedures do move with it here.
     assert!(!moved.is_empty(), "the corpus exercises no effective date");
@@ -3417,8 +3423,39 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         witnessed_anywhere.extend(witnessed);
     }
 
+    // Plain journal legs do not supply bank statements or matched bank lines.
+    // Exercise the same procedure meter on the native drift and posted-cycle
+    // fixtures. The cycle fixture supplies paired lines to the Lantern adapter.
+    let (drift_book, drift) = bank_reconciliation_tests::drift_work_fixture();
+    let (cycle_book, cycle, _) = kiting_tests::fixture();
+    for (id, book, snapshot) in [
+        (
+            fa_lantern::bank_reconciliation::BankStatementDrift::ID,
+            &drift_book.book,
+            &drift,
+        ),
+        (fa_lantern::kiting::Kiting::ID, &cycle_book.book, &cycle),
+    ] {
+        let procedure =
+            fa_lantern::catalog::build(id, Params::defaults(id).unwrap(), Default::default())
+                .unwrap();
+        let run = run_over(snapshot, book, procedure.as_ref()).unwrap();
+        assert_eq!(
+            run.findings.len(),
+            1,
+            "{id} must examine the planted bank activity"
+        );
+        let row = fa_lantern::bind(id).unwrap();
+        assert!(
+            run.work.within_registered_bound(&row.complexity, snapshot),
+            "{id}: {:?}",
+            run.work
+        );
+        witnessed_anywhere.insert(run.procedure);
+    }
+
     // fa-1tvm: every registered procedure is witnessed on some corpus,
-    // except exactly these, which no fa-gen corpus can run. A procedure that
+    // except exactly these, which none of the fixtures can run. A procedure that
     // stops running (or a listed one that starts) fails here, so the list is
     // the honest gap.
     const UNWITNESSED: &[(&str, &str)] = &[
@@ -3429,10 +3466,6 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         (
             "jet.suspense_aging",
             "no fa-gen chart account holds the suspense role",
-        ),
-        (
-            "recon.bank_statement_drift",
-            "reads native bank states, which only the bank-aware entry point supplies",
         ),
         (
             "recon.intercompany",
@@ -8027,16 +8060,24 @@ fn role_populations_are_the_registered_role_consumers() {
         .collect();
     code.sort();
     assert_eq!(code, registered);
-    // Both forms explicitly describe account-role membership. Registry prose
+    // These forms explicitly describe account-role membership. Registry prose
     // is part of retained certificate epochs, so validate its meaning without
     // rewriting those epochs to enforce one English word order.
     let describes_role = |summary: &str, role: &str| {
         summary.contains(&format!("`{role}` account role"))
             || summary.starts_with(&format!("Accounts holding the `{role}` role "))
+            || summary
+                .split_whitespace()
+                .zip(summary.split_whitespace().skip(1))
+                .any(|(adj, noun)| {
+                    adj.strip_suffix("-role") == Some(role)
+                        && noun.trim_end_matches(['.', ',', ';']) == "accounts"
+                })
     };
     for summary in [
         "Accounts holding the `suspense` account role when assigned.",
         "Accounts holding the `suspense` role with nonzero residuals.",
+        "Entries posted to suspense-role accounts.",
     ] {
         assert!(describes_role(summary, "suspense"), "{summary}");
     }
@@ -8048,6 +8089,9 @@ fn role_populations_are_the_registered_role_consumers() {
         "Accounts tagged `suspense` with nonzero residuals.",
         "Accounts holding the `suspense` roleplay flag.",
         "Use the `suspense` tag to identify accounts.",
+        "Entries posted to non-suspense-role accounts.",
+        "Entries posted to suspense-role parties.",
+        "Entries posted to suspense-role accounts-payable.",
     ] {
         assert!(!describes_role(summary, "suspense"), "{summary}");
     }

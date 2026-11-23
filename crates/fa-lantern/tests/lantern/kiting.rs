@@ -23,7 +23,7 @@ fn document(h: &mut Harness, kind: &str, contents: String) -> Oid {
     document.oid()
 }
 
-fn fixture() -> (Harness, Snapshot, Vec<VId>) {
+pub(super) fn fixture() -> (Harness, Snapshot, Vec<VId>) {
     let mut h = harness();
     for code in ["1000", "1010", "1020"] {
         let spec = AccountRoleSpec {

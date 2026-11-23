@@ -106,15 +106,12 @@ fn late_post(h: &mut Harness, spec: &Spec) -> EntryRef {
         .block_on(post(&mut h.db, &cx, &h.book, request))
         .unwrap()
         .unwrap();
-    let Posted::Committed {
-        entry_ref,
-        recorded_at,
-        ..
-    } = posted
-    else {
-        panic!("fresh late entry must commit")
-    };
-    h.posted.push((entry_ref.vid, recorded_at));
+    assert!(
+        matches!(posted, Posted::Committed { .. }),
+        "expected a fresh late posting, got {posted:?}"
+    );
+    let entry_ref = posted.entry_ref();
+    h.posted.push((entry_ref.vid, posted.recorded_at()));
     entry_ref
 }
 
@@ -210,6 +207,14 @@ fn native_balance_and_net_zero_drift_preserve_the_original_close_and_all_entry_c
     verify_bank_reconciliation_history(&h.db, &h.ctx(), &h.book, &read_cap(), None)
         .unwrap()
         .unwrap();
+}
+
+pub(super) fn drift_work_fixture() -> (Harness, Snapshot) {
+    let mut h = harness();
+    empty_close(&mut h, day(2026, 3, 31), b"march-work-witness");
+    late_post(&mut h, &Spec::simple(day(2026, 3, 20), "1000", "4000", 70));
+    let observed = snapshot(&h, None, None);
+    (h, observed)
 }
 
 #[test]
