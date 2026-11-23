@@ -556,7 +556,12 @@ fn payload(row: &VertexRow) -> Result<&[u8], KernelError> {
     }
 }
 
-fn verify_run_row(row: &VertexRow, book: Id128, expected: &RunReceipt) -> Outcome<()> {
+fn verify_run_row<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    book: Id128,
+    expected: &RunReceipt,
+) -> Outcome<()> {
     let entry = stored_entry(row)?;
     let actual_id = entry_vid(
         book,
@@ -571,6 +576,7 @@ fn verify_run_row(row: &VertexRow, book: Id128, expected: &RunReceipt) -> Outcom
         || entry_mirrors(&entry)?
             .iter()
             .any(|(key, value)| prop(row, *key) != Some(value))
+        || !crate::outcome::verify_control_recorded(db, row, &entry)?
     {
         return Ok(Err(drift(
             "the native import row differs from the captured receipt",
@@ -657,7 +663,7 @@ fn link_from_row<V: Vfs + Clone>(
             "native link and import were not published together",
         )));
     }
-    if let Err(refusal) = verify_run_row(&run_row, book, &receipt)? {
+    if let Err(refusal) = verify_run_row(db, &run_row, book, &receipt)? {
         return Ok(Err(refusal));
     }
     if let Some(supplied) = supplied_manifest
@@ -823,7 +829,7 @@ impl BankImportWitness {
         let Some(run_row) = db.vertex(receipt.run)? else {
             return Ok(Err(drift("the manifest import run disappeared")));
         };
-        if let Err(refusal) = verify_run_row(&run_row, book, receipt)? {
+        if let Err(refusal) = verify_run_row(db, &run_row, book, receipt)? {
             return Ok(Err(refusal));
         }
         let mut documents = Vec::with_capacity(oids.len());
@@ -960,11 +966,13 @@ impl BankImportWitness {
                 "the predecessor import run disappeared before preparation",
             )));
         };
-        if verify_run_row(&run_row, book, &self.receipt)?.is_err() {
+        if verify_run_row(db, &run_row, book, &self.receipt)?.is_err() {
             return Ok(Err(conflict(
                 "the predecessor import receipt changed before preparation",
             )));
         }
+        let entry = stored_entry(&run_row)?;
+        let _ = txn.vertex(db, crate::outcome::entry_outcome_vid(&entry.proposal))?;
         let policy = policy()?;
         for expected in &self.documents {
             let Some(row) = txn.vertex(db, expected.vid)? else {

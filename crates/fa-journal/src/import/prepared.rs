@@ -386,6 +386,7 @@ impl AdmittedImport {
         };
         let mut custody = WriteBatch::new(relation::CUSTODY_OF);
         custody.create_vertex(self.run, vec![label::ENTRY], entry_mirrors(&self.entry)?);
+        crate::outcome::stage_control(&mut custody, &self.entry, self.run)?;
         let mut imported = WriteBatch::new(relation::IMPORTED_BY);
         for doc in &self.documents {
             cx.txn().checkpoint().map_err(WriteTxnError::Interrupted)?;
@@ -500,10 +501,34 @@ pub(super) fn admit<V: Vfs + Clone>(
         &proposal.principal_ref.0.to_le_bytes(),
         &proposal.idempotency_key,
     );
+    // Import authority and the complete request are admitted before looking
+    // up the shared key. Retain its absence through external I/O and commit.
+    if let Err(refused) = crate::outcome::witness_named_key(
+        &txn,
+        db,
+        book.book_id,
+        proposal.principal_ref,
+        &proposal.idempotency_key,
+        run,
+    )? {
+        txn.abort();
+        return Ok(Err(refused));
+    }
     if let Some(row) = txn.vertex(db, run)? {
         txn.abort();
         return Ok(recorded_or_conflict(db, book, &row, &proposal, &digest)?
             .map(Admission::AlreadyRecorded));
+    }
+    // An authentic old import can retry above without a coverage upgrade.
+    // A fresh key must prove that no historical posting already consumed it.
+    if let Err(refused) = crate::outcome::require_unused_legacy_key(
+        &txn,
+        db,
+        book,
+        crate::outcome::entry_outcome_vid(&proposal),
+    )? {
+        txn.abort();
+        return Ok(Err(refused));
     }
     let preparer = Party::for_capability(proposal.principal_ref, capability);
     if let Err(refused) =
