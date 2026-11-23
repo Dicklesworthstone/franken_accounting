@@ -438,6 +438,17 @@ class ExactControlsTests(unittest.TestCase):
             self.assertEqual(json.loads(captured.getvalue())["status"], "UNRUN")
             self.assertFalse(out.exists())
 
+    def test_missing_demo_producer_is_unrun_before_creating_books(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out = root / "demo-results"
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                code = oracle.main(["demos", "--fa", str(root / "absent-fa"), "--out", str(out)])
+            self.assertEqual(code, 4)
+            self.assertEqual(json.loads(captured.getvalue())["status"], "UNRUN")
+            self.assertFalse(out.exists())
+
     def test_existing_output_is_preserved_before_any_external_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "oracle"

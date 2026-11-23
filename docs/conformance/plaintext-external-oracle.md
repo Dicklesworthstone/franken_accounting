@@ -98,6 +98,31 @@ The source fixtures are
 [`sample_multi_unit_journal`](../../crates/fa-formats/tests/formats_conformance.rs)
 and the [CLI disposal tests](../../crates/fa-cli/tests/cli/lot_disposal.rs).
 
+## Run all registered demo books
+
+`demos` reads the scenario names from the verb registry and initializes each
+book with seed 7. It fixes each comparison at that book's initialization
+frontier and December 31, 2026. It checks that the native trial balance and
+every export identify the same book and coordinate. Reservation legs belong
+to pending columns. Posted legs from a resolution enter the comparison.
+
+```sh
+python3 -B scripts/plaintext_oracle.py demos --fa /path/to/fa \
+  --bean-check /path/to/bean-check --bean-query /path/to/bean-query \
+  --hledger /path/to/hledger --out /path/to/new-demo-run
+```
+
+The output directory is private and includes each generated book, its demo
+key, the native command transcript and the external comparison. The top-level
+`report.json` lists each scenario and outcome, including failures. Missing
+tools exit 4. Choose a fresh output path for each run.
+
+On 2026-11-23 the `cec2e391` Linux producer, Beancount 3.2.0, beanquery 0.2.0
+and hledger 1.52.4 passed all seven registered demo books. Across these books
+the tools compared 81 posted entries, 183 postings and 72 account/unit cells.
+All 35 native commands and 77 external commands completed. The per-book
+reports retain the exact frontier, balances, gross activity and posting counts.
+
 ## Install the exercised external tools
 
 Python 3.11 or newer runs the helper using only the standard library. External

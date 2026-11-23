@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from urllib.parse import unquote_to_bytes
 
 
@@ -85,8 +86,13 @@ def digest(data: bytes) -> str:
 
 
 def snapshot(path: Path) -> dict:
-    data = path.read_bytes()
-    return {"sha256": digest(data), "bytes": len(data)}
+    checksum = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            checksum.update(chunk)
+            size += len(chunk)
+    return {"sha256": checksum.hexdigest(), "bytes": size}
 
 
 def write_json(path: Path, value: object) -> None:
@@ -703,28 +709,119 @@ def run_oracle(csv_gl: Path, beancount: Path, hledger_journal: Path, out: Path, 
     return report
 
 
+def demo_scenarios() -> list[str]:
+    registry = Path(__file__).resolve().parents[1] / "registries" / "verbs.toml"
+    with registry.open("rb") as stream:
+        verbs = tomllib.load(stream)["verb"]
+    usages = [line for verb in verbs if verb["name"] == "demo" for line in verb["usage"]
+              if line.startswith("demo init --scenario ")]
+    require(len(usages) == 1, "expected one registered demo init usage")
+    match = re.fullmatch(r"demo init --scenario ([a-z][a-z0-9-]*(?:\|[a-z][a-z0-9-]*)*) \[--seed <N>\]", usages[0])
+    require(match is not None, "could not read the registered demo scenarios")
+    names = match[1].split("|")
+    require(len(names) == len(set(names)), "duplicate registered demo scenario")
+    return names
+
+
+def run_demos(out: Path, fa: Path | None, *, bean_check: Path | None, bean_query: Path | None,
+              hledger: Path | None, timeout: int) -> dict:
+    """Build every advertised FY2026 demo and compare its posted stock with the external tools."""
+    require(timeout > 0, "timeout must be a positive integer")
+    producer = resolve_tool(fa, "fa")
+    tools = dict(bean_check=resolve_tool(bean_check, "bean-check"),
+                 bean_query=resolve_tool(bean_query, "bean-query"), hledger=resolve_tool(hledger, "hledger"))
+    scenarios = demo_scenarios()
+    out = out.absolute()
+    out.mkdir(mode=0o700, parents=True, exist_ok=False)
+    pin = snapshot(producer)
+    report = {"format": "fa-plaintext-demos-v1", "producer": {"path": str(producer), **pin},
+              "seed": 7, "effective_through": "2026-12-31", "scenarios": scenarios, "results": {}}
+    for name in scenarios:
+        case = out / name
+        case.mkdir()
+        commands = Commands(case, timeout)
+        command = [str(producer), "--json", "--via", "direct", "--book", str(case / "book"),
+                   "--keys", str(case / "book.keys")]
+        try:
+            initialized = json.loads(commands.run("init", [*command, "demo", "init", "--scenario", name,
+                                                            "--seed", str(report["seed"])]))
+            require(initialized.get("event") == "demo_initialized", "demo init returned an unexpected event")
+            data = initialized["data"]
+            book = initialized["book"]
+            seq = data["head_seq"]
+            require(data["scenario"] == name and data["seed"] == report["seed"]
+                    and book == data["book_id"] and isinstance(book, str) and re.fullmatch(r"[0-9a-f]{32}", book)
+                    and type(seq) is int and seq > 0, "demo init identity, seed or frontier mismatch")
+            select = ["--as-of", report["effective_through"], "--as-known-at", str(seq)]
+            tb = json.loads(commands.run("tb", [*command, "tb", *select]))
+            require(tb.get("event") == "trial_balance" and tb["book"] == book
+                    and tb["coordinate"]["known_at"] == seq and tb["coordinate"]["branch"] == "trunk"
+                    and tb["data"]["effective_through"] == report["effective_through"],
+                    "trial balance is for a different book, branch, cutoff or frontier")
+            tb_path = case / commands.records[-1]["stdout"]["file"]
+            for fmt in ("csv-gl", "beancount", "hledger"):
+                exported = json.loads(commands.run(fmt, [*command, "export", fmt, *select, "--out", str(case / fmt)]))
+                require(exported.get("event") == "journal_exported" and exported["book"] == book
+                        and exported["coordinate"] == tb["coordinate"] and exported["data"]["format"] == fmt,
+                        f"{fmt} export identity, format or coordinate mismatch")
+            comparison = run_oracle(case / "csv-gl", case / "beancount", case / "hledger", case / "comparison",
+                                    native_tb=tb_path, timeout=timeout, **tools)
+            result = {key: comparison[key] for key in ("status", "entries", "postings", "account_currency_cells",
+                                                       "commands", "error") if key in comparison}
+            result.update(book=book, known_at=seq, report=f"{name}/comparison/report.json")
+        except Unavailable as error:
+            result = {"status": "UNRUN", "error": str(error)}
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result = {"status": "FAIL", "error": str(error)}
+        report["results"][name] = result
+    statuses = [case["status"] for case in report["results"].values()]
+    report["demos_passed"] = statuses.count("PASS")
+    report["demos_total"] = len(scenarios)
+    report["status"] = "PASS"
+    if "FAIL" in statuses:
+        report["status"] = "FAIL"
+    elif "UNRUN" in statuses:
+        report["status"] = "UNRUN"
+    try:
+        require(snapshot(producer) == pin, "native producer changed during the demo run")
+    except (OSError, OracleError) as error:
+        report.update(status="FAIL", error=str(error))
+    write_json(out / "report.json", report)
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    demos = argv[:1] == ["demos"]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv-gl", type=Path, required=True, help="untouched fa export csv-gl output")
-    parser.add_argument("--beancount", type=Path, required=True, help="untouched same-coordinate Beancount export")
-    parser.add_argument("--hledger-journal", type=Path, required=True, help="untouched same-coordinate hledger export")
-    parser.add_argument("--native-tb", type=Path, help="untouched fa tb --as-of <date> --as-known-at <seq> --json output")
+    if demos:
+        parser.prog += " demos"
+        parser.add_argument("--fa", type=Path, help="native fa producer executable; default PATH")
+    else:
+        parser.epilog = "Use the demos subcommand to initialize and compare every registered demo book."
+        parser.add_argument("--csv-gl", type=Path, required=True, help="untouched fa export csv-gl output")
+        parser.add_argument("--beancount", type=Path, required=True, help="untouched same-coordinate Beancount export")
+        parser.add_argument("--hledger-journal", type=Path, required=True, help="untouched same-coordinate hledger export")
+        parser.add_argument("--native-tb", type=Path, help="untouched fa tb --as-of <date> --as-known-at <seq> --json output")
     parser.add_argument("--out", type=Path, required=True, help="new directory for immutable input copies and tool transcripts")
     parser.add_argument("--bean-check", type=Path, help="real bean-check executable; default PATH")
     parser.add_argument("--bean-query", type=Path, help="real bean-query executable; default PATH")
     parser.add_argument("--hledger", type=Path, help="real hledger executable; default PATH (requires --no-conf)")
     parser.add_argument("--timeout", type=int, default=300, help="per-command timeout in seconds")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv[1:] if demos else argv)
     try:
-        report = run_oracle(args.csv_gl, args.beancount, args.hledger_journal, args.out,
-                            native_tb=args.native_tb,
-                            bean_check=args.bean_check, bean_query=args.bean_query,
-                            hledger=args.hledger, timeout=args.timeout)
+        options = dict(bean_check=args.bean_check, bean_query=args.bean_query, hledger=args.hledger, timeout=args.timeout)
+        if demos:
+            report = run_demos(args.out, args.fa, **options)
+        else:
+            report = run_oracle(args.csv_gl, args.beancount, args.hledger_journal, args.out,
+                                native_tb=args.native_tb, **options)
     except Unavailable as error:
         report = {"status": "UNRUN", "error": str(error)}
     except (OracleError, OSError, UnicodeError, ValueError) as error:
         report = {"status": "FAIL", "error": str(error)}
-    print(json.dumps({key: report[key] for key in ("status", "error", "entries", "postings", "account_currency_cells", "commands")
+    print(json.dumps({key: report[key] for key in ("status", "error", "entries", "postings", "account_currency_cells",
+                                                    "commands", "demos_passed", "demos_total")
                       if key in report}, sort_keys=True))
     return {"PASS": 0, "FAIL": 1, "UNRUN": 4}[report["status"]]
 
