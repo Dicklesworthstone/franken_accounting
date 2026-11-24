@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=58c89262ae1abbdb4c29271b2da9f1e4a7536ce7
+tree=0667575c48cd98d7226019b3cca20acf40a9db42
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=159
+log_dir=/Volumes/SANDISK_SSD/scratch/fa-build-20261122.BBDlDDVP/fa-checkpoint-merged.T7ZKn1/tier0
+recorded_utc=2026-11-24T03:02:27Z
