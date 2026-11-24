@@ -28,6 +28,8 @@ const PREPARERS: &[(&str, i128, i128)] = &[
     ("min_account_entries", 0, u32::MAX as i128),
 ];
 const SUSPENSE: &[(&str, i128, i128)] = &[("max_age_days", 0, u32::MAX as i128)];
+const INVENTORY: &[(&str, i128, i128)] = &[("stale_days", 1, u32::MAX as i128)];
+const BALANCE_SHEET: &[(&str, i128, i128)] = &[("fair_value_haircut_bps", 0, 10_000)];
 const INVESTOR_COHORT: &[(&str, i128, i128)] = &[("cohort_window_days", 1, u32::MAX as i128)];
 const MANUAL_RULE: &[(&str, i128, i128)] = &[
     ("min_account_entries", 0, u32::MAX as i128),
@@ -87,8 +89,9 @@ const BENFORD: &[(&str, i128, i128)] = &[
 ///
 /// Both native facade admission and transport framing use this inventory.
 /// Parameters must be explicit, unique and lexically ordered. JET
-/// round-amount/period-end v2, suspense-aging v3 and net-investment v5 accept an
-/// optional cutoff; expense-capitalization v2 uses its complete all-date population.
+/// round-amount/period-end v2, suspense/inventory-aging and balance-sheet solvency
+/// v3, and net-investment v5 accept an optional cutoff; expense-capitalization v2
+/// uses its complete all-date population.
 /// Tracing v2 requires a claim date and canonical account/source handles. This
 /// is neither source verification nor a claim that the delivered result agrees
 /// with the selected algorithm.
@@ -106,6 +109,8 @@ pub fn profile(
         ("jet.post_closing", 1) => ("FA-EVID-L03", &[][..]),
         ("jet.weekend", 1) => ("FA-EVID-L04", &[][..]),
         ("jet.suspense_aging", 3) => ("FA-EVID-L28", SUSPENSE),
+        ("aging.inventory", 3) => ("FA-EVID-L49", INVENTORY),
+        ("solvency.balance_sheet_test", 3) => ("FA-EVID-L52", BALANCE_SHEET),
         ("expense.capitalization", 2) => ("FA-EVID-L48", &[][..]),
         ("ponzi.net_investment", 5) => ("FA-EVID-L56", INVESTOR_COHORT),
         ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
@@ -147,6 +152,7 @@ pub fn profile(
             && !aging
             && effective_through.is_some()
             && !(id == "jet.suspense_aging" && version == 3)
+            && !(version == 3 && matches!(id, "aging.inventory" | "solvency.balance_sheet_test"))
             && !(id == "ponzi.net_investment" && version == 5)
             && !(version == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")))
         || parameters.len() != bounds.len()
@@ -194,6 +200,47 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn balance_screens_bind_their_version_full_parameters_and_optional_cutoff() {
+        for (id, name, low, high, evidence) in [
+            (
+                "aging.inventory",
+                "stale_days",
+                1,
+                i128::from(u32::MAX),
+                "FA-EVID-L49",
+            ),
+            (
+                "solvency.balance_sheet_test",
+                "fair_value_haircut_bps",
+                0,
+                10_000,
+                "FA-EVID-L52",
+            ),
+        ] {
+            for cutoff in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+                for value in [low, high] {
+                    let parameters = [(name, value)];
+                    assert_eq!(profile(id, 3, cutoff, &parameters, &[]), Some(evidence));
+                    assert_eq!(profile(id, 2, cutoff, &parameters, &[]), None);
+                    assert_eq!(profile(id, 4, cutoff, &parameters, &[]), None);
+                    assert_eq!(
+                        profile(id, 3, cutoff, &parameters, &[("account", "1000")]),
+                        None,
+                    );
+                    assert_eq!(profile(id, 3, cutoff, &[], &[]), None);
+                    assert_eq!(
+                        profile(id, 3, cutoff, &[(name, value), (name, value)], &[]),
+                        None,
+                    );
+                }
+                assert_eq!(profile(id, 3, cutoff, &[(name, low - 1)], &[]), None);
+                assert_eq!(profile(id, 3, cutoff, &[(name, high + 1)], &[]), None);
+                assert_eq!(profile(id, 3, cutoff, &[("unknown", low)], &[]), None);
+            }
+        }
+    }
 
     #[test]
     fn temporal_graph_profiles_bind_exact_versions_complete_parameters_and_whole_book_scope() {

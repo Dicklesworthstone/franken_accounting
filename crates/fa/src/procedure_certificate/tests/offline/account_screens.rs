@@ -267,16 +267,384 @@ fn capitalization_portably_replays_declared_asset_and_accrual_roles_and_full_wid
     }
 }
 
+fn liability_account(f: &mut Fixture, code: &str) {
+    let cx = f.cx();
+    f.runtime
+        .block_on(f.book.open_account(
+            &cx,
+            &AccountSpec {
+                code: code.into(),
+                name: code.into(),
+                account_type: AccountType::LIABILITY.0,
+                normal_balance: 1,
+                is_leaf: true,
+                unit_policy: UnitPolicy::AnyCurrency,
+                parent_code: None,
+                limit: None,
+            },
+            day(1),
+            None,
+            PRINCIPAL,
+            day(1),
+            format!("offline-liability:{code}").as_bytes(),
+            &cap(&["schema_change"]),
+        ))
+        .unwrap()
+        .unwrap();
+}
+
+fn inventory_request(f: &Fixture, through: Option<u8>) -> ProcedureRequest {
+    let mut selected = request(f, "aging.inventory", through);
+    selected.parameters = selected.parameters.set("stale_days", 10).unwrap();
+    selected
+}
+
+fn solvency_request(f: &Fixture, through: Option<u8>, haircut: u32) -> ProcedureRequest {
+    let mut selected = request(f, "solvency.balance_sheet_test", through);
+    selected.parameters = selected
+        .parameters
+        .set("fair_value_haircut_bps", i128::from(haircut))
+        .unwrap();
+    selected
+}
+
+#[test]
+fn inventory_aging_portably_replays_relief_dates_cutoffs_reversals_and_historical_roles() {
+    let mut f = Fixture::new(229);
+    f.assign_role("1000", "inventory");
+    f.assign_role("1010", "inventory");
+    let empty = f.certify(&inventory_request(&f, None));
+    assert!(empty.report.findings.is_empty());
+    let (stock, _) = f.post(1, "3000", "1000", 10_000, false);
+    let (relief, _) = f.post(5, "1000", "6000", 2_500, false);
+    // Negative inventory positions do not become stale positive balances.
+    f.post(6, "1010", "6000", 50, false);
+    // An omitted cutoff comes from all live postings, including other accounts.
+    f.post(28, "3000", "6000", 1, false);
+    let boundary = f.certify(&inventory_request(&f, Some(15)));
+    assert!(boundary.report.findings.is_empty());
+    let moderate = f.certify(&inventory_request(&f, Some(16)));
+    assert_eq!(moderate.report.findings.len(), 1);
+    assert_eq!(moderate.report.findings[0].severity, Severity::Medium);
+    assert_eq!(moderate.report.findings[0].statistic.value, 7_500);
+    assert_eq!(moderate.report.findings[0].statistic.population, 3);
+    let aged = f.certify(&inventory_request(&f, Some(25)));
+    assert_eq!(aged.report.findings[0].severity, Severity::High);
+    let derived_date = f.certify(&inventory_request(&f, None));
+    assert!(
+        derived_date.report.findings[0]
+            .narrative
+            .contains("23 day(s)")
+    );
+    reverse(&mut f, relief, b"offline-inventory-later-reversal", 31);
+    let historical = f.certify(&inventory_request(&f, Some(25)));
+    assert_eq!(historical.report.findings, aged.report.findings);
+    let restored = f.certify(&inventory_request(&f, Some(31)));
+    assert_eq!(restored.report.findings[0].statistic.value, 10_000);
+    assert!(restored.report.findings[0].narrative.contains("30 day(s)"));
+    assert_eq!(
+        restored.report.findings[0].cites,
+        vec![
+            Cite::Account(f.id("1000")),
+            Cite::Leg {
+                entry: stock,
+                ordinal: 1,
+            },
+        ]
+    );
+    unassign_role(&mut f, "1000", "inventory");
+    let no_positive_inventory = f.certify(&inventory_request(&f, None));
+    assert!(no_positive_inventory.report.findings.is_empty());
+
+    let account = f.id("1000").0;
+    let unit = f.unit.0;
+    let key = f.book.checkpoint_public_key();
+    let artifacts = [
+        (empty, None),
+        (boundary, None),
+        (moderate, Some(7_500)),
+        (aged, Some(7_500)),
+        (derived_date, Some(7_500)),
+        (historical, Some(7_500)),
+        (restored, Some(10_000)),
+        (no_positive_inventory, None),
+    ]
+    .into_iter()
+    .map(|(certified, amount)| {
+        let produced = produce(&mut f, &certified.certificate);
+        (certified, produced, amount)
+    })
+    .collect::<Vec<_>>();
+    drop(f);
+    for (certified, produced, expected) in artifacts {
+        let procedure = verify(&produced, &certified.certificate, key)
+            .procedure
+            .unwrap();
+        assert_eq!(
+            procedure.parameters,
+            VerifiedProcedureParameters::InventoryAging { stale_days: 10 }
+        );
+        assert_eq!(procedure.version, 3);
+        assert_eq!(procedure.live_entries, certified.report.work.entries);
+        assert_eq!(procedure.live_legs, certified.report.work.legs);
+        assert_eq!(procedure.comparisons, certified.report.work.comparisons);
+        let Some(expected) = expected else {
+            assert!(procedure.findings.is_empty());
+            continue;
+        };
+        assert_eq!(procedure.findings.len(), 1);
+        let VerifiedProcedureStatistic::StaleInventory {
+            account: found,
+            unit: found_unit,
+            amount,
+            scale,
+            legs,
+        } = &procedure.findings[0].statistic
+        else {
+            panic!("inventory statistic");
+        };
+        assert_eq!(*found, account);
+        assert_eq!(*found_unit, unit);
+        assert_eq!(*amount, expected);
+        assert_eq!(*scale, 2);
+        assert_eq!(*legs, vec![(stock.0, 1)]);
+    }
+}
+
+#[test]
+fn balance_sheet_solvency_portably_replays_signed_bases_exact_haircuts_and_effective_history() {
+    let mut f = Fixture::new(230);
+    liability_account(&mut f, "2000");
+    liability_account(&mut f, "2010");
+    let (asset, _) = f.post(1, "3000", "1000", 10_003, false);
+    f.post(2, "1010", "6000", 2_001, false);
+    let (debt, _) = f.post(3, "2000", "6000", 9_000, false);
+    f.post(4, "6000", "2010", 1_000, false);
+    let without_haircut = f.certify(&solvency_request(&f, Some(30), 0));
+    assert!(without_haircut.report.findings.is_empty());
+    let haircut = f.certify(&solvency_request(&f, Some(30), 1_000));
+    assert_eq!(haircut.report.findings.len(), 1);
+    assert_eq!(haircut.report.findings[0].severity, Severity::Critical);
+    assert_eq!(haircut.report.findings[0].statistic.value, 799);
+    assert_eq!(haircut.report.findings[0].statistic.population, 4);
+    assert!(
+        haircut.report.findings[0]
+            .narrative
+            .contains("asset_basis=8002, adjusted_assets=7201, total_liabilities=8000")
+    );
+    let total_haircut = f.certify(&solvency_request(&f, Some(30), 10_000));
+    assert_eq!(total_haircut.report.findings[0].statistic.value, 8_000);
+
+    let jpy = f.book.context().units.lookup("JPY").unwrap();
+    let eur = f.book.context().units.lookup("EUR").unwrap();
+    let large = i128::MAX / 2;
+    let large_deficit = 8_507_059_173_023_461_586_584_365_185_794_205_287i128;
+    let mut yen = template(&f, asset, b"offline-solvency-wide", 10);
+    yen.legs = vec![
+        LegPayload::simple(Side::Debit, f.id("1000"), Amount::new(jpy, large)),
+        LegPayload::simple(Side::Credit, f.id("2000"), Amount::new(jpy, large)),
+    ];
+    yen.unit_totals = EntryPayload::fold_unit_totals(&yen.legs).unwrap();
+    post(&mut f, yen);
+    let wide = f.certify(&solvency_request(&f, Some(30), 1_000));
+    assert_eq!(wide.report.findings[0].statistic.value, large_deficit);
+
+    for (key, from, amount) in [
+        (b"offline-solvency-negative-asset".as_slice(), "1020", 500),
+        (b"offline-solvency-euro-debt".as_slice(), "2000", 100),
+    ] {
+        let mut euro = template(&f, asset, key, 11);
+        euro.legs = vec![
+            LegPayload::simple(Side::Credit, f.id(from), Amount::new(eur, amount)),
+            LegPayload::simple(Side::Debit, f.id("6000"), Amount::new(eur, amount)),
+        ];
+        euro.unit_totals = EntryPayload::fold_unit_totals(&euro.legs).unwrap();
+        post(&mut f, euro);
+    }
+    let signed = f.certify(&solvency_request(&f, Some(30), 1_000));
+    let negative_assets = signed
+        .report
+        .findings
+        .iter()
+        .find(|finding| finding.statistic.value == 600)
+        .unwrap();
+    assert!(
+        negative_assets
+            .narrative
+            .contains("asset_basis=-500, adjusted_assets=-500")
+    );
+    reverse(&mut f, debt, b"offline-solvency-future-reversal", 31);
+    let historical = f.certify(&solvency_request(&f, Some(30), 1_000));
+    assert_eq!(historical.report.findings, signed.report.findings);
+    let after_reversal = f.certify(&solvency_request(&f, Some(31), 1_000));
+    let all_dates = f.certify(&solvency_request(&f, None, 1_000));
+    assert_eq!(after_reversal.report.findings, all_dates.report.findings);
+
+    let usd = f.unit.0;
+    let key = f.book.checkpoint_public_key();
+    let artifacts = [
+        (without_haircut, 0, vec![]),
+        (haircut, 1_000, vec![(usd, 799)]),
+        (total_haircut, 10_000, vec![(usd, 8_000)]),
+        (wide, 1_000, vec![(usd, 799), (jpy.0, large_deficit)]),
+        (
+            signed,
+            1_000,
+            vec![(usd, 799), (jpy.0, large_deficit), (eur.0, 600)],
+        ),
+        (
+            historical,
+            1_000,
+            vec![(usd, 799), (jpy.0, large_deficit), (eur.0, 600)],
+        ),
+        (
+            after_reversal,
+            1_000,
+            vec![(jpy.0, large_deficit), (eur.0, 600)],
+        ),
+        (all_dates, 1_000, vec![(jpy.0, large_deficit), (eur.0, 600)]),
+    ]
+    .into_iter()
+    .map(|(certified, haircut, amounts)| {
+        let produced = produce(&mut f, &certified.certificate);
+        (certified, produced, haircut, amounts)
+    })
+    .collect::<Vec<_>>();
+    drop(f);
+    for (certified, produced, haircut, expected) in artifacts {
+        let procedure = verify(&produced, &certified.certificate, key)
+            .procedure
+            .unwrap();
+        assert_eq!(
+            procedure.parameters,
+            VerifiedProcedureParameters::BalanceSheetSolvency {
+                fair_value_haircut_bps: haircut,
+            }
+        );
+        assert_eq!(procedure.version, 3);
+        assert_eq!(procedure.live_entries, certified.report.work.entries);
+        assert_eq!(procedure.live_legs, certified.report.work.legs);
+        assert_eq!(procedure.comparisons, certified.report.work.comparisons);
+        let amounts = procedure
+            .findings
+            .iter()
+            .map(|finding| {
+                let VerifiedProcedureStatistic::InsolvencyDeficit {
+                    unit,
+                    amount,
+                    scale,
+                    accounts,
+                    entries,
+                } = &finding.statistic
+                else {
+                    panic!("solvency statistic");
+                };
+                assert_eq!(*scale, if *unit == jpy.0 { 0 } else { 2 });
+                assert!(!accounts.is_empty());
+                assert!(!entries.is_empty());
+                assert!(accounts.windows(2).all(|pair| pair[0] < pair[1]));
+                assert!(entries.windows(2).all(|pair| pair[0] < pair[1]));
+                (*unit, *amount)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(amounts, expected.into_iter().collect());
+    }
+}
+
+#[test]
+fn portable_solvency_refuses_inline_valuations_even_outside_its_effective_window() {
+    use fa_model::valuation::{
+        InlineValuationTerms, ValuationApplicabilityLaw, ValuationBasisLaw, ValuationSubject,
+    };
+
+    let mut f = Fixture::new(231);
+    liability_account(&mut f, "2000");
+    let (source, _) = f.post(1, "2000", "1000", 10_000, false);
+    let original = f.certify(&solvency_request(&f, Some(30), 1_000));
+    let mut later_valuation = template(&f, source, b"offline-future-valuation", 31);
+    later_valuation.extensions.push(
+        InlineValuationTerms::to_extension(&[InlineValuationTerms {
+            valuation_id: "future-independent-valuation".into(),
+            subject: ValuationSubject::Account(f.id("1000")),
+            entity: None,
+            unit: f.unit,
+            basis_law: ValuationBasisLaw::SignedDelta,
+            applicability: ValuationApplicabilityLaw::ExactAsOf {
+                effective_date: day(31),
+            },
+            signed_amount: 500,
+            supersedes: None,
+        }])
+        .unwrap(),
+    );
+    post(&mut f, later_valuation);
+    let selected = f.certify(&solvency_request(&f, Some(30), 1_000));
+    assert_eq!(original.report.findings, selected.report.findings);
+
+    // A supported carrier transports the same authenticated prefix. Replacing
+    // only its certificate bypasses the producer guard; the recipient must
+    // independently reject the valuation-bearing solvency source profile.
+    let carrier = f.certify(&round_request(&f, 2, Some(day(30))));
+    let produced = produce(&mut f, &carrier.certificate);
+    let key = f.book.checkpoint_public_key();
+    let forged = replace_certificate(&produced.bundle.bytes, &selected.certificate);
+    let refused = verify_report_expected(
+        &forged,
+        &[key],
+        None,
+        None,
+        Some(selected.certificate.digest()),
+    )
+    .unwrap_err();
+    assert_eq!(refused.predicate, "procedure_profile", "{refused:?}");
+
+    let before = f.head();
+    let cx = f.cx();
+    let refused = f
+        .runtime
+        .block_on(f.book.produce_procedure_report_bundle(
+            &cx,
+            PRINCIPAL,
+            &cap(&["read", "produce"]),
+            None,
+            &selected.certificate,
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, fa_notary::code::SCOPE_UNSUPPORTED);
+    assert!(refused.message.contains("inline valuation"));
+    assert_eq!(f.head(), before);
+
+    // A later checkpoint covers an older certificate without importing later
+    // valuation records into that certificate's original known-at prefix.
+    let historical = produce(&mut f, &original.certificate);
+    drop(f);
+    verify(&historical, &original.certificate, key);
+}
+
 #[test]
 fn account_screens_refuse_rehashed_omissions_amounts_roles_citations_and_work() {
     let mut f = Fixture::new(228);
     f.assign_role("1000", "suspense");
+    f.assign_role("1000", "inventory");
     f.assign_role("1020", "fixed_asset");
+    liability_account(&mut f, "2000");
     f.post(1, "3000", "1000", 10_000, false);
     f.post(2, "6000", "1020", 5_000, false);
-    for procedure in ["jet.suspense_aging", "expense.capitalization"] {
-        let through = (procedure == "jet.suspense_aging").then_some(30);
-        let certified = f.certify(&request(&f, procedure, through));
+    f.post(3, "2000", "6000", 20_000, false);
+    for procedure in [
+        "jet.suspense_aging",
+        "expense.capitalization",
+        "aging.inventory",
+        "solvency.balance_sheet_test",
+    ] {
+        let selected = match procedure {
+            "aging.inventory" => inventory_request(&f, Some(30)),
+            "solvency.balance_sheet_test" => solvency_request(&f, Some(30), 0),
+            "jet.suspense_aging" => request(&f, procedure, Some(30)),
+            _ => request(&f, procedure, None),
+        };
+        let certified = f.certify(&selected);
         assert_eq!(certified.report.findings.len(), 1);
         let produced = produce(&mut f, &certified.certificate);
         let key = f.book.checkpoint_public_key();
@@ -309,9 +677,12 @@ fn account_screens_refuse_rehashed_omissions_amounts_roles_citations_and_work() 
                     let cite = report.findings[0]
                         .cites
                         .iter_mut()
-                        .find(|cite| matches!(cite, Cite::Entry(_)))
+                        .find(|cite| matches!(cite, Cite::Entry(_) | Cite::Leg { .. }))
                         .unwrap();
-                    *cite = Cite::Entry(VId(1));
+                    match cite {
+                        Cite::Entry(entry) | Cite::Leg { entry, .. } => *entry = VId(1),
+                        _ => unreachable!(),
+                    }
                 }
                 "narrative" => report.findings[0].narrative.push_str(" fabricated"),
                 "omitted" => report.findings.clear(),

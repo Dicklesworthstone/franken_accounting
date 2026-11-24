@@ -16,6 +16,10 @@
 //! cutoff and uses the account roles declared at the recorded frontier.
 //! Capitalization v2 screens live fixed-asset debits against expense and
 //! accrued-expense credits using the same historical chart and role controls.
+//! Inventory aging v3 uses authenticated inventory roles and credit relief
+//! within the selected effective window. Balance-sheet solvency v3 preserves
+//! signed contra-account balances and applies a declared haircut per native
+//! unit; documented valuation inputs are outside this book-basis profile.
 //! Post-closing v1
 //! reconstructs the first journaled close of each period and compares it with
 //! each live posting's recording sequence. Unusual-accounts v2 independently
@@ -56,6 +60,7 @@ use crate::codec::{Reader, Writer};
 
 mod account_screens;
 mod aging;
+mod balance_screens;
 mod benford;
 mod benford_digits;
 mod correction_history;
@@ -102,6 +107,13 @@ pub enum VerifiedProcedureParameters {
         max_age_days: u32,
     },
     ExpenseCapitalization,
+    InventoryAging {
+        stale_days: u32,
+    },
+    /// Signed native book balances, with a declared haircut on positive assets.
+    BalanceSheetSolvency {
+        fair_value_haircut_bps: u32,
+    },
     /// Posted principal, with cash attribution and explicit v5 transfer law.
     PonziNetInvestment {
         cohort_window_days: u32,
@@ -249,6 +261,8 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "jet.weekend",
             Self::SuspenseAging { .. } => "jet.suspense_aging",
             Self::ExpenseCapitalization => "expense.capitalization",
+            Self::InventoryAging { .. } => "aging.inventory",
+            Self::BalanceSheetSolvency { .. } => "solvency.balance_sheet_test",
             Self::PonziNetInvestment { .. } => "ponzi.net_investment",
             Self::PeriodBoundary => "cutoff.period_boundary",
             Self::UnrecordedLiabilities { .. } => "completeness.unrecorded_liabilities",
@@ -288,6 +302,8 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "FA-EVID-L04",
             Self::SuspenseAging { .. } => "FA-EVID-L28",
             Self::ExpenseCapitalization => "FA-EVID-L48",
+            Self::InventoryAging { .. } => "FA-EVID-L49",
+            Self::BalanceSheetSolvency { .. } => "FA-EVID-L52",
             Self::PonziNetInvestment { .. } => "FA-EVID-L56",
             Self::PeriodBoundary => "FA-EVID-L11",
             Self::UnrecordedLiabilities { .. } => "FA-EVID-L44",
@@ -343,6 +359,10 @@ impl VerifiedProcedureParameters {
                 ("bucket_3", edges[2]),
             ],
             Self::SuspenseAging { max_age_days } => vec![("max_age_days", max_age_days)],
+            Self::InventoryAging { stale_days } => vec![("stale_days", stale_days)],
+            Self::BalanceSheetSolvency {
+                fair_value_haircut_bps,
+            } => vec![("fair_value_haircut_bps", fair_value_haircut_bps)],
             Self::UnusualAccounts {
                 max_pair_count,
                 min_population,
@@ -552,6 +572,8 @@ impl VerifiedProcedureParameters {
             | Self::SameSameSame => &[],
             Self::OpenItemsAging { .. } => &aging::DEFAULTS,
             Self::SuspenseAging { .. } => &account_screens::SUSPENSE_DEFAULTS,
+            Self::InventoryAging { .. } => &[("stale_days", 90)],
+            Self::BalanceSheetSolvency { .. } => &[("fair_value_haircut_bps", 0)],
             Self::UnusualAccounts { .. } => &unusual_accounts::DEFAULTS,
             Self::UnusualPreparers { .. } => &jet::PREPARER_DEFAULTS,
             Self::ManualVsRule { .. } => &jet::MANUAL_DEFAULTS,
@@ -579,7 +601,12 @@ impl VerifiedProcedureParameters {
 
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
         matches!(self, Self::OpenItemsAging { .. }) && version == 1
-            || matches!(self, Self::SuspenseAging { .. }) && version == 3
+            || matches!(
+                self,
+                Self::SuspenseAging { .. }
+                    | Self::InventoryAging { .. }
+                    | Self::BalanceSheetSolvency { .. }
+            ) && version == 3
             || matches!(self, Self::PonziNetInvestment { .. }) && version == 5
             || version == 2
                 && (self.is_trace()
@@ -665,6 +692,13 @@ impl VerifiedProcedureParameters {
         matches!(self, Self::PonziNetInvestment { .. })
     }
 
+    pub(crate) fn is_balance_screen(self) -> bool {
+        matches!(
+            self,
+            Self::InventoryAging { .. } | Self::BalanceSheetSolvency { .. }
+        )
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
@@ -680,6 +714,8 @@ impl VerifiedProcedureParameters {
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::ExpenseCapitalization
+            | Self::InventoryAging { .. }
+            | Self::BalanceSheetSolvency { .. }
             | Self::PonziNetInvestment { .. }
             | Self::UnrecordedLiabilities { .. }
             | Self::SameSameDifferent { .. }
@@ -815,6 +851,22 @@ pub enum VerifiedProcedureStatistic {
         unit: u32,
         amount: i128,
         scale: u8,
+    },
+    /// Positive inventory balance with no recent credit relief movement.
+    StaleInventory {
+        account: u128,
+        unit: u32,
+        amount: i128,
+        scale: u8,
+        legs: Vec<(u128, u16)>,
+    },
+    /// Signed book-basis deficit, not an attested fair value or legal conclusion.
+    InsolvencyDeficit {
+        unit: u32,
+        amount: i128,
+        scale: u8,
+        accounts: Vec<u128>,
+        entries: Vec<u128>,
     },
     /// The rarest undirected debit/credit pair in this entry, counted once
     /// per live posting. A self-pair has only one account citation.
@@ -998,6 +1050,8 @@ impl VerifiedProcedureStatistic {
             Self::IsoWeekday { .. } => "iso_weekday",
             Self::SuspenseAge { .. } => "age_days",
             Self::CapitalizedExpense { .. } => "capitalized_expense_amount",
+            Self::StaleInventory { .. } => "stale_inventory_balance",
+            Self::InsolvencyDeficit { .. } => "insolvency_deficit",
             Self::AccountPairOccurrences { .. } => "pair_occurrences",
             Self::PreparerAccountPostings { .. } => "preparer_account_postings",
             Self::RuleShare { .. } => "rule_share_bps",
@@ -1020,7 +1074,9 @@ impl VerifiedProcedureStatistic {
     pub(crate) fn value(&self) -> i128 {
         match self {
             Self::InvestorPrincipal { amount, .. }
-            | Self::UnresolvedInvestorCash { amount, .. } => *amount,
+            | Self::UnresolvedInvestorCash { amount, .. }
+            | Self::StaleInventory { amount, .. }
+            | Self::InsolvencyDeficit { amount, .. } => *amount,
             Self::AgedOpenAmount { totals, .. } => totals[3],
             Self::RoundLegs { ordinals } => ordinals.len() as i128,
             Self::AccountRoundLegs { count, .. } => i128::from(*count),
@@ -1065,6 +1121,8 @@ impl VerifiedProcedureStatistic {
             | Self::InvestorPrincipal { scale, .. }
             | Self::UnresolvedInvestorCash { scale, .. }
             | Self::CapitalizedExpense { scale, .. }
+            | Self::StaleInventory { scale, .. }
+            | Self::InsolvencyDeficit { scale, .. }
             | Self::SubsequentEventAmount { scale, .. }
             | Self::UnrecordedLiabilityAmount { scale, .. }
             | Self::AgedOpenAmount { scale, .. }
@@ -1105,7 +1163,7 @@ fn party_citations(
 pub struct VerifiedProcedureFinding {
     /// The primary entry citation, absent for account or population findings.
     pub entry: Option<u128>,
-    /// The registered severity tag: 0 (Info), 1 (Low), 2 (Medium), or 3 (High).
+    /// The registered severity tag: 0 (Info), 1 (Low), 2 (Medium), 3 (High), or 4 (Critical).
     pub severity: u8,
     pub statistic: VerifiedProcedureStatistic,
     pub population: u64,
@@ -1117,7 +1175,9 @@ impl VerifiedProcedureFinding {
     /// ordered citation list. Other supported multi-finding profiles have a
     /// distinct first citation; its tag and little-endian identity suffice.
     fn citation_order(&self) -> Vec<Vec<u8>> {
-        if let VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. } = &self.statistic {
+        if let VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. }
+        | VerifiedProcedureStatistic::StaleInventory { account, legs, .. } = &self.statistic
+        {
             let mut account_cite = vec![3];
             account_cite.extend_from_slice(&account.to_le_bytes());
             let mut cites = vec![account_cite];
@@ -1148,6 +1208,9 @@ impl VerifiedProcedureFinding {
                 .map(|(tag, id)| (tag, id.to_le_bytes()))
                 .collect(),
             VerifiedProcedureStatistic::InvestorPrincipal {
+                accounts, entries, ..
+            }
+            | VerifiedProcedureStatistic::InsolvencyDeficit {
                 accounts, entries, ..
             } => accounts
                 .iter()
@@ -1460,6 +1523,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.weekend" => ("FA-EVID-L04", None),
         "jet.suspense_aging" => ("FA-EVID-L28", Some(("max_age_days", u32::MAX))),
         "expense.capitalization" => ("FA-EVID-L48", None),
+        "aging.inventory" => ("FA-EVID-L49", Some(("stale_days", u32::MAX))),
+        "solvency.balance_sheet_test" => ("FA-EVID-L52", Some(("fair_value_haircut_bps", 10_000))),
         "ponzi.net_investment" => ("FA-EVID-L56", Some(("cohort_window_days", u32::MAX))),
         "cutoff.period_boundary" => ("FA-EVID-L11", None),
         "completeness.unrecorded_liabilities" => ("FA-EVID-L44", Some(("window_days", u32::MAX))),
@@ -1491,7 +1556,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, inventory aging and book-basis balance-sheet solvency v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1503,6 +1568,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "jet.unusual_accounts"
                 | "jet.suspense_aging"
                 | "expense.capitalization"
+                | "aging.inventory"
+                | "solvency.balance_sheet_test"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
                 | "jet.large_round_reversals"
@@ -1528,11 +1595,21 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (id == "ponzi.net_investment" && version != 5)
         || (matches!(
             id,
-            "events.subsequent" | "jet.suspense_aging" | "graph.layering" | "graph.party_layering"
+            "events.subsequent"
+                | "jet.suspense_aging"
+                | "aging.inventory"
+                | "solvency.balance_sheet_test"
+                | "graph.layering"
+                | "graph.party_layering"
         ) && version != 3)
         || (!matches!(
             id,
-            "events.subsequent" | "jet.suspense_aging" | "graph.layering" | "graph.party_layering"
+            "events.subsequent"
+                | "jet.suspense_aging"
+                | "aging.inventory"
+                | "solvency.balance_sheet_test"
+                | "graph.layering"
+                | "graph.party_layering"
         ) && version == 3)
         || (matches!(
             id,
@@ -1687,6 +1764,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::SuspenseAging {
                 max_age_days: value,
             }
+        } else if id == "aging.inventory" {
+            if value == 0 {
+                return Err(failed(
+                    "procedure_profile",
+                    "inventory stale_days must be positive",
+                ));
+            }
+            VerifiedProcedureParameters::InventoryAging { stale_days: value }
+        } else if id == "solvency.balance_sheet_test" {
+            VerifiedProcedureParameters::BalanceSheetSolvency {
+                fair_value_haircut_bps: value,
+            }
         } else if id == "completeness.unrecorded_liabilities" {
             if value == 0 {
                 return Err(failed(
@@ -1799,6 +1888,9 @@ fn finding(
     match &value.statistic {
         VerifiedProcedureStatistic::InvestorPrincipal {
             accounts, entries, ..
+        }
+        | VerifiedProcedureStatistic::InsolvencyDeficit {
+            accounts, entries, ..
         } => {
             w.count(accounts.len() + entries.len());
             for account in accounts {
@@ -1866,7 +1958,8 @@ fn finding(
             }
         }
         VerifiedProcedureStatistic::AccountRoundLegs { account, legs, .. }
-        | VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. } => {
+        | VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. }
+        | VerifiedProcedureStatistic::StaleInventory { account, legs, .. } => {
             w.count(legs.len() + 1).u8(3).u128(*account);
             for &(entry, ordinal) in legs {
                 w.u8(2).u128(entry).u16(ordinal);
@@ -2662,6 +2755,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::Weekend
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::InventoryAging { .. }
+        | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
         | VerifiedProcedureParameters::PonziNetInvestment { .. }
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
@@ -2798,6 +2893,8 @@ fn recompute_version(
             | VerifiedProcedureParameters::Weekend
             | VerifiedProcedureParameters::SuspenseAging { .. }
             | VerifiedProcedureParameters::ExpenseCapitalization
+            | VerifiedProcedureParameters::InventoryAging { .. }
+            | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
             | VerifiedProcedureParameters::PonziNetInvestment { .. }
             | VerifiedProcedureParameters::PeriodBoundary
             | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
@@ -2851,6 +2948,9 @@ fn recompute_version(
             effective_through,
             registry,
         )?;
+    } else if profile.is_balance_screen() {
+        (findings, live_entries, live_legs, comparisons) =
+            balance_screens::replay(profile, &grouped_population, effective_through, registry)?;
     } else if let VerifiedProcedureParameters::PonziNetInvestment { cohort_window_days } = profile {
         (findings, live_legs, comparisons) =
             ponzi::replay(&grouped_population, cohort_window_days, registry)?;
@@ -2945,6 +3045,8 @@ fn recompute_version(
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::InventoryAging { .. }
+        | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
         | VerifiedProcedureParameters::PonziNetInvestment { .. }
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
@@ -3064,6 +3166,187 @@ mod tests {
         VerifiedProcedureParameters::RoundAmounts { round_power: 3 };
     const ROUND_TWO: VerifiedProcedureParameters =
         VerifiedProcedureParameters::RoundAmounts { round_power: 2 };
+
+    // Literal question framing tests profile admission only; the source and
+    // remaining report body still require independent replay before acceptance.
+    fn balance_screen_question(
+        id: &str,
+        evidence: &str,
+        version: u16,
+        through: Option<i32>,
+        parameters: &[(&str, i128)],
+        inputs: &[(&str, &str)],
+        extended: bool,
+    ) -> Vec<u8> {
+        let mut output = Writer::default();
+        output
+            .bytes(b"fa:procedure-output:v1")
+            .bytes(id.as_bytes())
+            .u16(version)
+            .u8(0)
+            .bytes(evidence.as_bytes())
+            .fixed(&[1; 16])
+            .u64(9);
+        if let Some(day) = through {
+            output.u8(1).i32(day);
+        } else {
+            output.u8(0);
+        }
+        output.count(parameters.len());
+        for (name, value) in parameters {
+            output.bytes(name.as_bytes()).i128(*value);
+        }
+        output.count(inputs.len());
+        for (name, value) in inputs {
+            output.bytes(name.as_bytes()).bytes(value.as_bytes());
+        }
+        let mut certificate = Writer::default();
+        certificate
+            .bytes(if extended {
+                b"fa:procedure-certificate:v2"
+            } else {
+                b"fa:procedure-certificate:v1"
+            })
+            .bytes(&[])
+            .bytes(&[]);
+        if extended {
+            certificate.count(6);
+            for _ in 0..6 {
+                certificate.bytes(&[]);
+            }
+        }
+        certificate
+            .fixed(&[2; 32])
+            .u128(7)
+            .fixed(&[3; 32])
+            .bytes(&output.buf);
+        let digest = framed_hash(b"fa:procedure-certificate-digest:v1", &certificate.buf);
+        certificate.fixed(&digest);
+        certificate.buf
+    }
+
+    #[test]
+    fn balance_screen_v3_questions_admit_optional_cutoffs_and_parameter_endpoints() {
+        for (id, evidence, parameter, values) in [
+            (
+                "aging.inventory",
+                "FA-EVID-L49",
+                "stale_days",
+                [1, u32::MAX],
+            ),
+            (
+                "solvency.balance_sheet_test",
+                "FA-EVID-L52",
+                "fair_value_haircut_bps",
+                [0, 10_000],
+            ),
+        ] {
+            for value in values {
+                for through in [None, Some(i32::MIN), Some(i32::MAX)] {
+                    let bytes = balance_screen_question(
+                        id,
+                        evidence,
+                        3,
+                        through,
+                        &[(parameter, i128::from(value))],
+                        &[],
+                        true,
+                    );
+                    let decoded = decode(&bytes).unwrap();
+                    let expected = if id == "aging.inventory" {
+                        VerifiedProcedureParameters::InventoryAging { stale_days: value }
+                    } else {
+                        VerifiedProcedureParameters::BalanceSheetSolvency {
+                            fair_value_haircut_bps: value,
+                        }
+                    };
+                    assert_eq!(decoded.parameters, expected);
+                    assert_eq!(decoded.version, 3);
+                    assert_eq!(decoded.effective_through, through);
+                    assert!(decoded.parameters.supports_cutoff(3));
+                    assert!(!decoded.parameters.supports_cutoff(2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn balance_screen_questions_reject_unsupported_laws_parameters_and_handles() {
+        for (id, evidence, parameter, valid, lower, upper) in [
+            (
+                "aging.inventory",
+                "FA-EVID-L49",
+                "stale_days",
+                90,
+                1,
+                i128::from(u32::MAX),
+            ),
+            (
+                "solvency.balance_sheet_test",
+                "FA-EVID-L52",
+                "fair_value_haircut_bps",
+                0,
+                0,
+                10_000,
+            ),
+        ] {
+            for version in [0, 1, 2, 4, 5, u16::MAX] {
+                let bytes = balance_screen_question(
+                    id,
+                    evidence,
+                    version,
+                    Some(10),
+                    &[(parameter, valid)],
+                    &[],
+                    true,
+                );
+                assert_eq!(decode(&bytes).err().unwrap().predicate, "procedure_profile");
+            }
+            for value in [i128::MIN, lower - 1, upper + 1, i128::MAX] {
+                let bytes = balance_screen_question(
+                    id,
+                    evidence,
+                    3,
+                    None,
+                    &[(parameter, value)],
+                    &[],
+                    true,
+                );
+                assert_eq!(decode(&bytes).err().unwrap().predicate, "procedure_profile");
+            }
+            for bindings in [
+                Vec::new(),
+                vec![("unregistered_parameter", valid)],
+                vec![(parameter, valid), (parameter, valid)],
+            ] {
+                let bytes = balance_screen_question(id, evidence, 3, None, &bindings, &[], true);
+                assert!(decode(&bytes).is_err(), "{id}: {bindings:?}");
+            }
+            for (claimed_evidence, inputs, extended) in [
+                ("FA-EVID-L01", Vec::new(), true),
+                (
+                    evidence,
+                    vec![("account", "00000000000000000000000000000001")],
+                    true,
+                ),
+                (evidence, Vec::new(), false),
+            ] {
+                let bytes = balance_screen_question(
+                    id,
+                    claimed_evidence,
+                    3,
+                    None,
+                    &[(parameter, valid)],
+                    &inputs,
+                    extended,
+                );
+                assert!(
+                    decode(&bytes).is_err(),
+                    "{id}: {claimed_evidence}, {inputs:?}, extended={extended}"
+                );
+            }
+        }
+    }
 
     fn registry() -> Registry {
         Registry {
@@ -3796,6 +4079,143 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected.into_iter().collect::<Vec<_>>()
             );
+        }
+    }
+
+    #[test]
+    fn balance_screen_v3_cutoff_precedes_reversal_parity_and_restores_original_citations() {
+        let mut definitions = registry();
+        definitions.account_types.insert(1, 2);
+        definitions.account_codes.insert(0, "A-stock".into());
+        definitions
+            .account_roles
+            .insert(0, BTreeSet::from(["inventory".into()]));
+        let original = entry(1000, 1, vec![(1, 100), (1, 100)]);
+        let mut reversed = entry(2, 4, original.legs.clone());
+        reversed.recorded_at = 2;
+        reversed.effective = Some(20);
+        reversed.leg_accounts = vec![(0, false), (1, true)];
+        reversed
+            .supersession
+            .push((original.identity, original.digest, 1));
+        let mut restored = entry(3, 4, original.legs.clone());
+        restored.recorded_at = 3;
+        restored.effective = Some(30);
+        restored
+            .supersession
+            .push((reversed.identity, reversed.digest, 1));
+        let entries = vec![
+            original,
+            reversed,
+            restored,
+            entry(4, 17, Vec::new()),
+            entry(5, 2, vec![(1, 1_000), (1, 1_000)]),
+        ];
+        for (profile, expected_comparisons, expected_statistic_population) in [
+            (
+                VerifiedProcedureParameters::InventoryAging { stale_days: 5 },
+                1,
+                1,
+            ),
+            (
+                VerifiedProcedureParameters::BalanceSheetSolvency {
+                    fair_value_haircut_bps: 5_000,
+                },
+                2,
+                2,
+            ),
+        ] {
+            let mut input_digests = BTreeSet::new();
+            for (through, expected_live) in [(-1, 0), (10, 1), (20, 0), (30, 1)] {
+                let (verified, output) = recompute_version(
+                    [1; 16],
+                    9,
+                    3,
+                    Some(through),
+                    profile,
+                    entries.clone(),
+                    &definitions,
+                )
+                .unwrap();
+                assert_eq!(
+                    verified.population, 5,
+                    "controls, pending entries and future reversals remain in the authenticated source"
+                );
+                assert_eq!(
+                    (
+                        verified.live_entries,
+                        verified.live_legs,
+                        verified.comparisons
+                    ),
+                    (
+                        expected_live,
+                        expected_live * 2,
+                        expected_live * expected_comparisons
+                    )
+                );
+                assert_eq!(verified.findings.len() as u64, expected_live);
+                assert!(input_digests.insert(verified.inputs_digest));
+                if let Some(finding) = verified.findings.first() {
+                    assert_eq!(finding.population, expected_statistic_population);
+                    assert_eq!(finding.entry, None);
+                    match profile {
+                        VerifiedProcedureParameters::InventoryAging { .. } => {
+                            assert_eq!(finding.severity, 3);
+                            assert_eq!(
+                                finding.statistic,
+                                VerifiedProcedureStatistic::StaleInventory {
+                                    account: 0,
+                                    unit: 1,
+                                    amount: 100,
+                                    scale: 2,
+                                    legs: vec![(1000, 0)],
+                                }
+                            );
+                        }
+                        VerifiedProcedureParameters::BalanceSheetSolvency { .. } => {
+                            assert_eq!(finding.severity, 4);
+                            assert_eq!(
+                                finding.statistic,
+                                VerifiedProcedureStatistic::InsolvencyDeficit {
+                                    unit: 1,
+                                    amount: 50,
+                                    scale: 2,
+                                    accounts: vec![0, 1],
+                                    entries: vec![1000],
+                                }
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                let request = Certificate {
+                    source: &[],
+                    registry_digest: [0; 32],
+                    output: &output,
+                    digest: [0; 32],
+                    parameters: profile,
+                    version: 3,
+                    book: [1; 16],
+                    known_at: 9,
+                    effective_through: Some(through),
+                };
+                assert_eq!(
+                    replay(&request, [1; 16], 9, entries.clone(), &definitions)
+                        .unwrap()
+                        .0,
+                    verified
+                );
+                let forged = Certificate {
+                    effective_through: Some(through + 1),
+                    ..request
+                };
+                assert_eq!(
+                    replay(&forged, [1; 16], 9, entries.clone(), &definitions)
+                        .unwrap_err()
+                        .predicate,
+                    "procedure_recomputation"
+                );
+            }
         }
     }
 

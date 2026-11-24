@@ -330,6 +330,147 @@ fn verify_account_pairs(procedures: &Document) -> Result<Registry, ReportError> 
     )
 }
 
+fn balance_screen_document(inventory: bool) -> Document {
+    let (id, evidence, parameter, default) = if inventory {
+        ("aging.inventory", "FA-EVID-L49", "stale_days", 90)
+    } else {
+        (
+            "solvency.balance_sheet_test",
+            "FA-EVID-L52",
+            "fair_value_haircut_bps",
+            0,
+        )
+    };
+    let mut document = account_pair_document();
+    let row = &mut document.arrays.get_mut("procedure").unwrap()[0];
+    row.insert("id".into(), Value::Text(id.into()));
+    row.insert("version".into(), Value::Int(3));
+    row.insert("evidence".into(), Value::Text(evidence.into()));
+    row.insert("complexity".into(), Value::Text("O(legs log legs)".into()));
+    row.insert("tie_break".into(), Value::Text("account_vid".into()));
+    row.insert("effective_through".into(), Value::Text("optional".into()));
+    row.insert(
+        "summary".into(),
+        Value::Text(if inventory {
+            "Inventory-role net debit balance aged since its last credit relief.".into()
+        } else {
+            "Signed native book-basis deficit after a declared asset haircut.".into()
+        }),
+    );
+    document.arrays.insert(
+        "parameter".into(),
+        vec![BTreeMap::from([
+            ("procedure".into(), Value::Text(id.into())),
+            ("name".into(), Value::Text(parameter.into())),
+            ("default".into(), Value::Int(default)),
+        ])],
+    );
+    document
+}
+
+fn verify_balance_screen(procedures: &Document, inventory: bool) -> Result<Registry, ReportError> {
+    let documents = registry_inputs(procedures);
+    let native = closure(&documents, &[0, 1, 2, 3], b"fa:report-registry-closure:v2");
+    let procedure = closure(&documents, &[4, 3], b"fa:procedure-registry:v2");
+    // A request can override the default, while the registered default and
+    // the semantics that interpret that parameter remain pinned.
+    let profile = if inventory {
+        VerifiedProcedureParameters::InventoryAging { stale_days: 120 }
+    } else {
+        VerifiedProcedureParameters::BalanceSheetSolvency {
+            fair_value_haircut_bps: 2_500,
+        }
+    };
+    verify_bound(&documents, profile, 3, native, procedure)
+}
+
+#[test]
+fn balance_screen_registry_rejects_rehashed_changes_to_v3_semantics() {
+    for inventory in [true, false] {
+        let original = balance_screen_document(inventory);
+        assert!(
+            !verify_balance_screen(&original, inventory)
+                .unwrap()
+                .unit_scales
+                .is_empty()
+        );
+        for (name, value) in [
+            ("version", Value::Int(2)),
+            ("claim", Value::Text("invariant".into())),
+            ("evidence", Value::Text("FA-EVID-L01".into())),
+            ("tie_break", Value::Text("entry_vid".into())),
+            ("complexity", Value::Text("O(entries)".into())),
+            ("calibration", Value::Text("corpus".into())),
+            ("artifact", Value::Text("FA-ART-CAL-01".into())),
+            ("effective_through", Value::Text("required".into())),
+        ] {
+            let mut changed = balance_screen_document(inventory);
+            changed.arrays.get_mut("procedure").unwrap()[0].insert(name.into(), value);
+            assert_eq!(
+                verify_balance_screen(&changed, inventory)
+                    .err()
+                    .expect(name)
+                    .predicate,
+                "registry_closure",
+                "inventory={inventory}, {name}"
+            );
+        }
+        for variant in [
+            "missing cutoff",
+            "missing parameter",
+            "renamed parameter",
+            "duplicate parameter",
+            "changed default",
+            "unexpected handle",
+        ] {
+            let mut changed = balance_screen_document(inventory);
+            match variant {
+                "missing cutoff" => {
+                    changed.arrays.get_mut("procedure").unwrap()[0].remove("effective_through");
+                }
+                "missing parameter" => {
+                    changed.arrays.get_mut("parameter").unwrap().clear();
+                }
+                "renamed parameter" => {
+                    changed.arrays.get_mut("parameter").unwrap()[0]
+                        .insert("name".into(), Value::Text("unregistered_law".into()));
+                }
+                "duplicate parameter" => {
+                    let mut fresh = balance_screen_document(inventory);
+                    changed
+                        .arrays
+                        .get_mut("parameter")
+                        .unwrap()
+                        .push(fresh.arrays.get_mut("parameter").unwrap().remove(0));
+                }
+                "changed default" => {
+                    changed.arrays.get_mut("parameter").unwrap()[0]
+                        .insert("default".into(), Value::Int(1));
+                }
+                "unexpected handle" => {
+                    let mut input = account_input();
+                    let id = if inventory {
+                        "aging.inventory"
+                    } else {
+                        "solvency.balance_sheet_test"
+                    };
+                    input.insert("procedure".into(), Value::Text(id.into()));
+                    changed.arrays.get_mut("input").unwrap().push(input);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                verify_balance_screen(&changed, inventory)
+                    .err()
+                    .expect(variant)
+                    .predicate,
+                "registry_closure",
+                "inventory={inventory}, {variant}"
+            );
+        }
+    }
+}
+
 #[test]
 fn unrecorded_liability_registry_requires_the_original_v2_window_and_uncalibrated_claim() {
     let id = "completeness.unrecorded_liabilities";

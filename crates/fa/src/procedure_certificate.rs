@@ -1018,6 +1018,39 @@ fn decode_run(bytes: &[u8]) -> Result<ProcedureRun, Refusal> {
 }
 
 impl ProcedureCertificate {
+    /// Portable solvency proves signed book balances only. Inline valuations
+    /// need a separately authenticated source closure, even when an effective
+    /// cutoff excludes them. Inspect the complete original recorded prefix;
+    /// a later checkpoint must not change a historical selection's eligibility.
+    pub(crate) fn check_offline_source_profile(
+        &self,
+        journal: &fa_notary::Journal,
+    ) -> fa_journal::refusal::Outcome<()> {
+        if self.report.procedure != "solvency.balance_sheet_test" {
+            return Ok(Ok(()));
+        }
+        for leaf in journal
+            .leaves
+            .iter()
+            .filter(|leaf| leaf.envelope.is_entry() && leaf.envelope.commit_seq <= self.known_at())
+        {
+            let fa_notary::Record::Entry(entry) = leaf.record()? else {
+                continue;
+            };
+            if entry
+                .proposal
+                .extensions
+                .iter()
+                .any(|(tag, _)| *tag == fa_model::entry::VALUATION_ADJUSTMENT_EXTENSION)
+            {
+                return Ok(Err(offline_unsupported(
+                    "portable balance-sheet solvency supports signed book balances only; the original recorded prefix contains inline valuation inputs requiring a separate authenticated valuation closure",
+                )));
+            }
+        }
+        Ok(Ok(()))
+    }
+
     /// Independent replay accepts the producer transport's bounded profiles.
     /// Native replay continues to support the wider catalog and legacy hashes.
     pub(crate) fn check_offline_profile(&self) -> Result<(), Refusal> {
@@ -1046,6 +1079,8 @@ impl ProcedureCertificate {
                 | "benford.first_two_digits"
                 | "jet.unusual_accounts"
                 | "jet.suspense_aging"
+                | "aging.inventory"
+                | "solvency.balance_sheet_test"
                 | "expense.capitalization"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
@@ -1070,7 +1105,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense aging v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense and inventory aging v3, book-basis balance-sheet solvency v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense and inventory aging v3, book-basis balance-sheet solvency v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(

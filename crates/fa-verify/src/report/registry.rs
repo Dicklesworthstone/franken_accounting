@@ -551,6 +551,7 @@ pub(super) fn verify_procedure(
         || profile.is_trace()
         || profile.is_number_analytics()
         || profile.is_account_screen()
+        || profile.is_balance_screen()
         || profile.is_temporal_graph()
         || profile.is_investor()
         || matches!(
@@ -573,6 +574,7 @@ pub(super) fn verify_procedure(
             != if benford {
                 "none"
             } else if aging
+                || profile.is_balance_screen()
                 || matches!(
                     profile,
                     super::procedure::VerifiedProcedureParameters::SuspenseAging { .. }

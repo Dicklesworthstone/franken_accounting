@@ -2386,6 +2386,25 @@ fn verify_report_with_subledger_inputs(
             ));
         }
         let (verified_procedure, output) = if let Some(request) = &procedure {
+            if matches!(
+                request.parameters,
+                procedure::VerifiedProcedureParameters::BalanceSheetSolvency { .. }
+            ) {
+                // Inspect the complete original known-at population, before
+                // migration visibility, effective cutoff or liveness pruning.
+                // Later checkpoint records are deliberately absent from infos.
+                for &index in infos.keys() {
+                    let (length, payload) = records[index];
+                    if metadata::entry_source_shape(&payload[..length], &envelopes[index])?
+                        .valuation_adjustment
+                    {
+                        return Err(failed(
+                            "procedure_profile",
+                            "portable balance-sheet solvency supports signed book basis only; inline valuation adjustments are not authenticated by this profile",
+                        ));
+                    }
+                }
+            }
             let period_transitions = if matches!(
                 request.parameters,
                 procedure::VerifiedProcedureParameters::PostClosing
@@ -2600,6 +2619,7 @@ fn verify_report_with_subledger_inputs(
                 || request.parameters.is_number_analytics()
                 || request.parameters.is_override_jet()
                 || request.parameters.is_account_screen()
+                || request.parameters.is_balance_screen()
                 || request.parameters.is_temporal_graph()
                 || request.parameters.is_investor()
                 || matches!(
@@ -2618,7 +2638,10 @@ fn verify_report_with_subledger_inputs(
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
             definitions.entry_facts = entry_facts;
-            if request.parameters.is_account_screen() || request.parameters.is_investor() {
+            if request.parameters.is_account_screen()
+                || request.parameters.is_balance_screen()
+                || request.parameters.is_investor()
+            {
                 let chart = metadata::declared_chart(
                     envelopes
                         .iter()

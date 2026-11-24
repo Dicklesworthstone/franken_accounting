@@ -2495,6 +2495,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
+                | crate::report::VerifiedProcedureStatistic::StaleInventory { .. }
+                | crate::report::VerifiedProcedureStatistic::InsolvencyDeficit { .. }
                 | crate::report::VerifiedProcedureStatistic::InvestorPrincipal { .. }
                 | crate::report::VerifiedProcedureStatistic::UnresolvedInvestorCash { .. }
         ) {
@@ -2518,6 +2520,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     1 => "low",
                     2 => "medium",
                     3 => "high",
+                    4 => "critical",
                     _ => "unknown",
                 }),
             ),
@@ -2547,6 +2550,12 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 details.push(("principal_rule", s("posted_principal_transfer_v1")));
             }
             crate::report::VerifiedProcedureStatistic::UnresolvedInvestorCash {
+                unit,
+                accounts,
+                entries,
+                ..
+            }
+            | crate::report::VerifiedProcedureStatistic::InsolvencyDeficit {
                 unit,
                 accounts,
                 entries,
@@ -2599,6 +2608,30 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                     ),
                 ));
                 details.push(("unit_id", n(u64::from(*unit))));
+            }
+            crate::report::VerifiedProcedureStatistic::StaleInventory {
+                account,
+                unit,
+                legs,
+                ..
+            } => {
+                details.extend([
+                    ("account", s(format!("{account:032x}"))),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legs",
+                        Json::List(
+                            legs.iter()
+                                .map(|(entry, ordinal)| {
+                                    Json::Obj(vec![
+                                        ("entry", s(format!("{entry:032x}"))),
+                                        ("ordinal", n(u64::from(*ordinal))),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ]);
             }
             crate::report::VerifiedProcedureStatistic::AgedOpenAmount {
                 account,
@@ -8032,6 +8065,49 @@ mod tests {
         assert!(json.contains("\"account\":null"));
         assert!(json.contains("\"statistic\":\"rsf_bps\""));
         assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
+        run.procedure = "solvency.balance_sheet_test".into();
+        run.version = 3;
+        run.parameters = VerifiedProcedureParameters::BalanceSheetSolvency {
+            fair_value_haircut_bps: 2_500,
+        };
+        run.findings[0].severity = 4;
+        run.findings[0].statistic = VerifiedProcedureStatistic::InsolvencyDeficit {
+            unit: 1,
+            amount: i128::MAX,
+            scale: 2,
+            accounts: vec![10, 20],
+            entries: vec![11, 12],
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"insolvency_deficit\""));
+        assert!(json.contains("\"fair_value_haircut_bps\":2500"));
+        assert!(json.contains("\"severity\":\"critical\""));
+        assert!(json.contains("\"unit\":1"));
+        assert!(json.contains("\"scale\":2"));
+        assert!(json.contains("\"accounts\":[\"0000000000000000000000000000000a\",\"00000000000000000000000000000014\"]"));
+        assert!(json.contains("\"entries\":[\"0000000000000000000000000000000b\",\"0000000000000000000000000000000c\"]"));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
+        run.procedure = "aging.inventory".into();
+        run.parameters = VerifiedProcedureParameters::InventoryAging { stale_days: 90 };
+        run.findings[0].severity = 3;
+        run.findings[0].statistic = VerifiedProcedureStatistic::StaleInventory {
+            account: 10,
+            unit: 2,
+            amount: 3,
+            scale: 0,
+            legs: vec![(11, 0), (12, 2)],
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"stale_inventory_balance\""));
+        assert!(json.contains("\"stale_days\":90"));
+        assert!(json.contains("\"unit\":2"));
+        assert!(json.contains("\"scale\":0"));
+        assert!(json.contains("\"account\":\"0000000000000000000000000000000a\""));
+        assert!(json.contains("\"legs\":[{\"entry\":\"0000000000000000000000000000000b\",\"ordinal\":0},{\"entry\":\"0000000000000000000000000000000c\",\"ordinal\":2}]"));
+        assert!(
+            json.contains("\"value\":\"3\""),
+            "even small whole-unit amounts stay strings"
+        );
     }
 
     #[test]

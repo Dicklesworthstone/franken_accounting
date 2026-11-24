@@ -591,6 +591,8 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "benford.first_two_digits"
                     | "jet.unusual_accounts"
                     | "jet.suspense_aging"
+                    | "aging.inventory"
+                    | "solvency.balance_sheet_test"
                     | "expense.capitalization"
                     | "jet.unusual_preparers"
                     | "jet.manual_vs_rule"

@@ -93,6 +93,34 @@ fn record(
         envelope,
     }
 }
+
+#[test]
+fn source_shape_detects_inline_valuation_in_original_canonical_extensions() {
+    for tags in [vec![], vec![1], vec![34], vec![1, 34, 50]] {
+        let original = record(1, 7, i32::MAX, b"valuation-source", 100, None, None, None);
+        let mut proposal = Writer {
+            buf: original.bytes[..original.len].to_vec(),
+        };
+        proposal.buf[2..4].copy_from_slice(&1u16.to_le_bytes());
+        proposal.count(tags.len());
+        for tag in &tags {
+            // Source eligibility is determined by the original extension tag;
+            // its body cannot be replaced with a producer's claimed finding.
+            proposal.u16(*tag).bytes(b"original source bytes");
+        }
+        let len = proposal.buf.len();
+        let digest = hash_parts(PROPOSAL_DIGEST_DOMAIN, &[&proposal.buf]);
+        let entry_digest = hash_parts(ENTRY_DIGEST_DOMAIN, &[&digest, &[]]);
+        proposal.fixed(&digest).fixed(&entry_digest);
+        let envelope = envelope_of_entry(&proposal.buf, len, 7, 0).unwrap();
+        let shape = metadata::entry_source_shape(&proposal.buf[..len], &envelope).unwrap();
+        assert_eq!(shape.valuation_adjustment, tags.contains(&34));
+        assert_eq!(shape.extension_free, tags.is_empty());
+        // A future effective date must not hide a source at this known-at.
+        assert_eq!(envelope.effective_day, Some(i32::MAX));
+    }
+}
+
 fn schema() -> Vec<Record> {
     let mut chart = Writer::default();
     chart.count(2);

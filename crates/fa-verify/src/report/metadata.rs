@@ -123,6 +123,7 @@ pub(super) struct EntrySourceShape {
     pub lifecycle_free: bool,
     pub aggregate_basis: bool,
     pub extension_free: bool,
+    pub valuation_adjustment: bool,
 }
 
 pub(super) fn entry_source_shape(
@@ -373,6 +374,7 @@ fn entry_info_with_shape<'a>(
     let mut cash_policy_body = false;
     let mut aggregate_basis = false;
     let mut extension_free = true;
+    let mut valuation_adjustment = false;
     if minor >= 1 {
         let n = r.count(MAX_ENVELOPE_LIST, 6, "entry.extensions")?;
         extension_free = n == 0;
@@ -390,6 +392,7 @@ fn entry_info_with_shape<'a>(
             // Intrinsic close, revaluation, prior-period adjustment,
             // allocated carrying, lot disposal and asset-charge sources.
             aggregate_basis |= matches!(tag, 12 | 16 | 36 | 37 | 38 | 39);
+            valuation_adjustment |= tag == 34;
             if tag == 12 {
                 if envelope.class != 8
                     || !matches!(n, 1 | 2)
@@ -575,6 +578,7 @@ fn entry_info_with_shape<'a>(
         shape.lifecycle_free = !has_control && !has_pending && supersession.is_empty();
         shape.aggregate_basis = aggregate_basis;
         shape.extension_free = extension_free;
+        shape.valuation_adjustment = valuation_adjustment;
     }
     Ok(EntryInfo {
         schema,

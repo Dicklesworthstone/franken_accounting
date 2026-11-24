@@ -6997,6 +6997,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         if let ReportBundleCertificate::Procedure(procedure) = report
+            && let Err(refusal) = procedure.check_offline_source_profile(&journal)?
+        {
+            return Ok(Err(refusal));
+        }
+        if let ReportBundleCertificate::Procedure(procedure) = report
             && let Err(refusal) = self.check_offline_procedure_periods(cx, procedure, &journal)?
         {
             return Ok(Err(refusal));
