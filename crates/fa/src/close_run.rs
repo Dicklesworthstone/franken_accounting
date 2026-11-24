@@ -148,6 +148,13 @@ pub(crate) fn same_reviewed_rehearsal(
     current.source_known_at = reviewed.source_known_at;
     current.seq_map_digest = reviewed.seq_map_digest;
     current.rehearsal_known_at = reviewed.rehearsal_known_at;
+    for (current, reviewed) in current.statements.iter_mut().zip(&reviewed.statements) {
+        // The exact selection, statement definition, columns, line amounts and
+        // account mappings remain equal. Retained review/approval controls may
+        // advance the recorded coordinate without changing those native folds.
+        current.before.known_at = reviewed.before.known_at;
+        current.after.known_at = reviewed.after.known_at;
+    }
     for (current, reviewed) in current.tasks.iter_mut().zip(&reviewed.tasks) {
         if let (
             CloseTaskRehearsalOutcome::CurrentStatementIssuance { checked_at, .. },

@@ -169,10 +169,10 @@ example = "fa calendar periods --fiscal-year 2026 --book ./books/myco --json"
 
 [[verb]]
 name = "close"
-summary = "Execute reviewed close tasks with durable dependency readiness and atomic completion; prepare year-end closes, inspect routes, and rehearse drafts."
+summary = "Execute reviewed close tasks with durable dependency readiness and atomic completion; rehearse cumulative effects with optional balance-sheet and income-statement previews and comparative periods. Prepare year-end closes, inspect routes, and rehearse drafts."
 writes = true
 subcommands = ["map","routes","year-end","dry-run","start","status","step","run"]
-flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant","--draft","--scenario","--certificate-out","--run","--tasks","--task","--plan","--reason","--rehearsal"]
+flags = ["--route","--effective-from","--as-of","--as-known-at","--fiscal-year","--period","--key","--description","--evidence","--approval","--review","--review-out","--digest","--plan-out","--grant","--draft","--scenario","--certificate-out","--run","--tasks","--task","--plan","--reason","--rehearsal","--statement","--comparative"]
 switches = ["--dry-run","--review-only","--case-review","--certify"]
 events = ["closing_routes_recorded","closing_routes","closing_reviewed","closing_noop","draft_planned","scenario_run","posted","recorded","plan","draft_diff","report_certificate","close_run","close_task_recorded","close_task_planned","close_run_progress","close_run_rehearsal"]
 exits = [0,2,3,4,5,6,7,8]
@@ -4186,7 +4186,7 @@ max_tools_per_cluster = 7
 # The server fixes authority and book selection once; it never forwards caller grants.
 hidden_flags = ["--json", "--format", "--via", "--no-color", "--help", "--version", "--as", "--grant", "--yes", "--keys", "--book", "--token", "--sign-key", "--endorse-key", "--prepare-signature", "--approval-signature"]
 # Flags that may repeat: the property is an array of strings (one string is accepted too).
-repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--difference", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input", "--allow", "--forbid"]
+repeat_flags = ["--evidence", "--approval", "--reversal-approval", "--period", "--param", "--entry", "--balance", "--root", "--bucket", "--income-period", "--chunk", "--subject", "--against", "--target", "--participant", "--resource", "--external-id", "--entity", "--line", "--applies", "--difference", "--route", "--band", "--issuance", "--distribution", "--definition", "--claim", "--turned-around", "--corrected", "--input", "--allow", "--forbid", "--statement", "--comparative"]
 # Flags whose values are integers: the property accepts a JSON integer or its decimal string.
 integer_flags = ["--start", "--fiscal-year", "--year-start-month", "--adjustment-periods", "--reason", "--balancing", "--timeout-ns", "--before", "--after", "--max-publications", "--chunk", "--seed", "--size", "--confidence", "--date-window", "--page-size", "--line-ordinal", "--source-known-at", "--max-depth", "--budget", "--floor-days", "--floor-commits", "--seq", "--cadence-commits", "--cadence-days", "--alpha-bps", "--delta-bps", "--parent-known-at"]
 
@@ -5576,10 +5576,10 @@ name = "dry_run"
 verb = "close"
 subcommands = ["dry-run"]
 positionals = []
-flags = ["--draft", "--run", "--period", "--as-known-at"]
+flags = ["--draft", "--run", "--period", "--as-known-at", "--statement", "--comparative"]
 switches = ["--certify"]
 required = []
-dont = ["Select exactly one run (combined remaining reviewed tasks in one scratch history) or draft with period (one atomic draft). A run already binds its period; an optional period must match. Neither form generates tasks, publishes money, issues statements or authorizes a close.", "Every draft batch preserves its original planner capability and approvals. A combined run applies batches sequentially, so later tasks observe earlier hypothetical effects and can refuse. A pending period transition still needs its separate native review and approvals.", "Use certify: true to retain the exact source and result, requiring read and produce. fa_read_replay reproduces it after restart or later legitimate draft changes. Retention publishes certificate metadata only; ordinary review changes no book data."]
+dont = ["Select exactly one run (combined remaining reviewed tasks in one scratch history) or draft with period (one atomic draft). A run already binds its period; an optional period must match. Neither form generates tasks, publishes money, issues statements or authorizes a close.", "With run, statement selects balance-sheet and/or income-statement; comparative adds prior period columns. Repeated selections bind complete canonical statement definitions, primary and comparative periods, and exact before/after outputs in the retained combined review. The primary period is the immutable run period. These options require run and are refused for a standalone draft.", "Every draft batch preserves its original planner capability and approvals. A combined run applies batches sequentially, so later tasks observe earlier hypothetical effects and can refuse. A pending period transition still needs its separate native review and approvals.", "Use certify: true to retain the exact source and result, requiring read and produce. fa_read_replay reproduces it after restart or later legitimate draft changes. Retention publishes certificate metadata only; ordinary review changes no book data."]
 mistakes = ["Treating hypothetical entry references as trunk membership or a permit to promote.", "For a historical draft review, pass the original recorded sequence as as_known_at with draft and period. To recover a missing certification response, use certify: true at the same sequence under the original producer capability. The run form reads HEAD.", "Passing host output paths, grants, principal or confirmation; the session's launch authority stays fixed."]
 
 [[mcp.tool]]
@@ -5928,8 +5928,28 @@ fields = ["run:close_run_summary","task:string","receipt:close_task_receipt","al
 [[event]]
 name = "close_run_rehearsal"
 book = true
-doc = "Combined rehearsal of unfinished reviewed drafts and year-end or bank verifications in one native scratch history. Completed receipts enter the baseline; remaining tasks follow live dependency order. Year-end checks authenticate the complete post-draft fiscal-year basis; bank checks authenticate the selected period-end reconciliation and its unchanged cash and matching basis. Rows are exact cumulative native stock changes, posted and pending separately. Hypothetical results never imply trunk completion; terminal transitions await native review. A retained certificate replays the original graph, reviews, baseline and output after later activity; it establishes neither current execution readiness nor an independent offline proof."
-fields = ["run:hex","name:string","body_digest:hex","period:string","opened_at:seq","source_known_at:seq","seq_map_digest:hex?","rehearsal_known_at:seq","complete_on_trunk:bool","tasks:[close_task_rehearsal]","rows:[draft_diff_row]"]
+doc = "Combined rehearsal of unfinished reviewed drafts and year-end or bank verifications in one native scratch history. Completed receipts enter the baseline; remaining tasks follow live dependency order. Rows are exact cumulative native stock changes, posted and pending separately. Optional statements carry before/after financial statements and comparative columns from that same scratch history: close dry-run --run NAME --statement balance-sheet --statement income-statement --comparative PERIOD --certify. Complete definitions, selections and exact outputs are bound in the v2 rehearsal output; an empty selection preserves the v1 output. Hypothetical results never imply trunk completion or statement issuance; terminal transitions await native review. A retained certificate replays the original graph, reviews, baseline and output after later activity; it establishes neither current execution readiness nor an independent offline proof."
+fields = ["run:hex","name:string","body_digest:hex","period:string","opened_at:seq","source_known_at:seq","seq_map_digest:hex?","rehearsal_known_at:seq","complete_on_trunk:bool","tasks:[close_task_rehearsal]","rows:[draft_diff_row]","statements:[close_statement_rehearsal]"]
+
+[[shape]]
+name = "close_statement_rehearsal"
+doc = "One complete statement definition and its exact native-unit before/after values over the run period and optional comparative columns. Definition digest identifies the full mapping and statement law. before_known_at selects original native history and after_known_at selects the combined hypothetical history."
+fields = ["definition:string","definition_version:int","definition_digest:hex","before_known_at:seq","after_known_at:seq","columns:[close_statement_column]","lines:[close_statement_line]"]
+
+[[shape]]
+name = "close_statement_column"
+doc = "A current or comparative statement column with its selected fiscal periods and exact effective bounds. Cumulative stock statements have no effective_from."
+fields = ["label:string","periods:[string]","effective_from:string?","effective_through:string"]
+
+[[shape]]
+name = "close_statement_line"
+doc = "A statement line in one native unit. Values align positionally with the statement's columns and include exact before, after and signed delta amounts."
+fields = ["code:string","label:string","unit_id:int","values:[close_statement_value]"]
+
+[[shape]]
+name = "close_statement_value"
+doc = "Exact native-unit amounts before and after the combined rehearsal, and after minus before. These are fixed-point amount strings."
+fields = ["before:string","after:string","delta:string"]
 
 [[shape]]
 name = "close_task_rehearsal"

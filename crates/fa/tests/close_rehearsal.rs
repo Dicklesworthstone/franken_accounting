@@ -6,7 +6,8 @@
 use fa::{
     Book, BookKeys, CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT, CloseRunRehearsalCertificate,
     CloseTaskRehearsalOutcome, Entropy, MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
-    RehearsalCertificateStatus, ReviewedCloseAction, ReviewedCloseTask,
+    RehearsalCertificateStatus, ReviewedCloseAction, ReviewedCloseTask, Statement,
+    StatementDefinition, StatementSelection,
 };
 use fa_intents::PostIntent;
 use fa_journal::{
@@ -292,6 +293,370 @@ impl Fixture {
             .unwrap()
             .unwrap();
     }
+}
+
+fn statement_request(name: &str, comparative: &[&str]) -> StatementSelection {
+    StatementSelection {
+        definition: StatementDefinition::embedded(name).unwrap(),
+        periods: vec![PERIOD.into()],
+        comparative: comparative.iter().map(|period| (*period).into()).collect(),
+    }
+}
+
+fn statement_amounts(statement: &Statement, line: &str) -> Vec<i128> {
+    statement
+        .lines
+        .iter()
+        .find(|row| row.code == line)
+        .unwrap()
+        .amounts
+        .clone()
+}
+
+fn post_dated_expense(f: &mut Fixture, draft: &str, date: DateDay, key: &[u8], opposite: bool) {
+    let mut proposal = f
+        .book
+        .draft_entries(&planner(), draft)
+        .unwrap()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .proposal;
+    proposal.principal_ref = ADMIN;
+    proposal.idempotency_key = key.to_vec();
+    proposal.effective_date = date;
+    proposal.effective_period = None;
+    if opposite {
+        for leg in &mut proposal.legs {
+            leg.side = match leg.side {
+                Side::Debit => Side::Credit,
+                Side::Credit => Side::Debit,
+            };
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+    }
+    f.book
+        .post(fa_journal::PostRequest {
+            proposal,
+            approvals: Vec::new(),
+            capability: cap(ADMIN, &["post"]),
+            plan_certificate: None,
+        })
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn certified_close_statements_use_native_stock_and_activity_folds_and_replay_after_execution() {
+    let mut f = Fixture::new(None);
+    f.book
+        .create_periods(2025, ADMIN, &cap(ADMIN, &["schema_change"]))
+        .unwrap()
+        .unwrap();
+    f.book
+        .transition_period(
+            "FY2025-P12",
+            PeriodTransition::Open,
+            ADMIN,
+            1,
+            b"prior-period",
+            &cap(ADMIN, &["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    f.book
+        .open_draft(
+            planner(),
+            "prior-source",
+            day(),
+            "Prior-year statement source",
+        )
+        .unwrap()
+        .unwrap();
+    f.plan("prior-source", 50, b"prior-source-plan");
+    post_dated_expense(
+        &mut f,
+        "prior-source",
+        DateDay::from_ymd(2025, 12, 15).unwrap(),
+        b"prior-posted-expense",
+        false,
+    );
+    f.start(100, 200, false);
+    let head = f.book.head().unwrap();
+    let certified = f
+        .book
+        .certify_close_run_rehearsal_with_statements(
+            REVIEWER,
+            &producer(),
+            RUN,
+            vec![
+                statement_request("income-statement", &["FY2025-P12"]),
+                statement_request("balance-sheet", &["FY2025-P12"]),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.book.head().unwrap(),
+        head,
+        "both financial previews are read-only"
+    );
+    assert_eq!(
+        certified.report.output_format(),
+        fa::CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT
+    );
+    let find = |name| {
+        certified
+            .report
+            .statements
+            .iter()
+            .find(|statement| statement.selection.definition.name() == name)
+            .unwrap()
+    };
+    let income = find("income-statement");
+    assert_eq!(statement_amounts(&income.before, "expense"), vec![0, 50]);
+    assert_eq!(statement_amounts(&income.after, "expense"), vec![300, 50]);
+    assert_eq!(
+        statement_amounts(&income.after, "net_income"),
+        vec![-300, -50]
+    );
+    let balance = find("balance-sheet");
+    assert_eq!(statement_amounts(&balance.before, "assets"), vec![-50, -50]);
+    assert_eq!(statement_amounts(&balance.after, "assets"), vec![-350, -50]);
+    assert_eq!(
+        statement_amounts(&balance.after, "balance_check"),
+        vec![0, 0]
+    );
+    for statement in &certified.report.statements {
+        assert_eq!(
+            statement.before,
+            f.book
+                .statement(statement.selection.clone(), Some(head))
+                .unwrap()
+                .unwrap()
+        );
+    }
+    let certificate =
+        CloseRunRehearsalCertificate::decode(&certified.certificate.canonical_bytes().unwrap())
+            .unwrap();
+    assert_eq!(certificate, certified.certificate);
+    assert_eq!(
+        certificate.statement_selections().unwrap(),
+        certified
+            .report
+            .statements
+            .iter()
+            .map(|statement| statement.selection.clone())
+            .collect::<Vec<_>>()
+    );
+    f.book
+        .retain_close_run_rehearsal(REVIEWER, &producer(), &certificate)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &producer(), &certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Current { .. }
+    ));
+    let executed = f
+        .book
+        .execute_reviewed_close_run(
+            RUN,
+            executor(),
+            "Execute the reviewed statements and drafts",
+            &certificate,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(executed.run.complete);
+    assert!(executed.stop.is_none());
+    for statement in &certified.report.statements {
+        let mut actual = f
+            .book
+            .statement(statement.selection.clone(), None)
+            .unwrap()
+            .unwrap();
+        actual.known_at = statement.after.known_at;
+        assert_eq!(
+            actual, statement.after,
+            "the preview equals the native result after real execution"
+        );
+    }
+    assert_eq!(
+        f.book
+            .replay_close_run_rehearsal(REVIEWER, &producer(), &certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+}
+
+#[test]
+fn close_statement_comparative_currentness_is_checked_beyond_the_primary_balance() {
+    let mut f = Fixture::new(None);
+    f.book
+        .transition_period(
+            "FY2026-P02",
+            PeriodTransition::Open,
+            ADMIN,
+            1,
+            b"comparative-open",
+            &cap(ADMIN, &["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    f.start(100, 200, false);
+    let certified = f
+        .book
+        .certify_close_run_rehearsal_with_statements(
+            REVIEWER,
+            &producer(),
+            RUN,
+            vec![statement_request("income-statement", &["FY2026-P02"])],
+        )
+        .unwrap()
+        .unwrap();
+    let primary = f.book.trial_balance_at(&[PERIOD.into()], None).unwrap();
+    post_dated_expense(
+        &mut f,
+        FIRST,
+        DateDay::from_ymd(2026, 2, 15).unwrap(),
+        b"changed-comparative-only",
+        false,
+    );
+    post_dated_expense(
+        &mut f,
+        FIRST,
+        DateDay::from_ymd(2026, 2, 15).unwrap(),
+        b"offsetting-comparative-only",
+        true,
+    );
+    let current = f.book.trial_balance_at(&[PERIOD.into()], None).unwrap();
+    assert_eq!(
+        primary.rows, current.rows,
+        "the selected January stock is unchanged"
+    );
+    let statement = f
+        .book
+        .statement(statement_request("income-statement", &["FY2026-P02"]), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement.lines, certified.report.statements[0].before.lines,
+        "offsetting comparative activity cannot be detected from displayed totals alone"
+    );
+    assert!(matches!(
+        f.book
+            .certificate_status(certified.certificate.trunk())
+            .unwrap()
+            .unwrap(),
+        fa::CertificateStatus::Current { .. }
+    ));
+    assert!(matches!(
+        f.book
+            .close_run_rehearsal_status(REVIEWER, &producer(), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        RehearsalCertificateStatus::Changed { .. }
+    ));
+    let head = f.book.head().unwrap();
+    assert!(
+        f.book
+            .execute_reviewed_close_run(
+                RUN,
+                executor(),
+                "Changed comparative refuses before any close effect",
+                &certified.certificate,
+                None
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(f.book.head().unwrap(), head);
+    assert_eq!(
+        f.book
+            .replay_close_run_rehearsal(REVIEWER, &producer(), &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.report
+    );
+}
+
+#[test]
+fn close_statement_requests_are_canonical_bounded_and_bound_by_full_replay() {
+    let mut f = Fixture::new(None);
+    f.start(100, 200, false);
+    let legacy = f
+        .book
+        .certify_close_run_rehearsal(REVIEWER, &producer(), RUN)
+        .unwrap()
+        .unwrap();
+    let empty = f
+        .book
+        .certify_close_run_rehearsal_with_statements(REVIEWER, &producer(), RUN, Vec::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        legacy.certificate.canonical_bytes().unwrap(),
+        empty.certificate.canonical_bytes().unwrap(),
+        "opting out preserves v1 byte-for-byte"
+    );
+    assert_eq!(
+        empty.report.output_format(),
+        fa::CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT
+    );
+    let selection = statement_request("income-statement", &["FY2026-P02"]);
+    let certified = f
+        .book
+        .certify_close_run_rehearsal_with_statements(
+            REVIEWER,
+            &producer(),
+            RUN,
+            vec![selection.clone()],
+        )
+        .unwrap()
+        .unwrap();
+    let head = f.book.head().unwrap();
+    for change in ["statement-result", "statement-selection"] {
+        let forged = rehashed(&certified.certificate, change);
+        assert!(
+            f.book
+                .replay_close_run_rehearsal(REVIEWER, &producer(), &forged)
+                .unwrap()
+                .is_err(),
+            "{change}"
+        );
+    }
+    for change in ["statement-count", "statement-truncated"] {
+        assert!(
+            CloseRunRehearsalCertificate::decode(&rehashed_bytes(&certified.certificate, change))
+                .is_err(),
+            "{change}"
+        );
+    }
+    let mut wrong_period = selection.clone();
+    wrong_period.periods = vec!["FY2026-P02".into()];
+    for selections in [
+        vec![selection.clone(), selection.clone()],
+        vec![wrong_period],
+        vec![selection; fa::MAX_CLOSE_REHEARSAL_STATEMENTS + 1],
+    ] {
+        assert!(
+            f.book
+                .close_run_rehearsal_with_statements(REVIEWER, &producer(), RUN, selections)
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert_eq!(
+        f.book.head().unwrap(),
+        head,
+        "invalid reviews publish nothing"
+    );
 }
 
 #[test]
@@ -662,6 +1027,10 @@ fn rehashed(
     certificate: &CloseRunRehearsalCertificate,
     change: &str,
 ) -> CloseRunRehearsalCertificate {
+    CloseRunRehearsalCertificate::decode(&rehashed_bytes(certificate, change)).unwrap()
+}
+
+fn rehashed_bytes(certificate: &CloseRunRehearsalCertificate, change: &str) -> Vec<u8> {
     let bytes = certificate.canonical_bytes().unwrap();
     let mut r = Reader::new(&bytes);
     assert_eq!(
@@ -692,6 +1061,43 @@ fn rehashed(
     r.finish().unwrap();
     match change {
         "output" => *output.last_mut().unwrap() ^= 1,
+        "statement-result" => {
+            let mut q = Reader::new(&output);
+            assert_eq!(
+                q.str(64, "format").unwrap(),
+                fa::CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT
+            );
+            assert!(q.u32("statements").unwrap() > 0);
+            q.bytes(MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES, "selection")
+                .unwrap();
+            q.bytes(MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES, "before")
+                .unwrap();
+            let offset = q.offset() - 1;
+            output[offset] ^= 1;
+        }
+        "statement-selection" => {
+            let mut q = Reader::new(&output);
+            q.str(64, "format").unwrap();
+            assert!(q.u32("statements").unwrap() > 0);
+            let start = q.offset() + 4;
+            let selection = q
+                .bytes(MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES, "selection")
+                .unwrap();
+            let offset = selection
+                .windows(b"FY2026-P02".len())
+                .position(|bytes| bytes == b"FY2026-P02")
+                .unwrap();
+            output[start + offset + b"FY2026-P02".len() - 1] = b'3';
+        }
+        "statement-count" => {
+            let mut q = Reader::new(&output);
+            q.str(64, "format").unwrap();
+            let offset = q.offset();
+            output[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        "statement-truncated" => {
+            output.pop();
+        }
         "graph" => body
             .tasks
             .iter_mut()
@@ -746,7 +1152,7 @@ fn rehashed(
     let mut changed = w.finish().unwrap();
     let digest = domain_digest(b"fa:close-run-rehearsal-certificate-digest:v1", &[&changed]);
     changed.extend_from_slice(&digest);
-    CloseRunRehearsalCertificate::decode(&changed).unwrap()
+    changed
 }
 
 #[test]

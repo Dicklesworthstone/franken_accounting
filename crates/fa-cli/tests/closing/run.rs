@@ -1138,12 +1138,172 @@ fn combined_close_review_rejects_conflicting_selectors_before_retention() {
         vec!["--draft", "selector-draft"],
         vec!["--period", "FY2026-P11"],
         vec!["--certificate-out", "-"],
+        vec!["--comparative", "FY2026-P11"],
+        vec!["--statement", "cash-flow"],
     ] {
         let mut args = vec!["close", "dry-run", "--run", "selector-run", "--certify"];
         args.extend(flags);
         assert_eq!(run(&f.book, &args).0, 2);
         assert_eq!(head(&f.book), before);
     }
+    for args in [
+        vec![
+            "close",
+            "status",
+            "--run",
+            "selector-run",
+            "--statement",
+            "balance-sheet",
+        ],
+        vec![
+            "close",
+            "dry-run",
+            "--draft",
+            "selector-draft",
+            "--period",
+            PERIOD,
+            "--statement",
+            "income-statement",
+        ],
+        vec![
+            "close",
+            "run",
+            "--run",
+            "selector-run",
+            "--comparative",
+            "FY2026-P11",
+            "--yes",
+        ],
+    ] {
+        assert_eq!(
+            run(&f.book, &args).0,
+            2,
+            "statement selection belongs only to the combined dry-run"
+        );
+        assert_eq!(head(&f.book), before);
+    }
+}
+
+#[test]
+fn combined_close_financial_statements_are_certified_replayed_and_executed_across_processes() {
+    let f = Fixture::new(false);
+    f.post("statement-source-sale", "1000", "4000", "100.00");
+    let first = reviewed_draft(&f, "statement-first", "15.00");
+    let second = reviewed_draft(&f, "statement-second", "5.00");
+    let tasks = format!(
+        r#"[{{"id":"first","certificate":"{first}"}},{{"id":"second","depends_on":["first"],"certificate":"{second}"}}]"#
+    );
+    ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "statements",
+            "--period",
+            PERIOD,
+            "--tasks",
+            &tasks,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let mut args = vec![
+        "close",
+        "dry-run",
+        "--run",
+        "statements",
+        "--statement",
+        "income-statement",
+        "--statement",
+        "balance-sheet",
+        "--comparative",
+        "FY2026-P11",
+        "--comparative",
+        "FY2026-P10",
+    ];
+    let head_before = head(&f.book);
+    let preview = ok(&f.book, &args);
+    assert_eq!(head(&f.book), head_before);
+    let statements = get(&preview, "statements").as_arr().unwrap();
+    assert_eq!(statements.len(), 2);
+    for (definition, code) in [
+        ("balance-sheet", "assets"),
+        ("income-statement", "net_income"),
+    ] {
+        let statement = statements
+            .iter()
+            .find(|statement| text(statement, "definition") == definition)
+            .unwrap();
+        assert_eq!(get(statement, "columns").as_arr().unwrap().len(), 2);
+        let columns = get(statement, "columns").as_arr().unwrap();
+        assert_eq!(
+            get(&columns[1], "periods"),
+            &Json::Arr(vec![
+                Json::Str("FY2026-P10".into()),
+                Json::Str("FY2026-P11".into())
+            ])
+        );
+        let line = get(statement, "lines")
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|line| text(line, "code") == code)
+            .unwrap();
+        let values = get(line, "values").as_arr().unwrap();
+        assert_eq!(text(&values[0], "before"), "100.00 USD");
+        assert_eq!(text(&values[0], "after"), "80.00 USD");
+        assert_eq!(text(&values[0], "delta"), "-20.00 USD");
+        assert_eq!(text(&values[1], "before"), "0.00 USD");
+        assert_eq!(text(&values[1], "after"), "0.00 USD");
+    }
+    let certificate_path = f.dir.join("close-statements.cert").display().to_string();
+    args.extend(["--certificate-out", &certificate_path]);
+    let certified = close_events(&f, &args);
+    let report = certified
+        .iter()
+        .find(|event| text(event, "event") == "close_run_rehearsal")
+        .unwrap();
+    assert_eq!(get(report, "statements"), get(&preview, "statements"));
+    let certificate_event = certified
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    assert_eq!(
+        text(certificate_event, "output_format"),
+        fa::CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT
+    );
+    let bytes = std::fs::read(&certificate_path).unwrap();
+    let certificate = fa::CloseRunRehearsalCertificate::decode(&bytes).unwrap();
+    assert_eq!(certificate.statement_selections().unwrap().len(), 2);
+    let locator = format!("C:{}", text(certificate_event, "oid"));
+    assert_eq!(
+        text(&ok(&f.book, &["certificate", "status", &locator]), "status"),
+        "Current"
+    );
+    let executed = ok(
+        &f.book,
+        &[
+            "close",
+            "run",
+            "--run",
+            "statements",
+            "--rehearsal",
+            &locator,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    assert_eq!(text(&executed, "state"), "complete");
+    let after = head(&f.book);
+    let replayed = ok(&f.book, &["replay", &locator]);
+    assert_eq!(get(&replayed, "statements"), get(report, "statements"));
+    assert_eq!(
+        head(&f.book),
+        after,
+        "statement replay is read-only after reopening the durable book"
+    );
 }
 
 #[test]

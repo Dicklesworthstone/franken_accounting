@@ -56,6 +56,8 @@ const FLAGS: &[&str] = &[
     "--plan",
     "--reason",
     "--rehearsal",
+    "--statement",
+    "--comparative",
 ];
 const SWITCHES: &[&str] = &["--dry-run", "--review-only", "--case-review", "--certify"];
 
@@ -92,7 +94,12 @@ fn options(args: &Args, flags: &[&str], switches: &[&str]) -> Result<(), Fail> {
                 EXAMPLE,
             ));
         }
-        if values.len() > 1 && !matches!(*flag, "--route" | "--evidence" | "--approval") {
+        if values.len() > 1
+            && !matches!(
+                *flag,
+                "--route" | "--evidence" | "--approval" | "--statement" | "--comparative"
+            )
+        {
             return Err(usage(format!("{flag} must be supplied only once"), EXAMPLE));
         }
     }

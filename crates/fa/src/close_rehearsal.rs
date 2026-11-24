@@ -28,11 +28,13 @@ use fgdb_types::{CommitSeq, VId};
 use crate::{
     Book, CertificateStatus, DraftDiff, DraftDiffCertificate, DraftDiffRow, Outcome,
     RehearsalCertificateStatus, ReportArtifactFamily, ReportCertificate, ReportOutput,
-    ReportSelection, TrialBalanceSelection,
+    ReportSelection, Statement, StatementSelection, TrialBalanceSelection,
 };
 
 pub const CLOSE_RUN_REHEARSAL_CERTIFICATE_FORMAT: &[u8] = b"fa:close-run-rehearsal-certificate:v1";
 pub const CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT: &str = "fa:close-run-rehearsal:v1";
+pub const CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT: &str = "fa:close-run-rehearsal:v2";
+pub const MAX_CLOSE_REHEARSAL_STATEMENTS: usize = 16;
 pub const MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES: usize =
     crate::certificate::MAX_CERTIFICATE_BYTES;
 const DIGEST_DOMAIN: &[u8] = b"fa:close-run-rehearsal-certificate-digest:v1";
@@ -101,6 +103,15 @@ pub struct CloseTaskRehearsal {
     pub outcome: CloseTaskRehearsalOutcome,
 }
 
+/// The complete native statement question and its original and combined
+/// hypothetical results. These are previews, not a new statement issuance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseStatementRehearsal {
+    pub selection: StatementSelection,
+    pub before: Statement,
+    pub after: Statement,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloseRunRehearsal {
     pub name: String,
@@ -121,6 +132,9 @@ pub struct CloseRunRehearsal {
     pub tasks: Vec<CloseTaskRehearsal>,
     /// One native unit per row; posted and pending effects remain separate.
     pub rows: Vec<DraftDiffRow>,
+    /// Optional financial statements evaluated in the same combined scratch.
+    /// An empty list preserves the original v1 output bytes exactly.
+    pub statements: Vec<CloseStatementRehearsal>,
 }
 
 /// The complete original graph and retained draft reviews, bound to the native
@@ -157,6 +171,108 @@ fn invalid(message: impl Into<String>) -> Refusal {
 
 fn encoded(error: impl std::fmt::Display) -> Refusal {
     invalid(error.to_string())
+}
+
+fn statement_selections(
+    period: &str,
+    selections: &[StatementSelection],
+) -> Result<Vec<StatementSelection>, Refusal> {
+    if selections.len() > MAX_CLOSE_REHEARSAL_STATEMENTS {
+        return Err(invalid(
+            "a close review accepts at most 16 financial statements",
+        ));
+    }
+    let mut ordered = BTreeMap::new();
+    for selection in selections {
+        let selection = selection.clone().normalize();
+        if !selection.is_canonical()
+            || selection.periods.len() != 1
+            || selection.periods[0] != period
+        {
+            return Err(invalid(
+                "each close statement must select exactly the run's primary period and canonical comparative periods",
+            ));
+        }
+        let mut w = Writer::new();
+        selection.write(&mut w).map_err(encoded)?;
+        if ordered
+            .insert(w.finish().map_err(encoded)?, selection)
+            .is_some()
+        {
+            return Err(invalid(
+                "a close review cannot repeat a financial statement selection",
+            ));
+        }
+    }
+    Ok(ordered.into_values().collect())
+}
+
+/// The request lives inside the digest-bound output extension. The native
+/// close envelope remains unchanged and never claims statement arithmetic.
+/// Statement frames remain opaque until full native replay recomputes them.
+fn output_statement_selections(
+    output: &[u8],
+    period: &str,
+) -> Result<Vec<StatementSelection>, Refusal> {
+    if output.len() > MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES {
+        return Err(invalid("the complete close output exceeds 64 MiB"));
+    }
+    let mut r = Reader::new(output);
+    match r.str(64, "close output format").map_err(encoded)? {
+        CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT => return Ok(Vec::new()),
+        CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT => {}
+        _ => return Err(invalid("unsupported close rehearsal output format")),
+    }
+    let count = r
+        .count(MAX_CLOSE_REHEARSAL_STATEMENTS, "close statements")
+        .map_err(encoded)?;
+    if count == 0 {
+        return Err(invalid(
+            "the statement review output must contain a statement",
+        ));
+    }
+    let mut selections = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut request = Reader::new(
+            r.bytes(
+                MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
+                "close statement selection",
+            )
+            .map_err(encoded)?,
+        );
+        selections.push(StatementSelection::read(&mut request).map_err(encoded)?);
+        request.finish().map_err(encoded)?;
+        for field in ["close statement before", "close statement after"] {
+            if r.bytes(MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES, field)
+                .map_err(encoded)?
+                .is_empty()
+            {
+                return Err(invalid("a close statement output frame is empty"));
+            }
+        }
+    }
+    let legacy = r
+        .bytes(
+            MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES,
+            "close task output",
+        )
+        .map_err(encoded)?;
+    if Reader::new(legacy)
+        .str(64, "close task output format")
+        .map_err(encoded)?
+        != CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT
+    {
+        return Err(invalid(
+            "the statement review does not contain the original close output",
+        ));
+    }
+    r.finish().map_err(encoded)?;
+    if statement_selections(period, &selections)? != selections {
+        return Err(invalid(
+            "close statement selections are not canonically ordered",
+        ));
+    }
+    Ok(selections)
 }
 
 fn in_task(id: &str, refusal: Refusal) -> Refusal {
@@ -243,7 +359,90 @@ fn check_review(
 }
 
 impl CloseRunRehearsal {
+    #[must_use]
+    pub fn output_format(&self) -> &'static str {
+        if self.statements.is_empty() {
+            CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT
+        } else {
+            CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT
+        }
+    }
+
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
+        let legacy = self.legacy_canonical_bytes()?;
+        if self.statements.is_empty() {
+            return Ok(legacy);
+        }
+        let requests: Vec<_> = self
+            .statements
+            .iter()
+            .map(|statement| statement.selection.clone())
+            .collect();
+        if statement_selections(&self.period, &requests)? != requests {
+            return Err(invalid(
+                "close statement selections are not canonically ordered",
+            ));
+        }
+        let mut w = Writer::new();
+        w.str(CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT)
+            .u32(u32::try_from(self.statements.len()).map_err(encoded)?);
+        for statement in &self.statements {
+            let selection = &statement.selection;
+            let before = &statement.before;
+            let after = &statement.after;
+            let definition = selection.definition.canonical_bytes().map_err(encoded)?;
+            let digest = selection.definition.digest().map_err(encoded)?;
+            let mut columns = vec![selection.periods.clone()];
+            if !selection.comparative.is_empty() {
+                columns.push(selection.comparative.clone());
+            }
+            if before.book_id != after.book_id
+                || before.branch_id != Id128::TRUNK
+                || after.branch_id != Id128::TRUNK
+                || before.known_at != self.source_known_at.0
+                || after.known_at != self.rehearsal_known_at.0
+                || before.columns != after.columns
+                || before
+                    .columns
+                    .iter()
+                    .map(|column| &column.periods)
+                    .ne(columns.iter())
+                || [before, after].iter().any(|report| {
+                    report.definition_bytes != definition
+                        || report.definition_digest != digest
+                        || report.definition_name != selection.definition.name()
+                        || report.definition_version != selection.definition.version()
+                        || report
+                            .lines
+                            .iter()
+                            .any(|line| line.amounts.len() != columns.len())
+                })
+            {
+                return Err(invalid(
+                    "a close statement differs from its selected definition or source coordinates",
+                ));
+            }
+            let mut request = Writer::new();
+            selection.write(&mut request).map_err(encoded)?;
+            let request = request.finish().map_err(encoded)?;
+            let before = before.canonical_bytes().map_err(encoded)?;
+            let after = after.canonical_bytes().map_err(encoded)?;
+            if [request.len(), before.len(), after.len(), legacy.len(), 16]
+                .into_iter()
+                .fold(w.len(), usize::saturating_add)
+                > MAX_CLOSE_RUN_REHEARSAL_CERTIFICATE_BYTES
+            {
+                return Err(invalid(
+                    "the complete close statement output exceeds 64 MiB",
+                ));
+            }
+            w.bytes(&request).bytes(&before).bytes(&after);
+        }
+        w.bytes(&legacy);
+        w.finish().map_err(encoded)
+    }
+
+    fn legacy_canonical_bytes(&self) -> Result<Vec<u8>, Refusal> {
         if self.name.is_empty()
             || self.name.len() > fa_model::limits::MAX_CLOSE_RUN_TEXT_BYTES
             || self.period.is_empty()
@@ -549,6 +748,7 @@ impl CloseRunRehearsalCertificate {
 
     fn validate(&self) -> Result<(), Refusal> {
         self.body.validate().map_err(encoded)?;
+        output_statement_selections(&self.output, &self.body.period)?;
         if self.body.book_id != self.trunk.book_id
             || self.trunk.branch_id != Id128::TRUNK
             || self.trunk.time_selection.is_some()
@@ -703,6 +903,22 @@ impl CloseRunRehearsalCertificate {
     pub fn output(&self) -> &[u8] {
         &self.output
     }
+    /// The optional, fully bound statement questions selected by this review.
+    pub fn statement_selections(&self) -> Result<Vec<StatementSelection>, Refusal> {
+        output_statement_selections(&self.output, &self.body.period)
+    }
+    #[must_use]
+    pub fn output_format(&self) -> &'static str {
+        if Reader::new(&self.output)
+            .str(64, "close output format")
+            .ok()
+            == Some(CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT)
+        {
+            CLOSE_RUN_STATEMENT_REHEARSAL_OUTPUT_FORMAT
+        } else {
+            CLOSE_RUN_REHEARSAL_OUTPUT_FORMAT
+        }
+    }
     #[must_use]
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
@@ -831,6 +1047,7 @@ impl Book {
         Ok(Ok(reviews))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rehearse_close_view(
         &mut self,
         principal: VId,
@@ -839,8 +1056,13 @@ impl Book {
         trunk: &TrialBalance,
         reviews: &[(DraftDiffCertificate, DraftDiff)],
         checking_freshness: bool,
+        selections: &[StatementSelection],
     ) -> Outcome<CloseRunRehearsal> {
         let source_at = trunk.known_at;
+        let selections = match statement_selections(&view.body.period, selections) {
+            Ok(selections) => selections,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
         if view.opened_at > source_at || source_at > self.head()? {
             return Ok(Err(invalid(
                 "the close graph did not exist at the selected source prefix",
@@ -1150,6 +1372,25 @@ impl Book {
             Ok(rows) => rows,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        let mut statements = Vec::with_capacity(selections.len());
+        for selection in selections {
+            let before = match self.statement(selection.clone(), Some(source_at))? {
+                Ok(statement) => statement,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let after = match scratch.as_ref() {
+                Some(scratch) => match scratch.statement(selection.clone(), Some(rehearsal_at))? {
+                    Ok(statement) => statement,
+                    Err(refusal) => return Ok(Err(refusal)),
+                },
+                None => before.clone(),
+            };
+            statements.push(CloseStatementRehearsal {
+                selection,
+                before,
+                after,
+            });
+        }
         let report = CloseRunRehearsal {
             name: view.body.name.clone(),
             run: view.vid,
@@ -1166,6 +1407,7 @@ impl Book {
                 .all(|task| matches!(task.outcome, CloseTaskRehearsalOutcome::AlreadyCompleted(_))),
             tasks,
             rows,
+            statements,
         };
         Ok(report.canonical_bytes().map(|_| report))
     }
@@ -1178,7 +1420,20 @@ impl Book {
         capability: &Capability,
         name: &str,
     ) -> Outcome<CloseRunRehearsal> {
-        self.close_run_rehearsal_at_head(principal, capability, name, false)
+        self.close_run_rehearsal_at_head(principal, capability, name, false, &[])
+    }
+
+    /// Include native financial statements over the captured trunk and the
+    /// exact combined hypothetical result. Definitions and comparative periods
+    /// are explicit inputs; this operation issues nothing and changes no book.
+    pub fn close_run_rehearsal_with_statements(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        name: &str,
+        selections: Vec<StatementSelection>,
+    ) -> Outcome<CloseRunRehearsal> {
+        self.close_run_rehearsal_at_head(principal, capability, name, false, &selections)
     }
 
     fn close_run_rehearsal_at_head(
@@ -1187,6 +1442,7 @@ impl Book {
         capability: &Capability,
         name: &str,
         checking_freshness: bool,
+        selections: &[StatementSelection],
     ) -> Outcome<CloseRunRehearsal> {
         if let Err(refusal) = authorize(self, principal, capability, false)? {
             return Ok(Err(refusal));
@@ -1209,6 +1465,7 @@ impl Book {
             &trunk,
             &reviews,
             checking_freshness,
+            selections,
         )
     }
 
@@ -1217,6 +1474,18 @@ impl Book {
         principal: VId,
         capability: &Capability,
         name: &str,
+    ) -> Outcome<CertifiedCloseRunRehearsal> {
+        self.certify_close_run_rehearsal_with_statements(principal, capability, name, Vec::new())
+    }
+
+    /// Bind the complete statement questions and both financial results into
+    /// the retained close review, preserving legacy bytes when none are chosen.
+    pub fn certify_close_run_rehearsal_with_statements(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        name: &str,
+        selections: Vec<StatementSelection>,
     ) -> Outcome<CertifiedCloseRunRehearsal> {
         if let Err(refusal) = authorize(self, principal, capability, true)? {
             return Ok(Err(refusal));
@@ -1244,9 +1513,15 @@ impl Book {
                 "the close baseline is not a native trial balance",
             )));
         };
-        let report = match self
-            .rehearse_close_view(principal, capability, &view, &trunk, &reviews, false)?
-        {
+        let report = match self.rehearse_close_view(
+            principal,
+            capability,
+            &view,
+            &trunk,
+            &reviews,
+            false,
+            &selections,
+        )? {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1347,9 +1622,19 @@ impl Book {
             Ok(reviews) => reviews,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let report = match self
-            .rehearse_close_view(principal, capability, &view, &trunk, &reviews, false)?
-        {
+        let selections = match certificate.statement_selections() {
+            Ok(selections) => selections,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let report = match self.rehearse_close_view(
+            principal,
+            capability,
+            &view,
+            &trunk,
+            &reviews,
+            false,
+            &selections,
+        )? {
             Ok(report) => report,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -1414,11 +1699,36 @@ impl Book {
             Ok(false) => return Ok(Ok(false)),
             Err(refusal) => return Ok(Err(refusal)),
         }
+        let selections = match certificate.statement_selections() {
+            Ok(selections) => selections,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        // The primary stock baseline does not cover every statement's
+        // comparative periods. Apply the existing native relevance law to
+        // each historical question as well: offsetting later contributions
+        // make a review stale even when the resulting totals are identical.
+        // Reconstructing this historical certificate is a read; it retains
+        // nothing and requires only the already-admitted reviewer's scope.
+        for selection in &selections {
+            let statement = match self.certify_report(
+                ReportSelection::Statement(selection.clone()),
+                Some(certificate.known_at()),
+            )? {
+                Ok(statement) => statement,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            match self.certificate_status(&statement.certificate)? {
+                Ok(CertificateStatus::Current { .. }) => {}
+                Ok(CertificateStatus::SupersededBy { .. }) => return Ok(Ok(false)),
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        }
         let current = match self.close_run_rehearsal_at_head(
             principal,
             capability,
             certificate.name(),
             true,
+            &selections,
         )? {
             Ok(current) => current,
             Err(refusal) => {
