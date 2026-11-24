@@ -27,6 +27,8 @@
 //! their immutable pre-claim records remain valid read-only retry anchors.
 //! Draft lifecycle records use that same reservation, including ordered batch
 //! and correction plans and the promotion control beside its monetary batch.
+//! Canon rule proposals reserve their caller's key with their source and IR;
+//! their original pre-claim controls remain read-only retry anchors.
 //! Import runs reserve their caller's key with their documents and custody;
 //! inline, external and bank intake share the same admission and claim.
 //! Existing normal-key controls are checked before a posting takes their key.
@@ -777,7 +779,7 @@ fn normal_key_control(entry: &Entry, vid: VId) -> bool {
             && matches!(
                 &proposal.control,
                 Some(fa_model::ControlPayload::SchemaChange {
-                    kind: 2..=12 | 14..=19 | 21..=23 | 25..=26,
+                    kind: 2..=12 | 14..=23 | 25..=26,
                     ..
                 })
             ));

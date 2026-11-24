@@ -1,5 +1,5 @@
-//! Rule activation reserves its canonical key and authenticates the original
-//! successful publication before returning a retry, independently of later rules.
+//! Rule proposals and activations reserve their canonical keys and authenticate
+//! the original publication before retrying, independently of later rules.
 
 use super::*;
 use fa_journal::rule::{RuleActivated, RuleActivationPlan};
@@ -308,4 +308,347 @@ fn rule_activation_outcome_rejects_unrelated_lifecycle_controls() {
             .is_err()
         );
     }
+}
+
+fn propose_version(
+    h: &mut Harness,
+    ceiling: &str,
+    key: &[u8],
+) -> fa_journal::refusal::Outcome<fa_journal::rule::RuleVersionRecorded> {
+    let ctx = h.ctx();
+    let description = h.period_description();
+    h.runtime.block_on(propose_rule_version(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &source(ceiling),
+        PREPARER,
+        key,
+        description,
+        &controller(),
+    ))
+}
+
+fn proposal_outcome(h: &Harness, key: &[u8]) -> VId {
+    fa_model::intent_outcome_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), key)
+}
+
+fn proposal_batch(h: &Harness, key: &[u8]) -> PostBatch {
+    PostBatch::new(
+        key.to_vec(),
+        vec![
+            PostIntent::new(
+                h.proposal(
+                    PREPARER,
+                    500,
+                    b"rule-proposal-batch-member",
+                    EntryClass::ORIGINAL,
+                ),
+                Vec::new(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn rule_proposal_and_post_batch_share_the_canonical_intent_key() {
+    for proposal_first in [false, true] {
+        let mut h = harness();
+        let key = b"shared-rule-proposal";
+        let batch = proposal_batch(&h, key);
+        let ctx = h.ctx();
+        if proposal_first {
+            propose_version(&mut h, "40.00", key).unwrap().unwrap();
+        } else {
+            h.runtime
+                .block_on(post_batch(
+                    &mut h.db,
+                    &ctx,
+                    &h.book,
+                    controller(),
+                    batch.clone(),
+                ))
+                .unwrap()
+                .unwrap();
+        }
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refusal = if proposal_first {
+            h.runtime
+                .block_on(post_batch(&mut h.db, &ctx, &h.book, controller(), batch))
+                .unwrap()
+                .unwrap_err()
+        } else {
+            propose_version(&mut h, "40.00", key).unwrap().unwrap_err()
+        };
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT),
+            "{refusal:?}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+
+        // The occupied key is the refusal, not the valid rule or batch member.
+        if proposal_first {
+            let other = proposal_batch(&h, b"independent-batch-key");
+            h.runtime
+                .block_on(post_batch(&mut h.db, &ctx, &h.book, controller(), other))
+                .unwrap()
+                .unwrap();
+        } else {
+            propose_version(&mut h, "40.00", b"independent-rule-key")
+                .unwrap()
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn rule_proposal_claim_is_atomic_and_semantic_retries_are_read_only() {
+    let mut h = harness();
+    let key = b"atomic-rule-proposal";
+    let before = h.db.frontier().unwrap();
+    let first = propose_version(&mut h, "40.00", key).unwrap().unwrap();
+    let evid = first.control_entry.unwrap();
+    let entry = h.db.vertex(evid).unwrap().unwrap();
+    let claim = h.db.vertex(proposal_outcome(&h, key)).unwrap().unwrap();
+    assert!(!first.already_recorded);
+    assert_eq!(entry.created_at.0, before.0 + 1);
+    assert_eq!(claim.labels, vec![label::INTENT_OUTCOME]);
+    assert_eq!(claim.created_at, entry.created_at);
+    assert_eq!(first.version.created_at, entry.created_at);
+    assert_eq!(
+        fa_journal::rows::prop(&claim, property::TARGET_REF),
+        Some(&CanonicalScalar::bytes(evid.0.to_le_bytes().to_vec()).unwrap())
+    );
+
+    // A later rule is not a new result for the earlier key.
+    propose_version(&mut h, "50.00", b"later-rule-proposal")
+        .unwrap()
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let retry = propose_version(&mut h, "40.00", key).unwrap().unwrap();
+    assert_eq!(
+        retry,
+        fa_journal::rule::RuleVersionRecorded {
+            already_recorded: true,
+            ..first.clone()
+        }
+    );
+
+    // Request equality is semantic: resealing the same description does not
+    // create another successful intent or demand the caller's old ciphertext.
+    let ctx = h.ctx();
+    let description = Erasable::seal(
+        &"period".to_string(),
+        None,
+        &h.book.seal_key,
+        [0x51; 32],
+        [0x52; 24],
+    );
+    let resealed = h
+        .runtime
+        .block_on(propose_rule_version(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &source("40.00"),
+            PREPARER,
+            key,
+            description,
+            &controller(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(resealed, retry);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let changed = propose_version(&mut h, "60.00", key).unwrap().unwrap_err();
+    assert_eq!(changed.code, code::IDEMPOTENCY_CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn retained_rule_ir_deduplicates_only_under_an_unused_key_without_reserving_it() {
+    let mut h = harness();
+    let first = propose_version(&mut h, "40.00", b"original-rule")
+        .unwrap()
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let duplicate = propose_version(&mut h, "40.00", b"ir-lookup")
+        .unwrap()
+        .unwrap();
+    assert!(duplicate.already_recorded);
+    assert_eq!(duplicate.control_entry, None);
+    assert_eq!(duplicate.version, first.version);
+    assert!(
+        h.db.vertex(proposal_outcome(&h, b"ir-lookup"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    // Content deduplication is not a hidden key reservation. A real batch can
+    // still take that unused key, after which another rule lookup must refuse.
+    let batch = proposal_batch(&h, b"ir-lookup");
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(post_batch(&mut h.db, &ctx, &h.book, controller(), batch))
+        .unwrap()
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refused = propose_version(&mut h, "40.00", b"ir-lookup")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::IDEMPOTENCY_CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn rule_proposal_retry_rejects_deleted_retargeted_or_republished_claims() {
+    for damage_kind in 0..4 {
+        let mut h = harness();
+        let key = b"damaged-rule-proposal";
+        propose_version(&mut h, "40.00", key).unwrap().unwrap();
+        let claim = h.db.vertex(proposal_outcome(&h, key)).unwrap().unwrap();
+        let mut damage = WriteBatch::new(relation::IN_BOOK);
+        match damage_kind {
+            0 => {
+                damage.delete_vertex(claim.vid);
+            }
+            1 => {
+                damage.set_vertex_property(
+                    claim.vid,
+                    property::TARGET_REF,
+                    Some(CanonicalScalar::bytes(VId(0x1234).0.to_le_bytes().to_vec()).unwrap()),
+                );
+            }
+            2 | 3 => {
+                damage.set_vertex_property(
+                    claim.vid,
+                    property::FA_PAYLOAD,
+                    Some(CanonicalScalar::bytes(b"altered rule claim".to_vec()).unwrap()),
+                );
+            }
+            _ => unreachable!(),
+        }
+        write_raw(&mut h, damage);
+        if damage_kind == 3 {
+            let mut restore = WriteBatch::new(relation::IN_BOOK);
+            restore.set_vertex_property(
+                claim.vid,
+                property::FA_PAYLOAD,
+                Some(
+                    fa_journal::rows::prop(&claim, property::FA_PAYLOAD)
+                        .unwrap()
+                        .clone(),
+                ),
+            );
+            write_raw(&mut h, restore);
+        }
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let retry = propose_version(&mut h, "40.00", key);
+        assert!(
+            matches!(&retry, Ok(Err(_)) | Err(KernelError::Corrupt(_))),
+            "damage={damage_kind}: {retry:?}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
+/// Reproduce the original small-rule publication, before common key claims.
+/// This writes the original control and version together, never deletes a
+/// modern claim to manufacture a legacy record.
+fn legacy_proposal(h: &mut Harness, key: &[u8]) -> (VId, CompiledRule, CommitSeq) {
+    let source = source("40.00");
+    let rule = fa_canon::compile(&source, &h.book.units).unwrap();
+    let spec = fa_journal::rule::RuleVersionSpec {
+        source,
+        ir: rule.ir().to_vec(),
+    };
+    let (_, entry) = fa_journal::rule::rule_version_control(
+        &h.book,
+        &spec,
+        PREPARER,
+        key,
+        h.period_description(),
+    )
+    .unwrap();
+    let encoded = spec.encode().unwrap();
+    assert!(encoded.len() < 4096);
+    assert!(entry.encode().unwrap().len() < 4096);
+    let evid = fa_model::entry_vid(h.book.book_id, &PREPARER.0.to_le_bytes(), key);
+    let version_vid = fa_model::rule_version_vid(h.book.book_id, &rule.ir_digest());
+    let mut props = vec![
+        (
+            property::BOOK_ID,
+            CanonicalScalar::bytes(h.book.book_id.0.to_vec()).unwrap(),
+        ),
+        (
+            property::NAME,
+            CanonicalScalar::text(rule.name().to_string()).unwrap(),
+        ),
+        (
+            property::FA_PAYLOAD,
+            CanonicalScalar::bytes(encoded).unwrap(),
+        ),
+    ];
+    props.sort_by_key(|(key, _)| key.0);
+    let mut legacy = WriteBatch::new(relation::IN_BOOK);
+    legacy.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        fa_model::entry_mirrors(&entry).unwrap(),
+    );
+    legacy.create_vertex(version_vid, vec![label::RULE_VERSION], props);
+    legacy.add_edge(
+        fa_journal::rows::edge_id(relation::IN_BOOK, version_vid, book_root()),
+        version_vid,
+        book_root(),
+        vec![],
+    );
+    let at = write_raw(h, legacy);
+    (evid, rule, at)
+}
+
+#[test]
+fn legacy_rule_proposal_retries_are_read_only_and_still_exclude_other_intents() {
+    let mut h = harness();
+    let key = b"legacy-rule-proposal";
+    let (evid, rule, at) = legacy_proposal(&mut h, key);
+    assert!(h.db.vertex(proposal_outcome(&h, key)).unwrap().is_none());
+    let rows = h.db.vertices().unwrap();
+    let retry = propose_version(&mut h, "40.00", key).unwrap().unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.control_entry, Some(evid));
+    assert_eq!(retry.version.rule, rule);
+    assert_eq!(retry.version.created_at, at);
+    assert_eq!(h.db.frontier().unwrap(), at);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+    assert!(h.db.vertex(proposal_outcome(&h, key)).unwrap().is_none());
+
+    let changed = propose_version(&mut h, "50.00", key).unwrap().unwrap_err();
+    assert_eq!(changed.code, code::IDEMPOTENCY_CONFLICT);
+    let batch = proposal_batch(&h, key);
+    let ctx = h.ctx();
+    let refused = h
+        .runtime
+        .block_on(post_batch(&mut h.db, &ctx, &h.book, controller(), batch))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::IDEMPOTENCY_CONFLICT);
+    assert_eq!(h.db.frontier().unwrap(), at);
+    assert_eq!(h.db.vertices().unwrap(), rows);
 }

@@ -106,7 +106,7 @@ fn oversized_canon_rule_round_trips_activates_and_posts() {
     let entry_fragments = entry_bytes.len().div_ceil(4096);
     let publications: Vec<_> = h.db.delta_since(before).unwrap().collect();
     assert_eq!(publications.len(), 1);
-    let (mut entries, mut versions, mut fragments, mut memberships) = (0, 0, 0, 0);
+    let (mut entries, mut versions, mut fragments, mut memberships, mut outcomes) = (0, 0, 0, 0, 0);
     for coordinate in publications[0].coordinate_entries() {
         for row in &coordinate.rows {
             match row {
@@ -116,6 +116,9 @@ fn oversized_canon_rule_round_trips_activates_and_posts() {
                 }
                 DeltaRow::CreateVertex { labels, .. } if labels == &[label::ENTRY_FRAGMENT] => {
                     fragments += 1;
+                }
+                DeltaRow::CreateVertex { labels, .. } if labels == &[label::INTENT_OUTCOME] => {
+                    outcomes += 1;
                 }
                 DeltaRow::CreateEdge {
                     relation, src, dst, ..
@@ -130,8 +133,8 @@ fn oversized_canon_rule_round_trips_activates_and_posts() {
         }
     }
     assert_eq!(
-        (entries, versions, fragments, memberships),
-        (1, 1 + rule_fragments, entry_fragments, 1)
+        (entries, versions, fragments, memberships, outcomes),
+        (1, 1 + rule_fragments, entry_fragments, 1, 1)
     );
     assert_eq!(
         rule_version_at(&h.db, &h.book, &rule.ir_digest(), recorded_at).unwrap(),

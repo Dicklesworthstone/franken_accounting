@@ -8,7 +8,10 @@
 //! again writes nothing, and a reader that decodes a stored IR to another
 //! digest has found corruption, never a different rule. Proposing needs
 //! `rule_change`; it activates nothing, and no entry derives from a version
-//! until an activation names it.
+//! until an activation names it. New proposals reserve the same successful-
+//! intent key as postings and batches, atomically with the source and IR.
+//! Exact retries authenticate their original Entry and outcome claim; an
+//! already retained IR under a fresh unused key remains a read-only lookup.
 
 use asupersync::fs::Vfs;
 use fa_canon::{CanonError, CompiledRule, Derivation, EvalError};
@@ -424,15 +427,33 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let _epoch = crate::policy::epoch_witness(&txn, db)?;
-    if let Some(row) = txn.vertex(db, evid)? {
+    let recorded = match crate::outcome::witness_control_record(
+        &mut txn,
+        db,
+        ctx,
+        book,
+        principal,
+        key,
+        evid,
+        proposal.class,
+    )
+    .await?
+    {
+        Ok(recorded) => recorded,
+        Err(refusal) => {
+            txn.abort();
+            return Ok(Err(refusal));
+        }
+    };
+    if let Some(row) = recorded {
         let version_row = txn.vertex(db, version_vid)?;
         txn.abort();
-        if !crate::entry_storage::has_class_mirror(&row, proposal.class) {
-            return Ok(Err(crate::outcome::key_conflict()));
-        }
         let stored = crate::entry_storage::decode_at(db, &row, db.frontier()?)?;
-        if stored.proposal.semantic_digest(&book.seal_key)?
-            != proposal.semantic_digest(&book.seal_key)?
+        if !stored.approvals.is_empty()
+            || stored.plan_certificate.is_some()
+            || !crate::outcome::verify_control_recorded(db, &row, &stored)?
+            || stored.proposal.semantic_digest(&book.seal_key)?
+                != proposal.semantic_digest(&book.seal_key)?
         {
             return Ok(Err(Refusal::new(
                 code::IDEMPOTENCY_CONFLICT,
@@ -493,6 +514,7 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
         crate::entry_storage::stored_mirrors(&entry)?,
     );
     crate::entry_storage::stage(&ctx.query(), &mut in_book, &entry, evid)?;
+    crate::outcome::stage_control(&mut in_book, &entry, evid)?;
     in_book.create_vertex(version_vid, vec![label::RULE_VERSION], props);
     object::stage(
         &ctx.query(),
