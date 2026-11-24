@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=1d61ee0832b180348718bbd27d2e6cdca0fc412e
+tree=d42cea3c84a2cbea2a4ca69f9228049024676482
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=5
+log_dir=/Volumes/SANDISK_SSD/scratch/fa-build-20261122.BBDlDDVP/tier0-socket-fixture
+recorded_utc=2026-11-24T00:02:11Z
