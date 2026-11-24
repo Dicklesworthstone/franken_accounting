@@ -193,7 +193,7 @@ fn changed(detail: impl core::fmt::Display) -> Refusal {
 
 pub(crate) fn unsupported_batch() -> Refusal {
     invalid(
-        "batch only Adjusting asset charges with distinct immutable acquisitions and schedules; mixed effects, charge reversals and case/scenario protocols require separate native publications",
+        "batch Adjusting asset charges with distinct immutable acquisitions and schedules, optionally with ordinary Original or Adjusting postings without applications, corrections, pending/control effects or other aggregate derivations; charge reversals and case/scenario protocols require separate native publications",
     )
 }
 

@@ -1,4 +1,5 @@
-//! Governed recurring charges compose only across independent acquisitions.
+//! Governed recurring charges compose across independent acquisitions and
+//! ordinary companions that preserve each acquisition's charge history.
 
 use super::*;
 use fa_journal::refusal::code;
@@ -143,12 +144,177 @@ fn independent_depreciation_and_amortization_share_one_atomic_publication() {
 }
 
 #[test]
+fn asset_charges_share_atomic_publications_with_independent_postings_and_accruals() {
+    for class in [EntryClass::ORIGINAL, EntryClass::ADJUSTING] {
+        for companion_first in [false, true] {
+            let mut f = Fixture::new(AssetCostKind::Depreciation, 10_007, 7, 3);
+            let other = f.second_schedule();
+            let companion =
+                f.h.proposal(f.h.rent_legs(250), b"ordinary-companion", class);
+            let mut proposals = vec![
+                f.charge_for(&f.schedule, &cap(), b"mixed-first-charge"),
+                f.charge_for(&other, &cap(), b"mixed-second-charge"),
+            ];
+            if companion_first {
+                proposals.insert(0, companion);
+            } else {
+                proposals.push(companion);
+            }
+            let batch = f.h.batch(b"mixed-assets", proposals.clone());
+            let before = f.h.db.frontier().unwrap();
+            let acquisition = read_entry(&f.h.db, f.acquisition.vid).unwrap();
+            let posted = f.post_charges(batch.clone(), &cap()).unwrap();
+            assert_eq!(posted.recorded_at, CommitSeq(before.0 + 1));
+            assert_eq!(posted.entries.len(), 3);
+            assert_eq!(recognized(&f.h.db, &f.h), [3333, 3333]);
+            for (reference, proposal) in posted.entries.iter().zip(&proposals) {
+                let (entry, at) = read_entry(&f.h.db, reference.vid).unwrap().unwrap();
+                assert_eq!(entry.proposal, *proposal);
+                assert_eq!(entry.entry_ref(reference.vid), *reference);
+                assert_eq!(at, posted.recorded_at);
+            }
+            assert_eq!(read_entry(&f.h.db, f.acquisition.vid).unwrap(), acquisition);
+            assert!(
+                verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+                    .unwrap()
+                    .is_green()
+            );
+            // A later publication must not turn a successful request into a
+            // fresh charge or change the ordinary companion's recorded bytes.
+            f.h.post(posting(f.h.proposal(
+                f.h.rent_legs(1),
+                b"after-mixed-assets",
+                EntryClass::ORIGINAL,
+            )))
+            .unwrap();
+            let head = f.h.db.frontier().unwrap();
+            let rows = f.h.db.vertices().unwrap();
+            let retry = f.post_charges(batch, &cap()).unwrap();
+            assert!(retry.already_recorded);
+            assert_eq!(retry.entries, posted.entries);
+            assert_eq!(retry.outcome, posted.outcome);
+            assert_eq!(retry.recorded_at, posted.recorded_at);
+            assert_eq!(f.h.db.frontier().unwrap(), head);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            // The same ordered identities cannot hide changed companion
+            // amounts behind the already-recorded asset outcome.
+            let index = if companion_first { 0 } else { 2 };
+            for leg in &mut proposals[index].legs {
+                leg.amount.mantissa += 1;
+            }
+            proposals[index].unit_totals =
+                EntryPayload::fold_unit_totals(&proposals[index].legs).unwrap();
+            let changed = f.h.batch(b"mixed-assets", proposals);
+            let refusal = f.post_charges(changed, &cap()).unwrap_err();
+            assert_eq!(refusal.code, code::IDEMPOTENCY_CONFLICT);
+            assert_eq!(f.h.db.frontier().unwrap(), head);
+            assert_eq!(f.h.db.vertices().unwrap(), rows);
+            assert_eq!(recognized(&f.h.db, &f.h), [3333, 3333]);
+        }
+    }
+}
+
+#[test]
+fn invalid_ordinary_companion_rolls_back_asset_charges_and_keeps_retry_keys_free() {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 10_007, 7, 3);
+    let charge = f.charge_for(&f.schedule, &cap(), b"mixed-rollback-charge");
+    let bad = f.h.proposal(
+        vec![
+            LegPayload::simple(Side::Debit, f.h.rent, Amount::new(f.h.usd, 250)),
+            LegPayload::simple(Side::Credit, f.h.cash, Amount::new(f.h.usd, 249)),
+        ],
+        b"mixed-rollback-companion",
+        EntryClass::ADJUSTING,
+    );
+    let batch = f.h.batch(b"mixed-rollback", vec![charge.clone(), bad]);
+    let outcome = fa_journal::batch::outcome_vid(&f.h.book, &batch);
+    let charge_ref = f.h.member_ref(&charge);
+    let before = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let refusal = f.post_charges(batch, &cap()).unwrap_err();
+    assert!(refusal.message.contains("member 1"), "{refusal}");
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    assert!(f.h.db.vertex(outcome).unwrap().is_none());
+    assert!(read_entry(&f.h.db, charge_ref.vid).unwrap().is_none());
+    assert_eq!(recognized(&f.h.db, &f.h), [0]);
+    let companion = f.h.proposal(
+        f.h.rent_legs(250),
+        b"mixed-rollback-companion",
+        EntryClass::ADJUSTING,
+    );
+    let corrected =
+        f.h.batch(b"mixed-rollback", vec![charge, companion.clone()]);
+    let posted = f.post_charges(corrected, &cap()).unwrap();
+    assert_eq!(posted.recorded_at, CommitSeq(before.0 + 1));
+    assert_eq!(posted.entries[0], charge_ref);
+    assert_eq!(recognized(&f.h.db, &f.h), [3333]);
+    assert_eq!(
+        read_entry(&f.h.db, posted.entries[1].vid)
+            .unwrap()
+            .unwrap()
+            .0
+            .proposal,
+        companion
+    );
+    assert!(
+        verify_asset_schedules(&f.h.db, &f.h.ctx(), &f.h.book)
+            .unwrap()
+            .is_green()
+    );
+}
+
+#[test]
+fn mixed_asset_batch_plan_refuses_a_stale_basis_without_publishing_companions() {
+    let mut f = Fixture::new(AssetCostKind::Depreciation, 10_007, 7, 3);
+    let capability = cap().with_requires_dry_run();
+    let request = |fixture: &Fixture| {
+        fixture.h.batch(
+            b"mixed-asset-plan",
+            vec![
+                fixture.charge_for(&fixture.schedule, &cap(), b"mixed-plan-charge"),
+                fixture.h.proposal(
+                    fixture.h.rent_legs(250),
+                    b"mixed-plan-companion",
+                    EntryClass::ADJUSTING,
+                ),
+            ],
+        )
+    };
+    let batch = request(&f);
+    let before = f.h.db.frontier().unwrap();
+    assert!(f.post_charges(batch.clone(), &capability).is_err());
+    let plan = f.h.planned_batch(batch, &capability).unwrap();
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    f.h.open_draft(f.h.agent_capability(), "mixed-plan-intervening-control")
+        .unwrap();
+    let before = f.h.db.frontier().unwrap();
+    let rows = f.h.db.vertices().unwrap();
+    let refusal = f.h.publish_batch_plan(plan, &capability).unwrap_err();
+    assert_eq!(refusal.code, code::PLAN_INVALIDATED);
+    assert_eq!(f.h.db.frontier().unwrap(), before);
+    assert_eq!(f.h.db.vertices().unwrap(), rows);
+    assert_eq!(recognized(&f.h.db, &f.h), [0]);
+    let fresh = request(&f);
+    let plan = f.h.planned_batch(fresh, &capability).unwrap();
+    let posted = f.h.publish_batch_plan(plan.clone(), &capability).unwrap();
+    assert_eq!(posted.recorded_at, CommitSeq(before.0 + 1));
+    assert_eq!(posted.entries.len(), 2);
+    assert_eq!(recognized(&f.h.db, &f.h), [3333]);
+    let retry = f.h.publish_batch_plan(plan, &capability).unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.entries, posted.entries);
+    assert_eq!(f.h.db.frontier().unwrap(), posted.recorded_at);
+}
+
+#[test]
 fn asset_batch_refuses_duplicate_schedules_shared_acquisitions_and_mixed_effects() {
     for variant in [
         "same-schedule",
         "forged-digest",
         "shared-acquisition",
-        "ordinary",
+        "applying-ordinary",
+        "pending",
         "reversal",
     ] {
         for reversed_order in [false, true] {
@@ -187,10 +353,23 @@ fn asset_batch_refuses_duplicate_schedules_shared_acquisitions_and_mixed_effects
                     basis.schedule.entry_digest[0] ^= 1;
                     second.set_asset_charge_basis(&basis).unwrap();
                 }
-                "ordinary" => {
-                    second =
-                        f.h.proposal(f.h.rent_legs(1), b"ordinary", EntryClass::ORIGINAL)
+                "applying-ordinary" => {
+                    let mut applying = LegPayload::simple(
+                        Side::Credit,
+                        account_vid(f.h.book.book_id, "1500"),
+                        Amount::new(f.h.usd, 1),
+                    );
+                    applying.settles = vec![settle(f.acquisition, 0, f.h.usd, 1)];
+                    second = f.h.proposal(
+                        vec![
+                            LegPayload::simple(Side::Debit, f.h.cash, Amount::new(f.h.usd, 1)),
+                            applying,
+                        ],
+                        b"applying-ordinary",
+                        EntryClass::ORIGINAL,
+                    );
                 }
+                "pending" => second = f.h.pending(f.h.rent_legs(1), b"mixed-pending"),
                 "reversal" => second = undo(&f.source, f.acquisition, b"mixed-source-undo"),
                 _ => {}
             }
@@ -279,7 +458,22 @@ fn asset_draft_rehearsal_and_promotion_preserve_sources_and_reviewed_effects() {
     f.h.plan_draft(agent.clone(), name, first).unwrap();
     let second = f.charge_for(&other, &agent, b"draft-second");
     assert!(second.asset_charge_basis().unwrap().unwrap().known_at > first_basis);
-    let planned = f.h.plan_draft(agent.clone(), name, second).unwrap();
+    f.h.plan_draft(agent.clone(), name, second).unwrap();
+    let companion_capability = Capability::new(
+        AGENT,
+        fa_policy::Profile::Agent,
+        &[fa_policy::Op::Post],
+        PRINCIPAL,
+    )
+    .unwrap()
+    .on_branch(fa_model::draft_branch(f.h.book.book_id, name))
+    .unwrap()
+    .for_accounts(&["1000", "6000"])
+    .unwrap();
+    let companion = f.h.agent_rent(250, b"draft-ordinary-companion");
+    let planned =
+        f.h.plan_draft(companion_capability.clone(), name, companion.clone())
+            .unwrap();
     let entries = planned
         .plan
         .unwrap()
@@ -301,8 +495,19 @@ fn asset_draft_rehearsal_and_promotion_preserve_sources_and_reviewed_effects() {
     .unwrap();
     assert_eq!(recognized(&f.h.db, &f.h), [0, 0]);
     let view = f.h.draft(name);
+    assert_eq!(view.intents.len(), 3);
+    assert_eq!(view.intents[2].capability, companion_capability);
+    assert!(!view.intents[2].capability.holds(fa_policy::Op::Read));
+    assert_eq!(view.intents[2].intent.proposal(), &companion);
     let before = f.h.db.frontier().unwrap();
     let rows = f.h.db.vertices().unwrap();
+    let direct_companion = PostRequest {
+        proposal: companion,
+        approvals: Vec::new(),
+        plan_certificate: None,
+        capability: companion_capability,
+    };
+    assert_eq!(f.h.post(direct_companion).unwrap_err().exit, 7);
     let direct = PostRequest {
         proposal: view.intents[0].intent.proposal().clone(),
         approvals: Vec::new(),
@@ -396,6 +601,8 @@ fn asset_drafts_refuse_source_drift_period_changes_and_revoked_planners_atomical
             let proposal = f.charge_for(schedule, &agent, key);
             f.h.plan_draft(agent.clone(), name, proposal).unwrap();
         }
+        let companion = f.h.agent_rent(250, b"stale-ordinary-companion");
+        f.h.plan_draft(agent.clone(), name, companion).unwrap();
         match change {
             "charge" | "charge-and-undo" => {
                 let charge = f.charge_for(&other, &cap(), b"intervening-charge");

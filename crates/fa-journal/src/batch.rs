@@ -80,6 +80,7 @@ pub(crate) struct IndependentDisposalBatch(());
 
 /// Every charge names a different immutable acquisition and schedule. No
 /// member changes another member's recognized-cost state or source guard.
+/// Ordinary companions cannot apply to or correct those immutable sources.
 /// Only this module constructs the proof after admitting every planner.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndependentAssetChargeBatch(());
@@ -818,10 +819,28 @@ fn independent_disposal_batch(
     Ok(Ok(Some(IndependentDisposalBatch(()))))
 }
 
+/// A companion cannot change an acquisition's liveness, applications or
+/// schedule-keyed charge history. Account balances are not source inputs.
+/// Check submitted and resolved native effects with the same structural law.
+fn asset_charge_batch_member_shape(proposal: &fa_model::EntryPayload) -> Result<bool, KernelError> {
+    if crate::asset_cost::has_basis(proposal) {
+        return Ok(proposal.class == EntryClass::ADJUSTING);
+    }
+    Ok(
+        matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING)
+            && proposal.supersession.is_empty()
+            && proposal.pending.is_none()
+            && proposal.control.is_none()
+            && proposal.legs.iter().all(|leg| leg.settles.is_empty())
+            && !crate::post::requires_aggregate_basis(proposal)?,
+    )
+}
+
 /// Schedule amounts depend on their own immutable acquisition and charge
-/// history, not a GL account balance. Shared expense/accumulated accounts are
-/// therefore safe; shared acquisition entries are not, because their source
-/// guard records the last schedule or charge for that complete acquisition.
+/// history, not a GL account balance. Shared expense/accumulated accounts and
+/// ordinary posting companions are therefore safe; shared acquisition entries
+/// are not, because their source guard records the last schedule or charge for
+/// that complete acquisition.
 fn independent_asset_charge_batch<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -844,15 +863,21 @@ fn independent_asset_charge_batch<V: Vfs + Clone>(
             | Admission::VerifiedBatch(_)
             | Admission::Promote(_)
             | Admission::ScratchDraft(_)
-    ) || batch.members().iter().any(|member| {
-        member.proposal().class != EntryClass::ADJUSTING
-            || !crate::asset_cost::has_basis(member.proposal())
-    }) {
+    ) {
         return Ok(Err(crate::asset_cost::unsupported_batch()));
     }
-    // Source independence requires reading immutable schedules. Admit all
-    // actual member capabilities first, including Agent trunk confinement,
-    // whole-book Read/Post, expiry and revocation, before that observation.
+    for (index, intent) in batch.members().iter().enumerate() {
+        if !asset_charge_batch_member_shape(intent.proposal())? {
+            return Ok(Err(member_refusal(
+                index,
+                crate::asset_cost::unsupported_batch(),
+            )));
+        }
+    }
+    // Source independence requires reading immutable schedules. Admit every
+    // member's own authority, including Agent trunk confinement, expiry and
+    // revocation, before that observation. Only charge planners require the
+    // whole-book Read/Post source authority; companions acquire none of it.
     for (index, (intent, capability)) in batch.members().iter().zip(capabilities).enumerate() {
         if let Err(refusal) = crate::post::authorize_request(
             db,
@@ -862,13 +887,18 @@ fn independent_asset_charge_batch<V: Vfs + Clone>(
         )? {
             return Ok(Err(member_refusal(index, refusal)));
         }
-        if let Err(refusal) = crate::asset_cost::authorize(db, book, capability)? {
+        if crate::asset_cost::has_basis(intent.proposal())
+            && let Err(refusal) = crate::asset_cost::authorize(db, book, capability)?
+        {
             return Ok(Err(member_refusal(index, refusal)));
         }
     }
     let mut schedules = BTreeSet::new();
     let mut acquisitions = BTreeSet::new();
     for (index, intent) in batch.members().iter().enumerate() {
+        if !crate::asset_cost::has_basis(intent.proposal()) {
+            continue;
+        }
         let (schedule, acquisition) =
             match crate::asset_cost::batch_source(db, book, intent.proposal())? {
                 Ok(source) => source,
@@ -2305,6 +2335,15 @@ fn stage_batch_with<V: Vfs + Clone>(
         {
             prepared.abort();
             return Ok(Err(member_refusal(i, refusal)));
+        }
+        if proofs.asset_charge.is_some()
+            && !asset_charge_batch_member_shape(&prepared.entry().proposal)?
+        {
+            prepared.abort();
+            return Ok(Err(member_refusal(
+                i,
+                crate::asset_cost::unsupported_batch(),
+            )));
         }
         let epoch = prepared.security_policy_epoch();
         if security_policy_epoch.is_some_and(|prior| prior != epoch) {
