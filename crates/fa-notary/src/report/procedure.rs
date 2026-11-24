@@ -63,6 +63,16 @@ const GRAPH_ROUND_TRIPS: &[(&str, i128, i128)] = &[
     ("period_end_days", 0, u32::MAX as i128),
     ("window_days", 0, u32::MAX as i128),
 ];
+const GRAPH_CIRCULAR_FLOWS: &[(&str, i128, i128)] = &[
+    ("max_hops", 2, 8),
+    ("min_retention_bps", 0, u32::MAX as i128),
+    ("window_days", 0, u32::MAX as i128),
+];
+const GRAPH_LAYERING: &[(&str, i128, i128)] = &[
+    ("min_hops", 2, 8),
+    ("min_passthrough_bps", 0, u32::MAX as i128),
+    ("window_days", 0, u32::MAX as i128),
+];
 const BENFORD: &[(&str, i128, i128)] = &[
     ("account_type", 0, 8),
     ("currency_iso4217", 1, 999),
@@ -114,6 +124,8 @@ pub fn profile(
         ("numbers.threshold_splitting", 1) => ("FA-EVID-L33", THRESHOLD_SPLITTING),
         ("graph.structuring", 2) => ("FA-EVID-L14", GRAPH_STRUCTURING),
         ("graph.round_trips", 2) => ("FA-EVID-L13", GRAPH_ROUND_TRIPS),
+        ("graph.circular_flows", 2) => ("FA-EVID-L34", GRAPH_CIRCULAR_FLOWS),
+        ("graph.layering", 3) => ("FA-EVID-L35", GRAPH_LAYERING),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
         ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
@@ -180,6 +192,69 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn temporal_graph_profiles_bind_exact_versions_complete_parameters_and_account_scope() {
+        for (id, version, hop_name, ratio_name, evidence) in [
+            (
+                "graph.circular_flows",
+                2,
+                "max_hops",
+                "min_retention_bps",
+                "FA-EVID-L34",
+            ),
+            (
+                "graph.layering",
+                3,
+                "min_hops",
+                "min_passthrough_bps",
+                "FA-EVID-L35",
+            ),
+        ] {
+            for hops in [2, 3, 8] {
+                for ratio in [0, 7_000, 10_001, i128::from(u32::MAX)] {
+                    let parameters = [
+                        (hop_name, hops),
+                        (ratio_name, ratio),
+                        ("window_days", i128::from(u32::MAX)),
+                    ];
+                    assert_eq!(profile(id, version, None, &parameters, &[]), Some(evidence));
+                    assert_eq!(profile(id, version, Some(0), &parameters, &[]), None);
+                    assert_eq!(
+                        profile(id, version, None, &parameters, &[("account", "1000")]),
+                        None
+                    );
+                    for unsupported in [0, 1, 2, 3, 4] {
+                        if unsupported != version {
+                            assert_eq!(profile(id, unsupported, None, &parameters, &[]), None);
+                        }
+                    }
+                }
+            }
+            let parameters = [(hop_name, 3), (ratio_name, 7_000), ("window_days", 14)];
+            assert_eq!(profile(id, version, None, &parameters[..2], &[]), None);
+            let mut reordered = parameters;
+            reordered.swap(0, 1);
+            assert_eq!(profile(id, version, None, &reordered, &[]), None);
+            for (index, value) in [
+                (0, 1),
+                (0, 9),
+                (1, -1),
+                (1, i128::from(u32::MAX) + 1),
+                (2, -1),
+            ] {
+                let mut invalid = parameters;
+                invalid[index].1 = value;
+                assert_eq!(profile(id, version, None, &invalid, &[]), None);
+            }
+            let party_id = id.replacen("graph.", "graph.party_", 1);
+            assert_eq!(
+                profile(&party_id, version, None, &parameters, &[]),
+                None,
+                "account-flow replay does not claim party projection verification"
+            );
+        }
+    }
 
     #[test]
     fn ponzi_profile_requires_v5_and_exact_positive_cohort_window() {
