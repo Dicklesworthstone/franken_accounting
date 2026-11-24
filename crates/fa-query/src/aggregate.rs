@@ -7,7 +7,7 @@
 //!
 //! This build compiles one shape: the statement's only `RETURN`, whose items
 //! are group keys (any expression without an aggregate) and `COUNT(*)`,
-//! `COUNT`, `SUM`, `MIN`, `MAX` or `AVG` of one binding or property,
+//! `COUNT`, `COUNT(DISTINCT ...)`, `SUM`, `MIN`, `MAX` or `AVG` of one binding or property,
 //! optionally followed by `ORDER BY` output columns, `SKIP` and `LIMIT`.
 //! Anything else beside an amount aggregate is refused.
 
@@ -35,6 +35,7 @@ pub struct Column {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Function {
     Count,
+    CountDistinct,
     Sum,
     Min,
     Max,
@@ -51,6 +52,15 @@ pub enum Value {
         function: Function,
         native: Option<usize>,
         amount: bool,
+    },
+    /// Count distinct logical leg amounts. All three columns come from the
+    /// same binding: `amount`, `amount_bytes` and `unit_id`. The caller uses
+    /// the registered unit scale to recover one exact mantissa from either
+    /// storage representation, and refuses missing values or mixed units.
+    DistinctAmountCount {
+        amount: usize,
+        bytes: usize,
+        unit: usize,
     },
 }
 
@@ -178,8 +188,21 @@ pub(crate) fn plan_with_amount_aliases(
             && lexed.punct(expr.end - 1, ')')
             && (open + 1..expr.end - 1).all(|k| lexed.tokens[k].depth > lexed.tokens[open].depth);
         let value = match function(lexed, expr.start).filter(|_| closes) {
-            Some(f) => {
-                let args = open + 1..expr.end - 1;
+            Some(mut f) => {
+                let mut args = open + 1..expr.end - 1;
+                if f == Function::Count && lexed.word(args.start, "DISTINCT") {
+                    f = Function::CountDistinct;
+                    args.start += 1;
+                }
+                while args.len() >= 3
+                    && lexed.punct(args.start, '(')
+                    && lexed.punct(args.end - 1, ')')
+                    && (args.start + 1..args.end - 1)
+                        .all(|k| lexed.tokens[k].depth > lexed.tokens[args.start].depth)
+                {
+                    args.start += 1;
+                    args.end -= 1;
+                }
                 let arg = text(args.start, args.end);
                 let shape = args.len() == 1 && lexed.kind(args.start) == Some(Kind::Word)
                     || args.len() == 3
@@ -191,6 +214,21 @@ pub(crate) fn plan_with_amount_aliases(
                         function: f,
                         native: None,
                         amount: false,
+                    }
+                } else if shape
+                    && f == Function::CountDistinct
+                    && args.len() == 3
+                    && lexed.str(args.start + 2) == "amount"
+                {
+                    let amount = native.len();
+                    let binding = lexed.str(args.start);
+                    native.push(arg);
+                    native.push(format!("{binding}.amount_bytes"));
+                    native.push(format!("{binding}.unit_id"));
+                    Value::DistinctAmountCount {
+                        amount,
+                        bytes: amount + 1,
+                        unit: amount + 2,
                     }
                 } else if shape {
                     native.push(arg);

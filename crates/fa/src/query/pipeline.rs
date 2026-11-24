@@ -194,7 +194,7 @@ pub(super) fn execute<V: Vfs + Clone>(
         Err(error) => return Ok(Err(native_refusal(&statement, &error))),
     };
     Ok(
-        finish(native, procedure, seq, result, &certificate).map(|rows| ExecutedQuery {
+        finish(native, procedure, book, seq, result, &certificate).map(|rows| ExecutedQuery {
             rows,
             native: certificate,
             pipeline: Some(Evidence {
@@ -271,17 +271,18 @@ pub(super) fn replay<V: Vfs + Clone>(
             ))));
         }
     };
-    Ok(finish(native, procedure, seq, result, continuation))
+    Ok(finish(native, procedure, book, seq, result, continuation))
 }
 
 fn finish(
     native: &Native,
     procedure: &OpenAmount,
+    book: &BookContext,
     seq: CommitSeq,
     result: QueryResult,
     certificate: &NativeResultCertificate,
 ) -> Result<QueryRows, Refusal> {
-    let mut rows = result_of(native, seq, result, certificate)?;
+    let mut rows = result_of(native, book, seq, result, certificate)?;
     if native.aggregation().is_none() {
         if rows.columns.len() != procedure.columns().len() {
             return Err(invalid(

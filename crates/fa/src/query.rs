@@ -362,6 +362,7 @@ fn budget(native: &Native) -> GqlQueryPolicy {
 /// values, or the exact aggregation its plan names.
 fn result_of(
     native: &Native,
+    book: &BookContext,
     seq: CommitSeq,
     result: QueryResult,
     certificate: &NativeResultCertificate,
@@ -378,7 +379,7 @@ fn result_of(
     let (columns, rows) = match native.aggregation() {
         Some(plan) => (
             plan.columns.iter().map(|c| c.name.clone()).collect(),
-            aggregate::aggregate(plan, &rows)?,
+            aggregate::aggregate(plan, &rows, &book.units)?,
         ),
         None => (
             columns,
@@ -445,7 +446,7 @@ fn execute<V: Vfs + Clone>(
         Err(error) => return Ok(Err(native_refusal(&statement, &error))),
     };
     Ok(
-        result_of(native, seq, result, &certificate).map(|rows| ExecutedQuery {
+        result_of(native, book, seq, result, &certificate).map(|rows| ExecutedQuery {
             rows,
             native: certificate,
             pipeline: None,

@@ -714,7 +714,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             };
             Ok(
-                result_of(&native, seq, result, &certificate.native).map_err(|refusal| {
+                result_of(&native, book, seq, result, &certificate.native).map_err(|refusal| {
                     invalid(format!(
                         "the replayed rows do not fold: {}",
                         refusal.message

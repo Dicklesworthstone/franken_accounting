@@ -957,6 +957,91 @@ fn an_amount_aggregate_returns_its_keys_and_arguments_for_exact_aggregation() {
     assert!(r.message.contains("across units"), "{r:?}");
 }
 
+#[test]
+fn distinct_amount_counts_retain_exact_storage_and_unit_provenance() {
+    let (_, n) = native(
+        "MATCH (l:Leg) RETURN l.unit_id AS unit, COUNT(DISTINCT ((l.amount))) AS amounts, COUNT(DISTINCT l.side) AS sides, COUNT(l.amount) AS mirrored ORDER BY amounts DESC, unit LIMIT 4",
+    );
+    assert!(
+        n.statement(4).ends_with(
+            "RETURN l.unit_id AS __fa_c0, l.amount AS __fa_c1, l.amount_bytes AS __fa_c2, l.unit_id AS __fa_c3, l.side AS __fa_c4, l.amount AS __fa_c5"
+        ),
+        "{}",
+        n.statement(4)
+    );
+    let plan = n.aggregation().expect("exact distinct aggregation");
+    assert_eq!(
+        plan.columns[1].value,
+        Value::DistinctAmountCount {
+            amount: 1,
+            bytes: 2,
+            unit: 3,
+        }
+    );
+    assert_eq!(
+        plan.columns[2].value,
+        Value::Aggregate {
+            function: Function::CountDistinct,
+            native: Some(4),
+            amount: false,
+        }
+    );
+    assert_eq!(
+        plan.columns[3].value,
+        Value::Aggregate {
+            function: Function::Count,
+            native: Some(5),
+            amount: true,
+        }
+    );
+    assert_eq!(plan.order, [(1, true), (0, false)]);
+    assert_eq!(plan.limit, Some(4));
+    for query in [
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) RETURN u.code, COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg {unit_id: 1}) WITH l AS same RETURN COUNT(DISTINCT same.amount)",
+    ] {
+        let (_, n) = native(query);
+        assert!(n.aggregation().is_some(), "{query}");
+    }
+    // A count's output has no currency: ordering unit groups by their
+    // distinct cardinality is valid, while their inputs still need a unit.
+    for query in [
+        "MATCH (l:Leg) RETURN COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg) RETURN l.unit_id * 0 AS unit, COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg) OPTIONAL MATCH (l)-[:IN_UNIT]->(u:Unit {code: 'USD'}) RETURN COUNT(DISTINCT l.amount)",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN COUNT(DISTINCT value)",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT l.amount_bytes)",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT l.applied)",
+    ] {
+        assert_eq!(refused(query).law, Law::Amount, "{query}");
+    }
+    for query in [
+        "MATCH (l:Leg {unit_id: 1}) WITH COUNT(DISTINCT l.amount) AS n RETURN n",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT l.amount) + 1",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT l.amount + l.amount)",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT *), SUM(l.amount)",
+    ] {
+        assert_eq!(refused(query).law, Law::Profile, "{query}");
+    }
+    let (_, ordinary) = native("MATCH (l:Leg) RETURN COUNT(l.amount)");
+    assert!(ordinary.aggregation().is_none());
+    let (_, nonmonetary) = native("MATCH (l:Leg) RETURN COUNT(DISTINCT l.side)");
+    assert!(nonmonetary.aggregation().is_none());
+    let (_, pipeline) = native(
+        "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) CALL fa.open_amount(l) YIELD open, age_days WHERE age_days > 30 RETURN u.code, COUNT(DISTINCT l.amount) AS amounts EFFECTIVE AT '2026-03-31'",
+    );
+    // The fallback and unit are carried from the certified source prefix,
+    // just like the decimal, before a procedure continuation resumes.
+    assert!(pipeline.statement(4).contains("l.amount_bytes"));
+    assert!(pipeline.statement(4).contains("l.unit_id"));
+    assert!(matches!(
+        pipeline.aggregation().unwrap().columns[1].value,
+        Value::DistinctAmountCount { .. }
+    ));
+}
+
 /// fa-2zf5: an amount aggregate is admitted only when its unit is proved in
 /// scope. An item that only mentions a unit key groups nothing; a pin from
 /// an `OPTIONAL MATCH` null-extends instead of dropping rows; a `WITH` passes
@@ -1143,11 +1228,10 @@ fn amount_membership_and_range_predicates_keep_the_comparison_law() {
         ));
     }
     native("MATCH (l:Leg) RETURN COUNT(l.amount) IN [1, 2] AS counted");
-    // DISTINCT compares values, unlike ordinary COUNT. Even a unit pin does
-    // not make native deduplication safe when an amount has no decimal mirror.
+    // DISTINCT compares values, unlike ordinary COUNT. The exact adapter
+    // needs a unit witness and the original leg's retained byte fallback.
     for query in [
         "MATCH (l:Leg) RETURN COUNT(DISTINCT ((l.amount)))",
-        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT ((l.amount)))",
         "MATCH (l:Leg) WITH l.amount AS value RETURN COUNT(DISTINCT value)",
         "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN COUNT(DISTINCT value)",
     ] {

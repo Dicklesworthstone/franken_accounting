@@ -1,13 +1,16 @@
 //! The exact aggregation of an amount aggregate over its native rows (see
 //! `fa_query::Aggregation`): rows are grouped by the key columns and every
 //! aggregate is computed in checked i128 arithmetic over the canonical
-//! decimal coefficients. A null amount mirror is refused, never skipped, and
-//! an overflow is refused, never wrapped (FA-INV-06).
+//! decimal coefficients. Distinct leg counts recover exact mantissas from
+//! the decimal or byte representation at the registered unit scale. A
+//! missing amount is refused, never skipped, and an overflow is refused,
+//! never wrapped (FA-INV-06).
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fa_journal::refusal::{Refusal, exit};
+use fa_money::{UnitId, UnitRegistry};
 use fa_query::{Aggregation, Function, Value};
 use fgdb::QueryValue;
 use fgdb_gql::GraphAggregateValue;
@@ -84,6 +87,8 @@ fn refusal(name: &str, message: String, amount_law: bool) -> Refusal {
 #[derive(Clone, Debug)]
 enum Acc {
     Count(u64),
+    Distinct(BTreeSet<QueryValue>, u64),
+    DistinctAmounts(BTreeSet<i128>, Option<UnitId>, u64),
     Sum(Option<Number>),
     Min(Option<Number>),
     Max(Option<Number>),
@@ -144,6 +149,28 @@ fn fold(
         }
         return Ok(());
     }
+    if let Acc::Distinct(seen, n) = acc {
+        let Some(value) = value else {
+            return Err(refusal(name, format!("`{name}` has no argument"), false));
+        };
+        if value.is_null() {
+            return if amount {
+                Err(refusal(
+                    name,
+                    format!("`{name}` has no exact amount; distinct counting never skips it"),
+                    true,
+                ))
+            } else {
+                Ok(())
+            };
+        }
+        if seen.insert(value.clone()) {
+            *n = n
+                .checked_add(1)
+                .ok_or_else(|| refusal(name, format!("`{name}` overflows"), false))?;
+        }
+        return Ok(());
+    }
     let Some(value) = value else {
         return Err(refusal(name, format!("`{name}` has no argument"), false));
     };
@@ -168,7 +195,7 @@ fn fold(
         }
     };
     match acc {
-        Acc::Count(_) => {}
+        Acc::Count(_) | Acc::Distinct(_, _) | Acc::DistinctAmounts(_, _, _) => {}
         Acc::Sum(total) => *total = Some(total.map_or(Ok(x), |t| add(t, x, name))?),
         Acc::Min(least) => {
             if least.map_or(Ok(true), |l| compare(x, l, name).map(Ordering::is_lt))? {
@@ -186,6 +213,90 @@ fn fold(
                 .checked_add(1)
                 .ok_or_else(|| refusal(name, format!("`{name}` overflows"), false))?;
         }
+    }
+    Ok(())
+}
+
+/// Recover the logical mantissa, independent of which exact storage
+/// representation supplied it. Decimal coefficients are at scale 18;
+/// `amount_bytes` is an i128 little-endian mantissa at the unit's scale.
+/// No float, rounding, or representability-dependent omission is involved.
+fn distinct_amount(
+    acc: &mut Acc,
+    row: &[QueryValue],
+    columns: (usize, usize, usize),
+    units: &UnitRegistry,
+    name: &str,
+) -> Result<(), Refusal> {
+    let bad = |message: &str| {
+        refusal(
+            name,
+            format!("`{name}` {message}; exact distinct counting cannot omit this amount"),
+            true,
+        )
+    };
+    let (amount_column, bytes_column, unit_column) = columns;
+    let Some(GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Int(id)))) =
+        row.get(unit_column)
+    else {
+        return Err(bad("has no exact unit identity"));
+    };
+    let unit_id = u32::try_from(*id)
+        .map(UnitId)
+        .map_err(|_| bad("has an invalid unit identity"))?;
+    let unit = units
+        .get(unit_id)
+        .ok_or_else(|| bad("names an unknown unit"))?;
+    let (Some(amount), Some(bytes)) = (row.get(amount_column), row.get(bytes_column)) else {
+        return Err(bad("is missing a certified amount column"));
+    };
+    let mantissa = match (amount, bytes) {
+        (
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Decimal(value))),
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Null)),
+        ) => {
+            let exponent = CanonicalDecimal::scale()
+                .checked_sub(u32::from(unit.scale))
+                .ok_or_else(|| {
+                    bad("has a decimal representation incompatible with its unit scale")
+                })?;
+            let factor = 10_i128
+                .checked_pow(exponent)
+                .ok_or_else(|| bad("has an unrepresentable unit scale"))?;
+            if value.coefficient() % factor != 0 {
+                return Err(bad(
+                    "has a decimal value outside the registered unit precision",
+                ));
+            }
+            value.coefficient() / factor
+        }
+        (
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Null)),
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Bytes(value))),
+        ) => {
+            let encoded: [u8; 16] = value
+                .as_slice()
+                .try_into()
+                .map_err(|_| bad("has a malformed i128 amount fallback"))?;
+            i128::from_le_bytes(encoded)
+        }
+        (
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Null)),
+            GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Null)),
+        ) => return Err(bad("has neither an amount nor its byte fallback")),
+        _ => return Err(bad("has ambiguous or invalid amount representations")),
+    };
+    let Acc::DistinctAmounts(seen, group_unit, n) = acc else {
+        return Err(bad("has an invalid distinct aggregation plan"));
+    };
+    if group_unit.is_some_and(|previous| previous != unit_id) {
+        return Err(bad("compares amounts of different units in one group"));
+    }
+    *group_unit = Some(unit_id);
+    if seen.insert(mantissa) {
+        *n = n
+            .checked_add(1)
+            .ok_or_else(|| refusal(name, format!("`{name}` overflows"), false))?;
     }
     Ok(())
 }
@@ -240,13 +351,14 @@ enum Out {
 pub(super) fn aggregate(
     plan: &Aggregation,
     rows: &[Vec<QueryValue>],
+    units: &UnitRegistry,
 ) -> Result<Vec<Vec<QueryCell>>, Refusal> {
     let keys: Vec<usize> = plan
         .columns
         .iter()
         .filter_map(|c| match c.value {
             Value::Key(native) => Some(native),
-            Value::Aggregate { .. } => None,
+            Value::Aggregate { .. } | Value::DistinctAmountCount { .. } => None,
         })
         .collect();
     let fresh = || -> Vec<Acc> {
@@ -254,8 +366,12 @@ pub(super) fn aggregate(
             .iter()
             .filter_map(|c| match c.value {
                 Value::Key(_) => None,
+                Value::DistinctAmountCount { .. } => {
+                    Some(Acc::DistinctAmounts(BTreeSet::new(), None, 0))
+                }
                 Value::Aggregate { function, .. } => Some(match function {
                     Function::Count => Acc::Count(0),
+                    Function::CountDistinct => Acc::Distinct(BTreeSet::new(), 0),
                     Function::Sum => Acc::Sum(None),
                     Function::Min => Acc::Min(None),
                     Function::Max => Acc::Max(None),
@@ -273,10 +389,23 @@ pub(super) fn aggregate(
         let accs = groups.entry(key).or_insert_with(fresh);
         let mut a = 0;
         for column in &plan.columns {
-            let Value::Aggregate { native, amount, .. } = column.value else {
-                continue;
-            };
-            fold(&mut accs[a], native.map(|n| &row[n]), amount, &column.name)?;
+            match column.value {
+                Value::Key(_) => continue,
+                Value::Aggregate { native, amount, .. } => {
+                    fold(&mut accs[a], native.map(|n| &row[n]), amount, &column.name)?;
+                }
+                Value::DistinctAmountCount {
+                    amount,
+                    bytes,
+                    unit,
+                } => distinct_amount(
+                    &mut accs[a],
+                    row,
+                    (amount, bytes, unit),
+                    units,
+                    &column.name,
+                )?,
+            }
             a += 1;
         }
     }
@@ -300,11 +429,13 @@ pub(super) fn aggregate(
         for column in &plan.columns {
             row.push(match column.value {
                 Value::Key(_) => Out::Cell(keyed.next().unwrap_or(QueryCell::Null)),
-                Value::Aggregate { amount, .. } => match accs.next() {
-                    Some(Acc::Count(n)) => Out::Count(n),
+                Value::Aggregate { .. } | Value::DistinctAmountCount { .. } => match accs.next() {
+                    Some(Acc::Count(n) | Acc::Distinct(_, n) | Acc::DistinctAmounts(_, _, n)) => {
+                        Out::Count(n)
+                    }
                     Some(Acc::Sum(total)) => Out::Cell(total.map_or_else(
                         || {
-                            if amount {
+                            if matches!(column.value, Value::Aggregate { amount: true, .. }) {
                                 QueryCell::Decimal("0".to_string())
                             } else {
                                 QueryCell::Int(0)
@@ -401,6 +532,13 @@ fn exact_order(x: &str, y: &str) -> Ordering {
 mod tests {
     use super::*;
 
+    fn aggregate(
+        plan: &Aggregation,
+        rows: &[Vec<QueryValue>],
+    ) -> Result<Vec<Vec<QueryCell>>, Refusal> {
+        super::aggregate(plan, rows, &UnitRegistry::embedded().unwrap())
+    }
+
     fn decimal(units: i128) -> QueryValue {
         GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Decimal(
             CanonicalDecimal::from_scaled_half_even(units, 2).unwrap(),
@@ -434,6 +572,228 @@ mod tests {
             native: Some(native),
             amount: true,
         }
+    }
+
+    fn null() -> QueryValue {
+        GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Null))
+    }
+
+    fn bytes(mantissa: i128) -> QueryValue {
+        GraphAggregateValue::Value(GraphValue::Scalar(
+            CanonicalScalar::bytes(mantissa.to_le_bytes().to_vec()).unwrap(),
+        ))
+    }
+
+    fn unit(id: UnitId) -> QueryValue {
+        GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Int(i64::from(id.0))))
+    }
+
+    fn distinct_count(amount: usize) -> Value {
+        Value::DistinctAmountCount {
+            amount,
+            bytes: amount + 1,
+            unit: amount + 2,
+        }
+    }
+
+    #[test]
+    fn distinct_amounts_deduplicate_logical_mantissas_including_byte_fallbacks() {
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let p = plan(
+            vec![
+                ("distinct", distinct_count(0)),
+                (
+                    "mirrored",
+                    Value::Aggregate {
+                        function: Function::Count,
+                        native: Some(0),
+                        amount: true,
+                    },
+                ),
+                (
+                    "rows",
+                    Value::Aggregate {
+                        function: Function::Count,
+                        native: None,
+                        amount: false,
+                    },
+                ),
+            ],
+            vec![],
+        );
+        let rows = vec![
+            vec![decimal(123), null(), unit(usd)],
+            // Different representations of one logical value must not
+            // increase cardinality, even when replay supplies both forms.
+            vec![null(), bytes(123), unit(usd)],
+            vec![decimal(250), null(), unit(usd)],
+            vec![null(), bytes(10_i128.pow(35)), unit(usd)],
+            vec![null(), bytes(10_i128.pow(35)), unit(usd)],
+            vec![null(), bytes(i128::MAX), unit(usd)],
+            vec![null(), bytes(i128::MIN), unit(usd)],
+        ];
+        assert_eq!(
+            aggregate(&p, &rows).unwrap(),
+            [vec![
+                QueryCell::Int(5),
+                QueryCell::Int(2),
+                QueryCell::Int(7)
+            ]]
+        );
+        assert_eq!(
+            aggregate(&p, &[]).unwrap(),
+            [vec![
+                QueryCell::Int(0),
+                QueryCell::Int(0),
+                QueryCell::Int(0)
+            ]]
+        );
+        // Unit precision beyond the native decimal scale still has the
+        // complete exact i128 domain through the byte representation.
+        let mut units = units;
+        let mut precise = units.get(usd).unwrap().clone();
+        precise.code = "PRECISE".to_string();
+        precise.scale = 38;
+        let precise = units.register(precise).unwrap();
+        let rows = vec![
+            vec![null(), bytes(1), unit(precise)],
+            vec![null(), bytes(i128::MAX), unit(precise)],
+        ];
+        assert_eq!(
+            super::aggregate(&p, &rows, &units).unwrap(),
+            [vec![
+                QueryCell::Int(2),
+                QueryCell::Int(0),
+                QueryCell::Int(2)
+            ]]
+        );
+    }
+
+    #[test]
+    fn distinct_amount_groups_order_and_page_counts_without_cross_unit_comparison() {
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let eur = units.lookup("EUR").unwrap();
+        let mut p = plan(
+            vec![("unit", Value::Key(0)), ("distinct", distinct_count(1))],
+            vec![(1, true)],
+        );
+        let rows = vec![
+            vec![text("EUR"), decimal(123), null(), unit(eur)],
+            vec![text("USD"), decimal(123), null(), unit(usd)],
+            vec![text("EUR"), null(), bytes(123), unit(eur)],
+            vec![text("USD"), null(), bytes(i128::MAX), unit(usd)],
+        ];
+        assert_eq!(
+            aggregate(&p, &rows).unwrap(),
+            [
+                vec![QueryCell::Text("USD".into()), QueryCell::Int(2)],
+                vec![QueryCell::Text("EUR".into()), QueryCell::Int(1)],
+            ]
+        );
+        p.skip = 1;
+        p.limit = Some(1);
+        assert_eq!(
+            aggregate(&p, &rows).unwrap(),
+            [vec![QueryCell::Text("EUR".into()), QueryCell::Int(1)]]
+        );
+        assert!(aggregate(&p, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn distinct_amounts_refuse_missing_malformed_ambiguous_or_cross_unit_inputs() {
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let eur = units.lookup("EUR").unwrap();
+        let p = plan(vec![("distinct", distinct_count(0))], vec![]);
+        let finer = GraphAggregateValue::Value(GraphValue::Scalar(CanonicalScalar::Decimal(
+            CanonicalDecimal::from_scaled_half_even(1, 3).unwrap(),
+        )));
+        let malformed = GraphAggregateValue::Value(GraphValue::Scalar(
+            CanonicalScalar::bytes(vec![0; 15]).unwrap(),
+        ));
+        for row in [
+            vec![null(), null(), unit(usd)],
+            vec![decimal(123), bytes(123), unit(usd)],
+            vec![finer, null(), unit(usd)],
+            vec![null(), malformed, unit(usd)],
+            vec![null(), text("123"), unit(usd)],
+            vec![GraphAggregateValue::Integer(123), null(), unit(usd)],
+            vec![decimal(123), null(), null()],
+            vec![decimal(123), null(), unit(UnitId(u32::MAX))],
+            vec![decimal(123), null()],
+        ] {
+            let refusal = aggregate(&p, &[row]).unwrap_err();
+            assert_eq!(refusal.code, code::QUERY_AMOUNT_LAW, "{refusal:?}");
+        }
+        let refusal = aggregate(
+            &p,
+            &[
+                vec![decimal(123), null(), unit(usd)],
+                vec![decimal(123), null(), unit(eur)],
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(refusal.code, code::QUERY_AMOUNT_LAW);
+        assert!(refusal.message.contains("different units"));
+        // Even a row outside the result's page must be validated.
+        let mut paged = p;
+        paged.limit = Some(0);
+        assert!(aggregate(&paged, &[vec![null(), null(), unit(usd)]]).is_err());
+    }
+
+    #[test]
+    fn distinct_nonamount_values_keep_native_null_semantics_and_counts_never_wrap() {
+        let p = plan(
+            vec![(
+                "distinct",
+                Value::Aggregate {
+                    function: Function::CountDistinct,
+                    native: Some(0),
+                    amount: false,
+                },
+            )],
+            vec![],
+        );
+        assert_eq!(
+            aggregate(
+                &p,
+                &[
+                    vec![text("same")],
+                    vec![text("same")],
+                    vec![null()],
+                    vec![text("other")],
+                ]
+            )
+            .unwrap(),
+            [vec![QueryCell::Int(2)]]
+        );
+        let mut acc = Acc::Distinct(BTreeSet::from([text("same")]), u64::MAX);
+        fold(&mut acc, Some(&text("same")), false, "distinct").unwrap();
+        assert!(fold(&mut acc, Some(&text("other")), false, "distinct").is_err());
+
+        let units = UnitRegistry::embedded().unwrap();
+        let usd = units.lookup("USD").unwrap();
+        let mut acc = Acc::DistinctAmounts(BTreeSet::from([123]), Some(usd), u64::MAX);
+        distinct_amount(
+            &mut acc,
+            &[null(), bytes(123), unit(usd)],
+            (0, 1, 2),
+            &units,
+            "distinct",
+        )
+        .unwrap();
+        assert!(
+            distinct_amount(
+                &mut acc,
+                &[decimal(124), null(), unit(usd)],
+                (0, 1, 2),
+                &units,
+                "distinct",
+            )
+            .is_err()
+        );
     }
 
     #[test]

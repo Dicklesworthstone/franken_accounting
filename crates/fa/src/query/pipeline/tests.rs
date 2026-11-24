@@ -359,6 +359,77 @@ fn native_pipeline_preserves_exact_units_and_refuses_unsupported_certification()
 }
 
 #[test]
+fn distinct_leg_amounts_include_wide_fallbacks_and_replay_the_exact_count() {
+    let mut f = Fixture::new();
+    let wide = 10_i128.pow(20);
+    for (key, amount) in [
+        ("small-first", 123),
+        ("small-again", 123),
+        ("wide-first", wide),
+        ("wide-again", wide),
+    ] {
+        f.post(f.proposal(key, "2026-03-01", f.usd, "ar", "sales", amount));
+    }
+    f.post(f.proposal("eur-distinct", "2026-03-01", f.eur, "ar", "sales", 7));
+    let head = f.book.head().unwrap();
+    let reader = cap(&["read", "produce"]);
+    let statement = "MATCH (l:Leg)-[:IN_UNIT]->(u:Unit) WHERE l.side = 0 RETURN u.code AS unit, COUNT(DISTINCT l.amount) AS amounts, COUNT(l.amount) AS mirrored, COUNT(*) AS legs ORDER BY amounts DESC, unit";
+    let certified = f
+        .book
+        .certify_query(PRINCIPAL, &reader, statement)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        certified.rows.rows,
+        [
+            vec![
+                QueryCell::Text("USD".into()),
+                QueryCell::Int(2),
+                QueryCell::Int(2),
+                QueryCell::Int(4),
+            ],
+            vec![
+                QueryCell::Text("EUR".into()),
+                QueryCell::Int(1),
+                QueryCell::Int(1),
+                QueryCell::Int(1),
+            ],
+        ]
+    );
+    assert_eq!(
+        f.book
+            .replay_query(PRINCIPAL, &reader, &certified.certificate)
+            .unwrap()
+            .unwrap(),
+        certified.rows,
+    );
+    let pinned = f
+        .book
+        .certify_query(
+            PRINCIPAL,
+            &reader,
+            &format!(
+                "MATCH (l:Leg) WHERE l.unit_id = {} AND l.side = 0 RETURN COUNT(DISTINCT l.amount) AS amounts",
+                f.usd.0
+            ),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(pinned.rows.rows, [vec![QueryCell::Int(2)]]);
+    let refusal = f
+        .book
+        .certify_query(
+            PRINCIPAL,
+            &reader,
+            "MATCH (l:Leg) RETURN COUNT(DISTINCT l.amount)",
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refusal.code, code::QUERY_AMOUNT_LAW);
+    assert_eq!(f.book.head().unwrap(), head, "query counts never publish");
+}
+
+#[test]
 fn native_amount_aggregates_require_a_direct_unit_witness() {
     let mut f = Fixture::new();
     f.post(f.proposal("usd-unit-witness", "2026-03-01", f.usd, "ar", "sales", 123));

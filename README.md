@@ -2648,6 +2648,26 @@ dry-run and plan options refuse before a rule handler can write.
 
 An account-subtree extract needs authenticated hierarchy and complete account/range coverage, or the complete-prefix fallback. Membership alone does not prove scope completeness. A stock balance also needs its contributing opening history or an explicitly labeled baseline plus complete delta; the verifier reports these predicates separately.
 
+Exact distinct counts can include every native leg amount, including values
+outside the graph's decimal range:
+
+```gql
+MATCH (l:Leg)-[:IN_UNIT]->(u:Unit)
+RETURN u.code AS unit, COUNT(DISTINCT l.amount) AS amounts
+ORDER BY amounts DESC, unit
+```
+
+The query retains each leg's decimal, byte fallback and unit identity, then
+normalizes either representation to the same exact signed mantissa using the
+registered unit scale. Equal logical amounts count once; full-width amounts
+are included. A unit pin or grouping is required, and runtime validation also
+rejects mixed units, missing or ambiguous representations, and malformed
+fallbacks. Counts use checked arithmetic and work with certified replay and
+supported procedure continuations. Ordinary `COUNT(l.amount)` continues to
+count decimal mirror presence; monetary scalar aliases and other amount
+properties do not supply the complete provenance required for exact distinct
+counting and remain refused.
+
 The profile also runs a bounded per-row open-item procedure. It reads the
 matched values, folds the journal at the same recorded prefix and explicit
 civil-date cutoff, then resumes native GQL filtering and projection:

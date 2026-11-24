@@ -2,7 +2,8 @@
 //! at its unit's scale, so the profile proves at rewrite time that a
 //! statement never mixes units.
 //!
-//! - An aggregate over amounts (`SUM`, `AVG`, `MIN`, `MAX`, `COLLECT`) is
+//! - An aggregate over amounts (`SUM`, `AVG`, `MIN`, `MAX`, `COLLECT`,
+//!   `COUNT(DISTINCT ...)`) is
 //!   confined to one unit: the statement pins the unit, or the same
 //!   `RETURN`/`WITH` groups by it.
 //! - An amount compared, ordered or filtered (including predicates in
@@ -816,6 +817,9 @@ fn scalar_projection(lexed: &Lexed<'_>, mut start: usize, mut end: usize) -> boo
 }
 
 pub(crate) fn aggregated(lexed: &Lexed<'_>, i: usize) -> bool {
+    if distinctly_counted(lexed, i) {
+        return true;
+    }
     let mut parent = lexed.tokens[i].parent;
     while let Some(p) = parent {
         if lexed.punct(p, '(')
@@ -1155,14 +1159,16 @@ pub(crate) fn check_with_amount_aliases(
             }
             for r in &references {
                 let shown = &lexed.text[lexed.tokens[r.start].start..lexed.tokens[r.end - 1].end];
-                if distinctly_counted(lexed, r.start) {
+                if distinctly_counted(lexed, r.start)
+                    && !(r.end == r.start + 3 && lexed.str(r.end - 1) == "amount")
+                {
                     return Err(refused(
                         lexed,
                         r.start,
                         format!(
-                            "COUNT(DISTINCT `{shown}`) requires exact amount comparison and cannot skip an unmirrored amount"
+                            "COUNT(DISTINCT `{shown}`) has no retained exact leg amount representation"
                         ),
-                        "project each amount and its unit, then deduplicate exact values in the caller; ordinary COUNT(amount) counts mirror presence only",
+                        "retain the leg binding and count COUNT(DISTINCT l.amount), grouped by its unit or pinned to one unit; amount aliases do not retain the byte fallback",
                     ));
                 }
                 let word_predicate = word_predicates
@@ -1217,7 +1223,14 @@ pub(crate) fn check_with_amount_aliases(
                         return Err(refused(
                             lexed,
                             r.start,
-                            format!("aggregating `{shown}` adds amounts of every unit"),
+                            format!(
+                                "aggregating `{shown}` {} amounts of every unit",
+                                if distinctly_counted(lexed, r.start) {
+                                    "compares"
+                                } else {
+                                    "adds"
+                                }
+                            ),
                             GROUP_FIX,
                         ));
                     }
