@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=6099e5e206f88fd83096c900c49515b0b76990f9
+tree=b5e0861856fdeebd563d7098f4209c89108ae3a5
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=4
+log_dir=/Volumes/SANDISK_SSD/scratch/fa-build-20261122.BBDlDDVP/tier0-fasb-conformance
+recorded_utc=2026-11-24T00:44:02Z
