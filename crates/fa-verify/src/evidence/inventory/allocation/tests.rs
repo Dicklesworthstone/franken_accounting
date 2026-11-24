@@ -71,6 +71,18 @@ fn tiered_basis(total: i128, brackets: &[(u128, Vec<u128>)], debit: bool) -> Vec
     basis.buf
 }
 
+fn two_key_basis(total: i128, quantities: &[u128], values: &[u128], debit: bool) -> Vec<u8> {
+    let mut bytes = basis(6, 0, total, quantities, debit);
+    // The driver has a 42-byte prefix including the request length. Law 6
+    // extends its ordinary target rows with one raw secondary u128 each.
+    let request_length = u32::try_from(bytes.len() - 42 + 16 * values.len()).unwrap();
+    bytes[38..42].copy_from_slice(&request_length.to_le_bytes());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
 fn citation(bytes: &[u8]) -> EvidenceCitation {
     let commitment = doc_commit(21, bytes);
     EvidenceCitation {
@@ -209,6 +221,97 @@ fn known_allocations_bind_native_legs_and_exact_workpaper_for_both_source_sides(
             assert_eq!(verified.basis.targets.len(), weights.len());
         }
     }
+}
+
+#[test]
+fn two_key_allocations_verify_independent_ordering_and_refuse_resealed_wrong_shares() {
+    for debit in [true, false] {
+        for (total, quantities, values, expected) in [
+            (
+                10_000,
+                vec![1, 1, 1],
+                vec![10, 30, 20],
+                vec![3333, 3334, 3333],
+            ),
+            (2, vec![1, 1, 1], vec![30, 30, 20], vec![1, 1, 0]),
+            (
+                7,
+                vec![3, 3, 3, 1],
+                vec![u128::MAX, u128::MAX, u128::MAX, 0],
+                vec![2, 2, 2, 1],
+            ),
+            (7, vec![0, 1, 1], vec![u128::MAX, 0, 1], vec![0, 3, 4]),
+            (
+                i128::MAX,
+                vec![u128::MAX; 2],
+                vec![0, 1],
+                vec![i128::MAX / 2, i128::MAX / 2 + 1],
+            ),
+        ] {
+            let bytes = two_key_basis(total, &quantities, &values, debit);
+            let p = proposal(&bytes, &expected, &[citation(&bytes)]);
+            let (proof_bytes, checkpoint, digest) = proof(&p, true);
+            let verified =
+                verify_allocation_for(&proof_bytes, &checkpoint, &digest, &bytes).unwrap();
+            assert_eq!(verified.shares, expected);
+            assert_eq!(verified.basis.values, values);
+            assert_eq!(verified.basis.law, 6);
+
+            let mut wrong = expected.clone();
+            wrong[0] += 1;
+            wrong[1] -= 1;
+            let forged = proposal(&bytes, &wrong, &[citation(&bytes)]);
+            let (forged_proof, forged_checkpoint, forged_digest) = proof(&forged, true);
+            assert!(
+                verify_allocation_for(&forged_proof, &forged_checkpoint, &forged_digest, &bytes)
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn two_key_driver_refuses_missing_values_zero_quantities_and_a_substituted_question() {
+    let bytes = two_key_basis(100, &[1, 1, 1], &[10, 30, 20], false);
+    let p = proposal(&bytes, &[33, 34, 33], &[citation(&bytes)]);
+    let (proof_bytes, checkpoint, digest) = proof(&p, true);
+    let changed = two_key_basis(100, &[1, 1, 1], &[11, 30, 20], false);
+    assert_eq!(
+        AllocationBasis::decode(&changed).unwrap().shares().unwrap(),
+        [33, 34, 33]
+    );
+    assert!(verify_allocation_for(&proof_bytes, &checkpoint, &digest, &changed).is_err());
+    for malformed in [
+        two_key_basis(100, &[1, 1, 1], &[], false),
+        two_key_basis(100, &[1, 1, 1], &[1, 2], false),
+        two_key_basis(100, &[1, 1, 1], &[1, 2, 3, 4], false),
+        two_key_basis(100, &[0, 0, 0], &[1, 2, u128::MAX], false),
+    ] {
+        assert!(AllocationBasis::decode(&malformed).is_err());
+    }
+    for cut in 0..bytes.len() {
+        assert!(AllocationBasis::decode(&bytes[..cut]).is_err());
+    }
+    for count in [0u32, 2, 4, 1025, u32::MAX] {
+        let mut malformed = bytes.clone();
+        malformed[42 + 45..42 + 49].copy_from_slice(&count.to_le_bytes());
+        assert!(AllocationBasis::decode(&malformed).is_err());
+    }
+    let decoded = AllocationBasis::decode(&bytes).unwrap();
+    let mut changed = decoded.clone();
+    changed.values.pop();
+    assert!(changed.shares().is_err());
+    changed = decoded.clone();
+    changed.law = 1;
+    assert!(
+        changed.shares().is_err(),
+        "another law cannot ignore secondary values"
+    );
+    changed = decoded;
+    for target in &mut changed.targets {
+        target.basis = 0;
+    }
+    assert!(changed.shares().is_err());
 }
 
 #[test]

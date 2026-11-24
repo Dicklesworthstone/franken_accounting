@@ -7,7 +7,7 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use super::{
-    AllocationBracket, AllocationCatalog, AllocationLaw, ProRataAllocation,
+    AllocationBracket, AllocationCatalog, AllocationLaw, ProRataAllocation, by_units_then_value,
     equal_split_residual_first, largest_remainder, pro_rata_residual_to_named, tiered, waterfall,
 };
 use crate::wide::U256;
@@ -66,6 +66,12 @@ pub enum AllocationMethod {
         brackets: Vec<AllocationBracket>,
     },
     EqualSplitResidualFirst,
+    /// Hamilton shares from target quantities; secondary values resolve only
+    /// equal fractional remainders, then declared target order resolves ties.
+    /// Values correspond one-for-one to the ordered targets, never prices.
+    ByUnitsThenValue {
+        values: Vec<u128>,
+    },
 }
 
 impl AllocationMethod {
@@ -76,6 +82,7 @@ impl AllocationMethod {
             Self::Waterfall => AllocationLaw::Waterfall,
             Self::Tiered { .. } => AllocationLaw::Tiered,
             Self::EqualSplitResidualFirst => AllocationLaw::EqualSplitResidualFirst,
+            Self::ByUnitsThenValue { .. } => AllocationLaw::ByUnitsThenValue,
         }
     }
 }
@@ -84,7 +91,8 @@ impl AllocationMethod {
 pub struct AllocationTarget {
     pub id: u128,
     /// Weight for proportional laws, native mantissa cap for Waterfall,
-    /// exactly 1 for EqualSplitResidualFirst or Tiered (whose weights belong
+    /// quantity for ByUnitsThenValue; exactly 1 for EqualSplitResidualFirst
+    /// or Tiered (whose weights belong
     /// to each bracket). Never a floating-point value.
     pub basis: u128,
 }
@@ -116,6 +124,9 @@ impl AllocationRequest {
         basis.extend(self.targets.iter().map(|target| target.basis));
         let (shares, pro_rata) = match &self.method {
             AllocationMethod::LargestRemainder => (largest_remainder(self.total, &basis)?, None),
+            AllocationMethod::ByUnitsThenValue { values } => {
+                (by_units_then_value(self.total, &basis, values)?, None)
+            }
             AllocationMethod::Waterfall => (waterfall(self.total, &basis)?, None),
             AllocationMethod::Tiered { brackets } => (tiered(self.total, brackets)?, None),
             AllocationMethod::EqualSplitResidualFirst => (
@@ -179,6 +190,14 @@ impl AllocationRequest {
         }
         if let AllocationMethod::Tiered { brackets } = &self.method {
             super::tiered::validate_brackets(brackets, self.targets.len())?;
+        }
+        if let AllocationMethod::ByUnitsThenValue { values } = &self.method
+            && (values.len() != self.targets.len()
+                || self.targets.iter().all(|target| target.basis == 0))
+        {
+            return Err(AllocationError::Invalid(
+                "two-key allocation requires one value per target and nonzero total quantities",
+            ));
         }
         Ok(())
     }

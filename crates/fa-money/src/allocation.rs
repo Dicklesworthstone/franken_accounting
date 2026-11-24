@@ -9,6 +9,7 @@ mod pro_rata;
 mod receipt;
 mod request;
 mod tiered;
+mod units_then_value;
 
 pub use catalog::{AllocationCatalog, AllocationLaw, MAX_ALLOCATION_TARGETS};
 pub use ordered::{equal_split_residual_first, waterfall};
@@ -20,6 +21,7 @@ pub use request::{
 pub use tiered::{
     AllocationBracket, MAX_ALLOCATION_BRACKET_WEIGHTS, MAX_ALLOCATION_BRACKETS, tiered,
 };
+pub use units_then_value::by_units_then_value;
 
 use crate::amount::{Amount, AmountError, signed_magnitude};
 use crate::wide::U256;

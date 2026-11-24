@@ -167,6 +167,18 @@ fn actual_producer_entries_and_proofs_verify_for_all_laws_sides_and_rounding_mod
         posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
         posting(i128::MAX, AllocationMethod::LargestRemainder, &[1; 2]),
         posting(25_000, progressive_method(), &[1; 2]),
+        posting(
+            10_000,
+            AllocationMethod::ByUnitsThenValue {
+                values: vec![10, 30, 20],
+            },
+            &[1; 3],
+        ),
+        posting(
+            i128::MAX,
+            AllocationMethod::ByUnitsThenValue { values: vec![0, 1] },
+            &[u128::MAX; 2],
+        ),
     ];
     for rounding in RoundingLaw::ALL {
         for recipient in [20, 21, 22] {
@@ -285,6 +297,13 @@ fn actual_v2_producer_cells_verify_independently_for_all_laws_and_rounding_modes
         posting(25_000, progressive_method(), &[1; 2]),
         posting(10, AllocationMethod::Waterfall, &[4, 0, 9]),
         posting(2, AllocationMethod::EqualSplitResidualFirst, &[1; 5]),
+        posting(
+            10_000,
+            AllocationMethod::ByUnitsThenValue {
+                values: vec![10, 30, 20],
+            },
+            &[1; 3],
+        ),
     ];
     for rounding in RoundingLaw::ALL {
         for recipient in [20, 21, 22] {

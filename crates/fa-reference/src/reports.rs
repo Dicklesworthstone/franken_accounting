@@ -133,6 +133,71 @@ pub fn largest_remainder(total: i128, weights: &[u128]) -> Result<Vec<i128>, &'s
         .collect()
 }
 
+/// Independent two-key Hamilton oracle. Quantities establish exact shares;
+/// values only break equal fractional remainders, followed by input order.
+/// Unbounded limb products and pairwise rank counts do not share the
+/// production implementation's fixed-width arithmetic or sorting path.
+pub fn by_units_then_value(
+    total: i128,
+    quantities: &[u128],
+    values: &[u128],
+) -> Result<Vec<i128>, &'static str> {
+    if quantities.is_empty() || quantities.len() > 4096 || quantities.len() != values.len() {
+        return Err("two-key allocation requires 1..=4096 paired quantities and values");
+    }
+    let denominator = quantities.iter().fold(Int::zero(), |sum, quantity| {
+        sum.add(&Int::from_u128(*quantity))
+    });
+    if denominator.is_zero() {
+        return Err("allocation quantities sum to zero");
+    }
+    let magnitude = Int::from_u128(total.unsigned_abs());
+    let mut floors = Vec::new();
+    let mut remainders = Vec::new();
+    let mut assigned = Int::zero();
+    for quantity in quantities {
+        let (floor, remainder) = magnitude
+            .mul(&Int::from_u128(*quantity))
+            .div_rem(&denominator)
+            .ok_or("zero allocation divisor")?;
+        assigned = assigned.add(&floor);
+        floors.push(floor);
+        remainders.push(remainder);
+    }
+    let residual = magnitude
+        .sub(&assigned)
+        .to_u128()
+        .ok_or("invalid residual")?;
+    if residual >= quantities.len() as u128 {
+        return Err("invalid residual");
+    }
+    floors
+        .iter()
+        .enumerate()
+        .map(|(index, floor)| {
+            let rank = remainders
+                .iter()
+                .enumerate()
+                .filter(|(other, remainder)| {
+                    *remainder > &remainders[index]
+                        || *remainder == &remainders[index]
+                            && (values[*other] > values[index]
+                                || values[*other] == values[index] && *other < index)
+                })
+                .count() as u128;
+            let share = if rank < residual {
+                if remainders[index].is_zero() {
+                    return Err("zero remainder received a residual");
+                }
+                floor.add(&Int::from_u128(1))
+            } else {
+                floor.clone()
+            };
+            signed_from_mag(&share, total < 0)
+        })
+        .collect()
+}
+
 /// Naïve pro-rata allocation with residual assigned to `residual_target`.
 pub fn pro_rata_residual_to_named(
     total: i128,

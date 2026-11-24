@@ -49,6 +49,13 @@ fn every_method_and_signed_boundary_roundtrips_and_replays() {
             request(total, AllocationMethod::EqualSplitResidualFirst, &[1; 3]),
             request(
                 total,
+                AllocationMethod::ByUnitsThenValue {
+                    values: vec![0, u128::MAX, 1],
+                },
+                &[u128::MAX; 3],
+            ),
+            request(
+                total,
                 AllocationMethod::Tiered {
                     brackets: vec![
                         AllocationBracket {
@@ -102,6 +109,9 @@ fn every_request_truncation_and_trailing_byte_is_rejected() {
                 weights: vec![1; 3],
             }],
         },
+        AllocationMethod::ByUnitsThenValue {
+            values: vec![0, 1, 2],
+        },
     ] {
         let bytes = request(5, method, &[1; 3]).canonical_bytes().unwrap();
         for cut in 0..bytes.len() {
@@ -125,7 +135,8 @@ fn unknown_versions_laws_rounding_and_hostile_counts_are_refused() {
         (17, 2u16), // format major
         (19, 1u16), // unsupported minor
         (21, 4u16), // Tiered requires its complete bracket schedule
-        (21, 6u16), // unimplemented two-key law
+        (21, 6u16), // ByUnitsThenValue requires its complete secondary keys
+        (21, 7u16), // unknown law
         (23, 2u16), // law version
     ] {
         let mut bad = bytes.clone();
@@ -154,6 +165,50 @@ fn unknown_versions_laws_rounding_and_hostile_counts_are_refused() {
     pro_rata[45..47].copy_from_slice(&10u16.to_le_bytes());
     assert!(AllocationRequest::decode(&pro_rata).is_err());
     assert!(AllocationRequest::decode(&vec![0; MAX_ALLOCATION_REQUEST_BYTES + 1]).is_err());
+}
+
+#[test]
+fn two_key_request_retains_exact_values_and_receipt_rejects_an_unchanged_result_substitution() {
+    let input = request(
+        100,
+        AllocationMethod::ByUnitsThenValue {
+            values: vec![10, 30, 20],
+        },
+        &[1; 3],
+    );
+    let bytes = input.canonical_bytes().unwrap();
+    assert_eq!(&bytes[21..25], &[6, 0, 1, 0]);
+    assert_eq!(bytes.len(), 49 + 48 * 3);
+    for (index, value) in [10u128, 30, 20].into_iter().enumerate() {
+        let start = 49 + 32 * 3 + 16 * index;
+        assert_eq!(&bytes[start..start + 16], &value.to_le_bytes());
+    }
+    let outcome = input.execute().unwrap();
+    let receipt = outcome.receipt_bytes().unwrap();
+    let mut changed = input.clone();
+    let AllocationMethod::ByUnitsThenValue { values } = &mut changed.method else {
+        unreachable!()
+    };
+    values[0] = 11; // Same winner and amounts, different declared question.
+    assert_eq!(outcome.shares(), changed.execute().unwrap().shares());
+    assert!(AllocationOutcome::replay_receipt_for(&receipt, &changed).is_err());
+    for values in [vec![], vec![10, 30], vec![10, 30, 20, 0]] {
+        let mut malformed = input.clone();
+        malformed.method = AllocationMethod::ByUnitsThenValue { values };
+        assert!(malformed.canonical_bytes().is_err());
+        assert!(malformed.execute().is_err());
+    }
+    let mut changed_law = bytes.clone();
+    changed_law[21..23].copy_from_slice(&1u16.to_le_bytes());
+    assert!(
+        AllocationRequest::decode(&changed_law).is_err(),
+        "old laws cannot ignore secondary keys"
+    );
+    for count in [0u32, 2, 4, 4097, u32::MAX] {
+        let mut malformed = bytes.clone();
+        malformed[45..49].copy_from_slice(&count.to_le_bytes());
+        assert!(AllocationRequest::decode(&malformed).is_err());
+    }
 }
 
 #[test]

@@ -1,7 +1,8 @@
 //! Portable arithmetic receipts, not posting plans or signed evidence.
 //!
 //! The canonical request retains the law/version, signed native amount,
-//! ordered stable target IDs, weights/caps and explicit rounding recipient.
+//! ordered stable target IDs, weights/caps, secondary values and explicit
+//! rounding recipient.
 //! A receipt adds every final share and the full pro-rata rounding transcript.
 //! Replay compares *all* canonical bytes with a fresh computation of the
 //! recipient's independent request. A changed allocation that preserves its
@@ -35,6 +36,7 @@ impl AllocationRequest {
             AllocationMethod::Tiered { brackets } => {
                 4 + brackets.len() * (16 + 16 * self.targets.len())
             }
+            AllocationMethod::ByUnitsThenValue { values } => 16 * values.len(),
             _ => 0,
         };
         let mut bytes = reserved(128 + 32 * self.targets.len() + bracket_bytes)?;
@@ -66,6 +68,13 @@ impl AllocationRequest {
                 for weight in &bracket.weights {
                     bytes.extend_from_slice(&weight.to_le_bytes());
                 }
+            }
+        }
+        // Law 6 retains one secondary key per target. The target count binds
+        // its exact length; no other law may silently carry these values.
+        if let AllocationMethod::ByUnitsThenValue { values } = &self.method {
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
         bounded(&bytes, MAX_ALLOCATION_REQUEST_BYTES)?;
@@ -102,6 +111,9 @@ impl AllocationRequest {
                 brackets: Vec::new(),
             },
             AllocationLaw::EqualSplitResidualFirst => AllocationMethod::EqualSplitResidualFirst,
+            AllocationLaw::ByUnitsThenValue => {
+                AllocationMethod::ByUnitsThenValue { values: Vec::new() }
+            }
             AllocationLaw::ProRataResidualToNamed => AllocationMethod::ProRataResidualToNamed {
                 rounding: RoundingLaw::from_id(u16::from_le_bytes(r.take("rounding law")?))
                     .ok_or(AllocationError::Invalid("unsupported rounding law"))?,
@@ -136,7 +148,12 @@ impl AllocationRequest {
             }
             bands
         } else {
-            if target_end != r.bytes.len() {
+            let expected_end = if law == AllocationLaw::ByUnitsThenValue {
+                target_end + 16 * count
+            } else {
+                target_end
+            };
+            if expected_end != r.bytes.len() {
                 return Err(AllocationError::Invalid(
                     "target count or request length is invalid",
                 ));
@@ -174,6 +191,16 @@ impl AllocationRequest {
                 });
             }
             method = AllocationMethod::Tiered { brackets };
+        }
+        if law == AllocationLaw::ByUnitsThenValue {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| AmountError::Overflow)?;
+            for _ in 0..count {
+                values.push(u128::from_le_bytes(r.take("target value")?));
+            }
+            method = AllocationMethod::ByUnitsThenValue { values };
         }
         let request = Self {
             total: Amount::new(unit, mantissa),

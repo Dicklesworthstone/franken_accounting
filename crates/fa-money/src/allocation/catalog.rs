@@ -9,8 +9,8 @@ const EMBEDDED: &str = include_str!("../../../../registries/allocation_laws.toml
 /// Hard implementation ceiling, independent of a configurable lower bound.
 pub const MAX_ALLOCATION_TARGETS: usize = 4096;
 
-/// Stable identity of an implemented allocation law. ID 6 remains reserved
-/// for the distinct, currently unsupported ByUnitsThenValue law.
+/// Stable identity of an implemented allocation law. A law's version fixes
+/// its complete arithmetic and ordering contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AllocationLaw {
     LargestRemainder,
@@ -18,15 +18,17 @@ pub enum AllocationLaw {
     Waterfall,
     Tiered,
     EqualSplitResidualFirst,
+    ByUnitsThenValue,
 }
 
 impl AllocationLaw {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::LargestRemainder,
         Self::ProRataResidualToNamed,
         Self::Waterfall,
         Self::Tiered,
         Self::EqualSplitResidualFirst,
+        Self::ByUnitsThenValue,
     ];
 
     pub const fn id(self) -> u16 {
@@ -36,6 +38,7 @@ impl AllocationLaw {
             Self::Waterfall => 3,
             Self::Tiered => 4,
             Self::EqualSplitResidualFirst => 5,
+            Self::ByUnitsThenValue => 6,
         }
     }
 
@@ -50,6 +53,7 @@ impl AllocationLaw {
             Self::Waterfall => "Waterfall",
             Self::Tiered => "Tiered",
             Self::EqualSplitResidualFirst => "EqualSplitResidualFirst",
+            Self::ByUnitsThenValue => "ByUnitsThenValue",
         }
     }
 
@@ -87,6 +91,12 @@ impl AllocationLaw {
                 "one-per-target",
                 "input-order; entire-residual-to-first",
                 "truncate-magnitude",
+                "magnitude-then-restore-sign",
+            ],
+            Self::ByUnitsThenValue => [
+                "unit-quantities; secondary-values",
+                "remainder-descending; equal-remainder-value-descending; ties-lowest-index",
+                "floor-quantity-share; distribute-one-unit",
                 "magnitude-then-restore-sign",
             ],
         }
@@ -198,12 +208,12 @@ mod tests {
                 .iter()
                 .map(|law| law.id())
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5]
+            [1, 2, 3, 4, 5, 6]
         );
         for law in AllocationLaw::ALL {
             assert_eq!(AllocationLaw::from_id(law.id()), Some(law));
         }
-        for absent in [0, 6, u16::MAX] {
+        for absent in [0, 7, u16::MAX] {
             assert_eq!(AllocationLaw::from_id(absent), None);
         }
     }

@@ -75,6 +75,14 @@ fn registered_laws_have_distinct_golden_accounting_results() {
             vec![1; 3],
             vec![1, -1, 1],
         ),
+        (
+            10_000,
+            AllocationMethod::ByUnitsThenValue {
+                values: vec![10, 30, 20],
+            },
+            vec![1, 1, 1],
+            vec![3333, 3334, 3333],
+        ),
     ];
     for (total, method, basis, expected) in examples {
         let request = request(total, method, &basis);

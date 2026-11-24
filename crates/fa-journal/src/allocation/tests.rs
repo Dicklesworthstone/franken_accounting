@@ -44,6 +44,105 @@ fn explicit_native_allocation_constructs_the_exact_source_and_target_vector() {
 }
 
 #[test]
+fn two_key_posting_binds_secondary_values_even_when_the_same_shares_result() {
+    let basis = basis(
+        10_000,
+        AllocationMethod::ByUnitsThenValue {
+            values: vec![10, 30, 20],
+        },
+        &[1; 3],
+    );
+    let outcome = basis.request.execute().unwrap();
+    let legs = basis.legs(&outcome).unwrap();
+    assert_eq!(
+        legs.iter()
+            .map(|leg| (leg.account_ref.0, side_tag(leg.side), leg.amount.mantissa))
+            .collect::<Vec<_>>(),
+        [(10, 1, 10_000), (11, 0, 3333), (12, 0, 3334), (13, 0, 3333)]
+    );
+    assert_eq!(
+        AllocationPosting::decode_record(&basis.record_bytes().unwrap()).unwrap(),
+        basis
+    );
+    let mut changed = basis.clone();
+    let AllocationMethod::ByUnitsThenValue { values } = &mut changed.request.method else {
+        unreachable!()
+    };
+    values[0] = 11;
+    assert_eq!(
+        outcome.shares(),
+        changed.request.execute().unwrap().shares()
+    );
+    assert_ne!(
+        basis.basis_digest().unwrap(),
+        changed.basis_digest().unwrap()
+    );
+    assert_ne!(
+        basis.driver_evidence(Id128([1; 16])).unwrap(),
+        changed.driver_evidence(Id128([1; 16])).unwrap()
+    );
+    assert!(changed.legs(&outcome).is_err());
+    let totals = EntryPayload::fold_unit_totals(&legs).unwrap();
+    assert_eq!((totals[0].debits, totals[0].credits), (10_000, 10_000));
+}
+
+#[test]
+fn two_key_allocations_match_independent_unbounded_arithmetic_over_ten_thousand_cases() {
+    let mut seed = 0x8217_93a5_40ec_d6bfu64;
+    for case in 0..10_000 {
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed
+        };
+        let count = 1 + (next() % 6) as usize;
+        let quantities: Vec<u128> = (0..count).map(|_| u128::from(next() % 17)).collect();
+        let values: Vec<u128> = (0..count).map(|_| u128::from(next() % 11)).collect();
+        let total = i128::from(next() % 100_001) - 50_000;
+        let actual = fa_money::allocation::by_units_then_value(
+            Amount::new(UnitId(7), total),
+            &quantities,
+            &values,
+        );
+        let expected = fa_reference::reports::by_units_then_value(total, &quantities, &values);
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                assert_eq!(
+                    actual
+                        .iter()
+                        .map(|amount| amount.mantissa)
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "case {case}"
+                );
+                assert_eq!(Amount::sum(UnitId(7), actual).unwrap().mantissa, total);
+            }
+            (Err(_), Err(_)) => assert!(quantities.iter().all(|quantity| *quantity == 0)),
+            result => panic!("case {case}: {result:?}"),
+        }
+    }
+    for total in [i128::MIN, -i128::MAX, 0, i128::MAX] {
+        for quantities in [[u128::MAX, u128::MAX, 0], [1, u128::MAX, 1]] {
+            let values = [u128::MAX, 1, u128::MAX];
+            let actual = fa_money::allocation::by_units_then_value(
+                Amount::new(UnitId(7), total),
+                &quantities,
+                &values,
+            )
+            .unwrap();
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|amount| amount.mantissa)
+                    .collect::<Vec<_>>(),
+                fa_reference::reports::by_units_then_value(total, &quantities, &values).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn tiered_posting_binds_each_marginal_band_and_conserves_the_native_legs() {
     let basis = basis(
         25_000,

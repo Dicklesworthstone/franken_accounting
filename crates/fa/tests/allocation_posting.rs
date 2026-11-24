@@ -353,6 +353,66 @@ fn allocation_driver_to_native_plan_to_journal_and_register_fold() {
 }
 
 #[test]
+fn two_key_allocation_posts_the_reviewed_value_tie_and_rejects_rebound_drivers() {
+    let mut h = Harness::new(false);
+    let basis = h.basis(
+        10_000,
+        AllocationMethod::ByUnitsThenValue {
+            values: vec![10, 30, 20],
+        },
+        &[("a", 1), ("b", 1), ("c", 1)],
+    );
+    let original = h.proposal("two-key-allocation", &basis);
+    let mut wrong = original.clone();
+    wrong.legs[1].amount.mantissa += 1;
+    wrong.legs[2].amount.mantissa -= 1;
+    assert_eq!(
+        EntryPayload::fold_unit_totals(&wrong.legs).unwrap(),
+        original.unit_totals
+    );
+    h.assert_refusal(wrong, code::STRUCTURE);
+
+    let mut changed = basis.clone();
+    let AllocationMethod::ByUnitsThenValue { values } = &mut changed.request.method else {
+        unreachable!()
+    };
+    values[0] = 11;
+    let mut rebound = changed
+        .proposal(h.template("rebound-values", changed.driver_evidence(BOOK).unwrap()))
+        .unwrap();
+    assert_eq!(
+        rebound.legs, original.legs,
+        "changing a nonwinning value preserves amounts"
+    );
+    rebound.evidence = original.evidence.clone();
+    h.assert_refusal(rebound, code::EVIDENCE_COMMIT);
+
+    let plan = h.plan(original.clone());
+    let bytes = plan.canonical_bytes().unwrap();
+    let posted = h.commit(PostPlan::decode(&bytes).unwrap()).unwrap();
+    let (stored, _) = h
+        .book
+        .read_entry(&h.cx(), posted.entry_ref().vid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.proposal, original);
+    assert_eq!(
+        AllocationPosting::decode_record(&stored.proposal.extensions[0].1).unwrap(),
+        basis
+    );
+    assert_eq!(
+        (h.net("source"), h.net("a"), h.net("b"), h.net("c")),
+        (-10_000, 3333, 3334, 3333)
+    );
+    let head = h.head();
+    assert!(matches!(
+        h.commit(PostPlan::decode(&bytes).unwrap()).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
+    assert_eq!(h.head(), head);
+}
+
+#[test]
 fn transported_allocation_plan_survives_reopen_and_exact_retry() {
     let mut h = Harness::new(false);
     let basis = h.basis(

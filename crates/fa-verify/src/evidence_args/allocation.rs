@@ -21,7 +21,9 @@ not a document wrapper, a hex string, or a basis learned from the proof.
 Verifies leaf inclusion, the exact Source-role Workpaper citation, retained
 law/basis digests, and every ordered native leg using independent arithmetic.
 Supports LargestRemainder, ProRataResidualToNamed (all nine rounding laws),
-Waterfall and EqualSplitResidualFirst. Zero shares remain in the target list;
+Waterfall, Tiered, EqualSplitResidualFirst and ByUnitsThenValue. The two-key
+law allocates by quantity; values break only equal fractional remainders,
+then declared target order breaks remaining ties. Zero shares remain in the target list;
 negative residual corrections must have the exact opposite posting direction.
 Both signed conservation and representable gross turnover are required.
 V1 shared dimensions and v2 per-target account/dimension cells are supported

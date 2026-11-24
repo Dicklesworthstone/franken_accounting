@@ -468,7 +468,7 @@ flags = ["--intent", "--review", "--review-out", "--digest", "--period", "--evid
 switches = ["--dry-run", "--review-only", "--approve"]
 events = ["posted", "recorded", "plan", "allocation_reviewed", "approved"]
 exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["allocate --intent <alloc.json|-> [--period <code>] [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "allocate approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...", "allocate --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "An allocation intent names source (account code) and supplies either total + source_side (debit|credit), or source_period/--period to fold that source cell's net period balance. Top-level dimensions identify the source and provide the default for targets. Each target may supply dimensions: {cost_center: ENG, project: P7} or the numeric dimension/value array. Omitted target dimensions inherit the source; an explicit empty set clears them. Distinct cells may use the same account; duplicate target cells and the exact source cell refuse. A pro-rata recipient may name an unambiguous target account or {account: 6100, dimensions: {cost_center: SALES}}. The canonical driver binds every destination and is auto-imported when preparing a native plan."]
+usage = ["allocate --intent <alloc.json|-> [--period <code>] [--evidence <oid>]... [--approval <vid>]... [--dry-run [--plan-out <new-file>]] [--review-only | --review-out <new-file>]", "allocate approve --review <file|-|hex> --digest <review_digest> [--sign-key <key file>] [--as <principal>] [--grant <op>]...", "allocate --review <file|-|hex> --digest <review_digest> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]", "An allocation intent names source (account code) and supplies either total + source_side (debit|credit), or source_period/--period to fold that source cell's net period balance. Top-level dimensions identify the source and provide the default for targets. Each target may supply dimensions: {cost_center: ENG, project: P7} or the numeric dimension/value array. Omitted target dimensions inherit the source; an explicit empty set clears them. Distinct cells may use the same account; duplicate target cells and the exact source cell refuse. A pro-rata recipient may name an unambiguous target account or {account: 6100, dimensions: {cost_center: SALES}}. The canonical driver binds every destination and is auto-imported when preparing a native plan.", "method: by_units_then_value (ByUnitsThenValue, law 6) requires every target's explicit basis quantity and secondary value as non-negative integers or unsigned decimal strings through u128::MAX. Hamilton floors and fractional remainders use only the quantities. Residual units follow descending remainder, then descending value, then declared target order; value never reprices a share or gives a zero-quantity target a share. At least one quantity must be positive. Review output exposes the complete two_key_basis, and canonical review/driver bytes retain both keys. Other methods reject a target value instead of silently ignoring it."]
 example = "fa allocate --intent alloc.json --book ./books/myco --json"
 
 [[verb]]
@@ -2890,8 +2890,8 @@ fields = ["package_oid:hex", "run_vid:hex", "atomic:bool", "selected_count:int",
 [[event]]
 name = "allocation_reviewed"
 book = true
-doc = "A canonical allocation review artifact (explicit v1/v2, or a balance review carrying it; plan §6.3/§10.1) binding the allocation rule, resolved source and destination account/dimension cells, exact shares, residual recipient, canonical driver Workpaper OID, review_digest, and sealed proposal_digest. V1 reviews retain their original encoding."
-fields = ["kind:string", "source:string", "source_period:string?", "source_digest:hex?", "source_side:string", "total:amount", "method:string", "review_digest:hex", "proposal_digest:hex", "driver_document_oid:hex", "legs:[plan_leg]", "bytes:hex", "file:string?"]
+doc = "A canonical allocation review artifact (explicit v1/v2, or a balance review carrying it; plan §6.3/§10.1) binding the allocation rule, resolved source and destination account/dimension cells, exact shares, residual recipient, canonical driver Workpaper OID, review_digest, and sealed proposal_digest. For ByUnitsThenValue, two_key_basis exposes every exact quantity and secondary value in declared target order; these are retained in the driver and review bytes. Other methods return null. V1 reviews retain their original encoding."
+fields = ["kind:string", "source:string", "source_period:string?", "source_digest:hex?", "source_side:string", "total:amount", "method:string", "two_key_basis:[allocation_two_key_basis]?", "review_digest:hex", "proposal_digest:hex", "driver_document_oid:hex", "legs:[plan_leg]", "bytes:hex", "file:string?"]
 
 [[event]]
 name = "settlement_reviewed"
@@ -3864,6 +3864,11 @@ fields = ["kind:string", "reason:string"]
 name = "plan_leg"
 doc = "One proposed leg with the resolved account code, immutable account identity, and complete dimension set. Its amount is an exact decimal string with the book's unit."
 fields = ["ordinal:int", "account:string", "account_vid:hex", "side:string", "amount:amount", "dimensions:[batch_plan_dimension]"]
+
+[[shape]]
+name = "allocation_two_key_basis"
+doc = "One ordered ByUnitsThenValue destination. Quantity is the primary Hamilton weight; value breaks only equal fractional-remainder ties, then input order breaks remaining ties. Both unsigned integers are decimal strings to preserve the full u128 range. target_id identifies the declared account or dimension cell."
+fields = ["target_id:hex", "quantity:string", "value:string"]
 
 [[shape]]
 name = "plan_application"

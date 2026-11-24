@@ -1,6 +1,5 @@
 # Plan §6.3 / fa-joq. Executable arithmetic laws, not posting authorization.
-# IDs follow the plan's catalog order. 6 (ByUnitsThenValue) remains
-# unsupported and is deliberately absent, not an alias of another law.
+# IDs follow the plan's catalog order and identify distinct executable laws.
 # Target order is part of the basis: never sort a caller's waterfall or ties.
 schema_version = 1
 max_targets = 4096
@@ -51,4 +50,18 @@ name = "EqualSplitResidualFirst"
 basis = "one-per-target"
 ordering = "input-order; entire-residual-to-first"
 rounding = "truncate-magnitude"
+signed = "magnitude-then-restore-sign"
+
+[[law]]
+id = 6
+# Quantities determine every exact floor and fractional remainder. The
+# secondary value only orders equal fractional remainders; equal values use
+# declared target order. It is never a price or a replacement quantity.
+# All-zero quantities refuse; a zero-quantity target always receives zero.
+# Both ordered keys are retained in the request and its driver commitment.
+version = 1
+name = "ByUnitsThenValue"
+basis = "unit-quantities; secondary-values"
+ordering = "remainder-descending; equal-remainder-value-descending; ties-lowest-index"
+rounding = "floor-quantity-share; distribute-one-unit"
 signed = "magnitude-then-restore-sign"

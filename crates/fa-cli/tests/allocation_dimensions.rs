@@ -236,6 +236,136 @@ impl Fixture {
 const TARGETS: &str = r#"[{"account":"6100","weight":3,"dimensions":{"cost_center":"ENG"}},{"account":"6100","weight":2,"dimensions":{"cost_center":"SALES"}}]"#;
 
 #[test]
+fn two_key_allocation_preserves_exact_values_through_review_approval_and_posting() {
+    let f = Fixture::new();
+    let targets = r#"[{"account":"6100","basis":1,"value":10,"dimensions":{"cost_center":"ENG"}},{"account":"6100","basis":"1","value":"340282366920938463463374607431768211455","dimensions":{"cost_center":"SALES"}}]"#;
+    let intent = f.allocation(
+        "two-key-rent",
+        r#""total":"99.99 USD","source_side":"credit""#,
+        r#""method":"by_units_then_value""#,
+        targets,
+    );
+    let (review, path) = f.review("two-key", &intent);
+    assert_eq!(text(&review, "method"), "by_units_then_value");
+    let basis = get(&review, "two_key_basis").as_arr().unwrap();
+    assert_eq!(basis.len(), 2);
+    assert_eq!(text(&basis[0], "quantity"), "1");
+    assert_eq!(text(&basis[0], "value"), "10");
+    assert_eq!(text(&basis[1], "value"), u128::MAX.to_string());
+    let legs = get(&review, "legs").as_arr().unwrap();
+    assert_eq!(legs.len(), 3);
+    assert_eq!(text(&legs[1], "amount"), "49.99 USD");
+    assert_eq!(text(&legs[2], "amount"), "50.00 USD");
+    f.assert_dimensions(&legs[1], "ENG");
+    f.assert_dimensions(&legs[2], "SALES");
+    let retained = fa::AllocationReview::decode(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        retained.posting().request.method,
+        fa::AllocationMethod::ByUnitsThenValue {
+            values: vec![10, u128::MAX],
+        }
+    );
+    for (row, target) in basis.iter().zip(&retained.posting().request.targets) {
+        assert_eq!(text(row, "target_id"), format!("{:032x}", target.id));
+        assert_eq!(target.basis, 1);
+    }
+    f.import_driver(&path, "two-key");
+    let approved = ok(
+        &f.book,
+        &[
+            "allocate",
+            "approve",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--as",
+            "controller",
+        ],
+    );
+    let plan_path = f.dir.join("two-key.plan").display().to_string();
+    ok(
+        &f.book,
+        &[
+            "allocate",
+            "--review",
+            &path,
+            "--digest",
+            text(&review, "review_digest"),
+            "--approval",
+            text(&approved, "approval_vid"),
+            "--dry-run",
+            "--plan-out",
+            &plan_path,
+        ],
+    );
+    let before = f.head();
+    let posted = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
+    let retry = ok(
+        &f.book,
+        &["commit", "--plan", &plan_path, "--grant", "read"],
+    );
+    assert_eq!(text(&posted, "vid"), text(&retry, "vid"));
+    assert_eq!(get(&retry, "already_recorded"), &Json::Bool(true));
+    assert_eq!(f.head(), before + 1);
+    f.assert_cell("SHARED", "100.00 USD", "99.99 USD");
+    f.assert_cell("ENG", "49.99 USD", "0.00 USD");
+    f.assert_cell("SALES", "50.00 USD", "0.00 USD");
+}
+
+#[test]
+fn incomplete_or_noninteger_two_key_inputs_refuse_before_publication() {
+    let f = Fixture::new();
+    for (index, keys) in [
+        r#""basis":1"#,
+        r#""value":10"#,
+        r#""basis":-1,"value":10"#,
+        r#""basis":1,"value":-1"#,
+        r#""basis":1,"value":0.25"#,
+        r#""basis":"1.00 USD","value":10"#,
+        r#""basis":1,"value":"10 USD""#,
+        r#""basis":1,"value":"340282366920938463463374607431768211456""#,
+        r#""basis":1,"value":true"#,
+        r#""basis":0,"value":100"#,
+        r#""weight":1,"value":10"#,
+        r#""basis":1,"cap":1,"value":10"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let targets =
+            format!(r#"[{{"account":"6100","dimensions":{{"cost_center":"ENG"}},{keys}}}]"#);
+        let intent = f.allocation(
+            &format!("invalid-two-key-{index}"),
+            r#""total":"1.00 USD","source_side":"credit""#,
+            r#""method":"ByUnitsThenValue""#,
+            &targets,
+        );
+        for mode in [Some("--review-only"), None] {
+            let mut args = vec!["allocate", "--intent", intent.as_str()];
+            args.extend(mode);
+            let before = f.head();
+            let (code, refusal) = run(&f.book, &args);
+            assert_ne!(code, 0, "{}", refusal.render());
+            assert_eq!(f.head(), before, "invalid basis must not import its driver");
+        }
+    }
+    let intent = f.allocation(
+        "ignored-secondary-value",
+        r#""total":"1.00 USD","source_side":"credit""#,
+        r#""method":"largest_remainder""#,
+        r#"[{"account":"6100","basis":1,"value":10,"dimensions":{"cost_center":"ENG"}}]"#,
+    );
+    let before = f.head();
+    let (code, _) = run(&f.book, &["allocate", "--intent", &intent]);
+    assert_ne!(code, 0, "a secondary key must never be silently ignored");
+    assert_eq!(f.head(), before);
+}
+
+#[test]
 fn tiered_allocation_reviews_posts_and_retries_the_exact_progressive_schedule() {
     let f = Fixture::new();
     let targets = r#"[{"account":"6100","dimensions":{"cost_center":"ENG"}},{"account":"6100","dimensions":{"cost_center":"SALES"}}]"#;

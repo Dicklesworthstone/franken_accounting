@@ -2335,6 +2335,26 @@ Two details affect how to read the summary.
 
 ### Exact arithmetic available now
 
+`ByUnitsThenValue` (allocation law 6) is available through the money API,
+native allocation postings, retained reviews, CLI/MCP and the independent
+allocation verifier. It apportions the total by each target's explicit
+quantity using Hamilton floors. Residual units go to descending fractional
+remainders, then descending secondary values, then declared target order.
+The value is only a tie-breaker: it never changes the underlying proportions
+or gives a zero-quantity target a share. For example, 100 minor units with
+quantities `[1, 1, 1]` and values `[10, 30, 20]` produce `[33, 34, 33]`.
+
+Select `"method": "by_units_then_value"` in an allocation intent and give
+each target `"basis"` (quantity) and `"value"`. Both are required non-negative
+integers; decimal strings admit the full unsigned 128-bit range. At least one
+quantity must be positive. It works with explicit totals or journal-derived
+period balances and with account/dimension destination cells. The
+`allocation_reviewed` event exposes both keys in `two_key_basis`; the retained
+review and driver bind them in target order. Changing either key changes the
+authenticated request, even when the rounded shares happen to remain equal.
+Independent replay checks the law and all shares. Existing laws retain their
+original request and receipt encodings.
+
 `fa-money` supports the full signed `i128` amount range, including parsing,
 rendering, identity conversion and allocation of `i128::MIN`. Posting legs
 remain nonnegative. Conversion uses exact arbitrary-precision intermediates;

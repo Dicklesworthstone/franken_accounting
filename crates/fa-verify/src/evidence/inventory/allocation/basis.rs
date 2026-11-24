@@ -68,6 +68,9 @@ pub struct AllocationBasis {
     pub target_cells: Vec<AllocationTargetCell>,
     /// Only law 4 carries a complete progressive marginal schedule.
     pub brackets: Vec<AllocationBracket>,
+    /// Only law 6 carries one secondary tie value per ordered quantity.
+    /// Values never replace quantities or change unequal remainders.
+    pub values: Vec<u128>,
 }
 
 impl AllocationBasis {
@@ -114,7 +117,7 @@ impl AllocationBasis {
             return Err(invalid("unsupported allocation request format"));
         }
         let law = r.u16("allocation.law")?;
-        if !matches!(law, 1..=5) || r.u16("allocation.law_version")? != 1 {
+        if !matches!(law, 1..=6) || r.u16("allocation.law_version")? != 1 {
             return Err(invalid("unsupported allocation law or version"));
         }
         let unit = r.u32("allocation.unit")?;
@@ -158,7 +161,12 @@ impl AllocationBasis {
             }
             bands
         } else {
-            if request.len() != target_end {
+            let expected_end = if law == 6 {
+                target_end + 16 * count
+            } else {
+                target_end
+            };
+            if request.len() != expected_end {
                 return Err(invalid(
                     "target count does not match the exact request length",
                 ));
@@ -204,6 +212,15 @@ impl AllocationBasis {
                 });
             }
         }
+        let mut values = Vec::new();
+        if law == 6 {
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| AllocationError::InputLimit)?;
+            for _ in 0..count {
+                values.push(r.u128("allocation.target.value")?);
+            }
+        }
         r.finish("allocation request")?;
         if recipient.is_some_and(|recipient| !ids.contains(&recipient)) {
             return Err(invalid("residual recipient is not a target"));
@@ -220,9 +237,11 @@ impl AllocationBasis {
             targets,
             target_cells,
             brackets,
+            values,
         };
         basis.validate_target_cells()?;
         basis.validate_brackets()?;
+        basis.validate_values()?;
         Ok(basis)
     }
 
@@ -308,6 +327,21 @@ impl AllocationBasis {
         Ok(())
     }
 
+    fn validate_values(&self) -> Result<(), AllocationError> {
+        if self.law == 6 {
+            if self.values.len() != self.targets.len()
+                || self.targets.iter().all(|target| target.basis == 0)
+            {
+                return Err(invalid(
+                    "two-key allocation needs one value per target and nonzero total quantities",
+                ));
+            }
+        } else if !self.values.is_empty() {
+            return Err(invalid("only ByUnitsThenValue has secondary values"));
+        }
+        Ok(())
+    }
+
     /// Independent arithmetic. Public fields are checked again so a modified
     /// decoded value cannot invoke an unsupported law or a zero divisor.
     pub fn shares(&self) -> Result<Vec<i128>, AllocationError> {
@@ -326,6 +360,7 @@ impl AllocationBasis {
         }
         self.validate_target_cells()?;
         self.validate_brackets()?;
+        self.validate_values()?;
         if self.law == 2 {
             if !self.rounding.is_some_and(|law| (1..=9).contains(&law))
                 || !self.recipient.is_some_and(|id| ids.contains(&id))
@@ -341,7 +376,7 @@ impl AllocationBasis {
             .try_reserve_exact(self.targets.len())
             .map_err(|_| AllocationError::InputLimit)?;
         match self.law {
-            1 | 2 => {
+            1 | 2 | 6 => {
                 let denominator = self
                     .targets
                     .iter()
@@ -377,14 +412,24 @@ impl AllocationBasis {
                     sum = sum.add(Wide::of(share))?;
                     remainders.push((r, index));
                 }
-                if self.law == 1 {
+                if self.law != 2 {
                     let residual = Wide::of(total).sub(sum)?.narrow()?;
                     let count =
                         usize::try_from(residual).map_err(|_| AllocationError::Arithmetic)?;
                     if count >= shares.len() {
                         return Err(AllocationError::Arithmetic);
                     }
-                    remainders.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                    remainders.sort_unstable_by(|a, b| {
+                        b.0.cmp(&a.0)
+                            .then_with(|| {
+                                if self.law == 6 {
+                                    self.values[b.1].cmp(&self.values[a.1])
+                                } else {
+                                    core::cmp::Ordering::Equal
+                                }
+                            })
+                            .then_with(|| a.1.cmp(&b.1))
+                    });
                     for (remainder, index) in remainders.into_iter().take(count) {
                         if remainder == Wide::ZERO {
                             return Err(AllocationError::Arithmetic);

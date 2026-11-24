@@ -11788,6 +11788,10 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
         "equal_split_residual_first" | "EqualSplitResidualFirst" | "equal_split" => {
             Ok(AllocationMethod::EqualSplitResidualFirst)
         }
+        "by_units_then_value" | "ByUnitsThenValue" => {
+            // Read both exact keys together with the ordered destinations.
+            Ok(AllocationMethod::ByUnitsThenValue { values: Vec::new() })
+        }
         "pro_rata_residual_to_named" | "ProRataResidualToNamed" | "pro_rata" => {
             let rounding = match doc.get("rounding").and_then(Json::as_str) {
                 Some(r) => parse_rounding_law(r)?,
@@ -11822,7 +11826,7 @@ fn parse_allocation_method(doc: &Json, book_id: Id128) -> Result<AllocationMetho
         }
         other => Err(usage(
             format!("unknown allocation method `{other}`"),
-            "method: largest_remainder|pro_rata_residual_to_named|waterfall|tiered|equal_split_residual_first",
+            "method: largest_remainder|pro_rata_residual_to_named|waterfall|tiered|equal_split_residual_first|by_units_then_value",
         )),
     }
 }
@@ -11834,7 +11838,26 @@ fn allocation_method_name(method: &AllocationMethod) -> &'static str {
         AllocationMethod::Waterfall => "waterfall",
         AllocationMethod::Tiered { .. } => "tiered",
         AllocationMethod::EqualSplitResidualFirst => "equal_split_residual_first",
+        AllocationMethod::ByUnitsThenValue { .. } => "by_units_then_value",
     }
+}
+
+fn parse_allocation_integer(value: Option<&Json>, what: &str, key: &str) -> Result<u128, Fail> {
+    let parsed = match value {
+        Some(Json::Int(value)) => u128::try_from(*value).ok(),
+        Some(Json::Str(value))
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            value.parse::<u128>().ok()
+        }
+        _ => None,
+    };
+    parsed.ok_or_else(|| {
+        usage(
+            format!("{what}: `{key}` must be an explicit non-negative integer"),
+            "by_units_then_value targets require basis (quantity) and value; use integer JSON numbers or unsigned decimal strings through u128::MAX",
+        )
+    })
 }
 
 struct ParsedAllocationTargets {
@@ -11873,8 +11896,25 @@ fn parse_allocation_targets(
         || matches!(recipient, Some(Json::Obj(_)));
     let mut out = Vec::with_capacity(targets_arr.len());
     let mut cells = Vec::new();
+    let two_key = matches!(&method, AllocationMethod::ByUnitsThenValue { .. });
+    let mut values = Vec::new();
     for (i, item) in targets_arr.iter().enumerate() {
         let what = format!("targets[{i}]");
+        if item.get("value").is_some() && !two_key {
+            return Err(usage(
+                format!("{what}: only by_units_then_value accepts a secondary `value`"),
+                "select method: by_units_then_value and supply basis and value for every target",
+            ));
+        }
+        if two_key {
+            if item.get("weight").is_some() || item.get("cap").is_some() {
+                return Err(usage(
+                    format!("{what}: by_units_then_value requires quantity in `basis`"),
+                    "remove weight and cap; supply explicit basis and value for every target",
+                ));
+            }
+            values.push(parse_allocation_integer(item.get("value"), &what, "value")?);
+        }
         let account_code = req_str(item, "account", &what)?;
         let account = account_vid(book_id, account_code);
         let id = if dimensional {
@@ -11896,57 +11936,62 @@ fn parse_allocation_targets(
             .get("basis")
             .or_else(|| item.get("weight"))
             .or_else(|| item.get("cap"));
-        let basis = match basis_val {
-            Some(Json::Int(n)) => u128::try_from(*n).map_err(|_| {
-                usage(
-                    format!("{what}: basis must be a non-negative integer"),
-                    "basis: non-negative integer weight or cap",
-                )
-            })?,
-            Some(Json::Str(text)) => {
-                if let Ok(n) = text.parse::<u128>() {
-                    n
-                } else {
-                    let amt = Amount::parse(text, units).map_err(|e| {
+        let basis = if two_key {
+            parse_allocation_integer(item.get("basis"), &what, "basis")?
+        } else {
+            match basis_val {
+                Some(Json::Int(n)) => u128::try_from(*n).map_err(|_| {
+                    usage(
+                        format!("{what}: basis must be a non-negative integer"),
+                        "basis: non-negative integer weight or cap",
+                    )
+                })?,
+                Some(Json::Str(text)) => {
+                    if let Ok(n) = text.parse::<u128>() {
+                        n
+                    } else {
+                        let amt = Amount::parse(text, units).map_err(|e| {
                         usage(
                             format!("{what}: basis `{text}`: {e:?}"),
                             "basis: non-negative integer weight, or exact amount string for waterfall cap",
                         )
                     })?;
-                    if amt.unit != unit || amt.mantissa < 0 {
-                        return Err(usage(
-                            format!(
-                                "{what}: basis amount must be non-negative in the allocation unit"
-                            ),
-                            "use the same unit as the allocation source",
-                        ));
+                        if amt.unit != unit || amt.mantissa < 0 {
+                            return Err(usage(
+                                format!(
+                                    "{what}: basis amount must be non-negative in the allocation unit"
+                                ),
+                                "use the same unit as the allocation source",
+                            ));
+                        }
+                        amt.mantissa.unsigned_abs()
                     }
-                    amt.mantissa.unsigned_abs()
                 }
-            }
-            Some(_) => {
-                return Err(usage(
-                    format!("{what}: basis must be a non-negative integer"),
-                    "basis: 100",
-                ));
-            }
-            None if matches!(
-                method,
-                AllocationMethod::EqualSplitResidualFirst | AllocationMethod::Tiered { .. }
-            ) =>
-            {
-                1
-            }
-            None => {
-                return Err(usage(
-                    format!("{what}: missing `basis` (or `weight`/`cap`)"),
-                    "targets: [{\"account\": \"5100\", \"basis\": 1}]",
-                ));
+                Some(_) => {
+                    return Err(usage(
+                        format!("{what}: basis must be a non-negative integer"),
+                        "basis: 100",
+                    ));
+                }
+                None if matches!(
+                    method,
+                    AllocationMethod::EqualSplitResidualFirst | AllocationMethod::Tiered { .. }
+                ) =>
+                {
+                    1
+                }
+                None => {
+                    return Err(usage(
+                        format!("{what}: missing `basis` (or `weight`/`cap`)"),
+                        "targets: [{\"account\": \"5100\", \"basis\": 1}]",
+                    ));
+                }
             }
         };
         out.push(AllocationTarget { id, basis });
     }
     let method = match method {
+        AllocationMethod::ByUnitsThenValue { .. } => AllocationMethod::ByUnitsThenValue { values },
         AllocationMethod::Tiered { .. } => AllocationMethod::Tiered {
             brackets: parse_allocation_brackets(doc, units, unit, out.len())?,
         },
@@ -12286,8 +12331,34 @@ fn emit_allocation_reviewed(
     let proposal_hex = hex(&proposal_digest);
     let driver_hex = hex(&driver_oid.0);
     let encoded = hex(bytes);
+    let (two_key_basis, basis_text) = match &posting.request.method {
+        AllocationMethod::ByUnitsThenValue { values } => {
+            let mut rows = Vec::with_capacity(values.len());
+            let mut lines = Vec::with_capacity(values.len());
+            for (target, value) in posting.request.targets.iter().zip(values) {
+                let target_id = format!("{:032x}", target.id);
+                rows.push(obj(vec![
+                    ("target_id", s(&target_id)),
+                    ("quantity", s(target.basis.to_string())),
+                    ("value", s(value.to_string())),
+                ]));
+                lines.push(format!(
+                    "  {target_id}: quantity {}, secondary value {value}",
+                    target.basis
+                ));
+            }
+            (
+                Json::Arr(rows),
+                format!(
+                    "\nBasis in target order (value breaks equal remainder ties):\n{}",
+                    lines.join("\n")
+                ),
+            )
+        }
+        _ => (Json::Null, String::new()),
+    };
     let human = format!(
-        "Reviewed {kind} allocation from {source_code} ({side_str} {total_str}, {method_str})\nReview digest: {review_hex}\nProposal digest: {proposal_hex}\nDriver workpaper: {driver_hex}\n{}",
+        "Reviewed {kind} allocation from {source_code} ({side_str} {total_str}, {method_str})\nReview digest: {review_hex}\nProposal digest: {proposal_hex}\nDriver workpaper: {driver_hex}\n{}{basis_text}",
         human_legs.join("\n")
     );
     out.event(
@@ -12303,6 +12374,7 @@ fn emit_allocation_reviewed(
             ("source_side", s(side_str)),
             ("total", s(total_str)),
             ("method", s(method_str)),
+            ("two_key_basis", two_key_basis),
             ("review_digest", s(review_hex)),
             ("proposal_digest", s(proposal_hex)),
             ("driver_document_oid", s(driver_hex)),
