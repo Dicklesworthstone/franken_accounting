@@ -4385,3 +4385,9 @@ The test now reads the genuine plan before damage, decodes the rewritten
 record and the byte-restored record at their respective frontiers, and
 requires the authenticated view to refuse both altered histories. The
 existing append, preview, promotion and no-publication assertions still run.
+
+The civil-date serving change initially introduced a second textual match
+for the selection fragment used by the `MUT-018` control. The native
+registry suite refused the ambiguous target. The new serving path now
+retains the selected periods in its existing vector. The registered
+mutation still targets the original stock candidate selector.

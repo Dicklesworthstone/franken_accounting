@@ -2220,15 +2220,15 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         Some(history) => Some(history.read(db, cx, book, seq)?),
         None => None,
     };
-    let (accounts, periods) = match &source {
+    let (accounts, mut periods) = match &source {
         Some(source) => source.metadata(),
         None => report_metadata_at(db, cx, book, seq)?,
     };
     if check_civil_dates && !period_dates_match_calendar(book, &periods) {
         return Ok(Err("period dates differ from the book calendar".into()));
     }
-    let selected: Vec<_> = periods.into_iter().filter(|p| p.start <= day).collect();
-    for period in &selected {
+    periods.retain(|period| period.start <= day);
+    for period in &periods {
         let last = DateDay(
             period
                 .end
@@ -2250,7 +2250,7 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         served: Vec::new(),
     };
     let mut populated_periods = None;
-    for period in selected {
+    for period in periods {
         stock.periods.insert(period.code.clone());
         let head = match maintained_fold_at(db, cx, book, &period.code, &accounts, seq) {
             Ok(head) => head,
