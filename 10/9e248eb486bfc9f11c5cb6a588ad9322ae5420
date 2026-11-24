@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=109e248eb486bfc9f11c5cb6a588ad9322ae5420
+tree=2d4fe5f6f82ed06ea8a8199ac940123c40aaa479
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=4
+log_dir=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T//fa-tier0.GYJWyE
+recorded_utc=2026-11-24T04:49:44Z
