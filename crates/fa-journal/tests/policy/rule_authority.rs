@@ -35,6 +35,238 @@ fn source(ceiling: &str) -> String {
     )
 }
 
+#[test]
+fn rule_version_proposal_requires_its_schema_control_class() {
+    let mut h = harness();
+    let schema = human(PREPARER, &["rule_change"])
+        .for_classes(&[EntryClass::SCHEMA_CONTROL])
+        .unwrap();
+    let policy = human(PREPARER, &["rule_change"])
+        .for_classes(&[EntryClass::POLICY_CONTROL])
+        .unwrap();
+    let source = source("40.00");
+    let key = b"schema-class-rule";
+    let ctx = h.ctx();
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+
+    // The class is admitted before compiling the source or resolving a key.
+    // Rule activation authority must not authorize a SchemaControl proposal.
+    for candidate in [source.as_str(), "not a Canon rule"] {
+        let description = h.period_description();
+        let refusal = h
+            .runtime
+            .block_on(propose_rule_version(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                candidate,
+                PREPARER,
+                key,
+                description,
+                &policy,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CAPABILITY, exit::SAFETY)
+        );
+        assert!(refusal.message.contains("classes"), "{refusal:?}");
+        assert_eq!(h.db.frontier().unwrap(), before);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+
+    let description = h.period_description();
+    let recorded = h
+        .runtime
+        .block_on(propose_rule_version(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &source,
+            PREPARER,
+            key,
+            description,
+            &schema,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(!recorded.already_recorded);
+    let control = read_entry(&h.db, recorded.control_entry.unwrap())
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(control.proposal.class, EntryClass::SCHEMA_CONTROL);
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+
+    for retry_key in [key.as_slice(), b"unused-schema-lookup".as_slice()] {
+        let description = h.period_description();
+        let refusal = h
+            .runtime
+            .block_on(propose_rule_version(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &source,
+                PREPARER,
+                retry_key,
+                description,
+                &policy,
+            ))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (refusal.code, refusal.exit),
+            (code::CAPABILITY, exit::SAFETY)
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+
+    let description = h.period_description();
+    let retry = h
+        .runtime
+        .block_on(propose_rule_version(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &source,
+            PREPARER,
+            key,
+            description,
+            &schema,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.version, recorded.version);
+    assert_eq!(retry.control_entry, recorded.control_entry);
+    assert_eq!(h.db.frontier().unwrap(), head);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+}
+
+#[test]
+fn rule_activation_requires_policy_control_even_after_schema_control_proposal() {
+    let mut h = harness();
+    let rule = propose(&mut h, "40.00", b"class-activation-rule");
+    let schema = human(PREPARER, &["rule_change"])
+        .for_classes(&[EntryClass::SCHEMA_CONTROL])
+        .unwrap();
+    let policy = human(PREPARER, &["rule_change"])
+        .for_classes(&[EntryClass::POLICY_CONTROL])
+        .unwrap();
+    let effective_from = DateDay::from_ymd(2026, 3, 1).unwrap();
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refusal = plan_rule_activation(
+        &h.db,
+        &h.book,
+        &schema,
+        &rule.ir_digest(),
+        effective_from,
+        b"class-activation",
+        h.period_description(),
+    )
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
+    assert!(refusal.message.contains("classes"), "{refusal:?}");
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let plan = plan_rule_activation(
+        &h.db,
+        &h.book,
+        &policy,
+        &rule.ir_digest(),
+        effective_from,
+        b"class-activation",
+        h.period_description(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(plan.proposal(&h.book).class, EntryClass::POLICY_CONTROL);
+    let digest = plan.proposal_digest(&h.book).unwrap();
+    let approvals = vec![
+        h.approve(ALICE, digest).unwrap().approval(),
+        h.approve(BOB, digest).unwrap().approval(),
+    ];
+    let ctx = h.ctx();
+    let before = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    let refusal = h
+        .runtime
+        .block_on(activate_rule_version(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &schema,
+            plan.clone(),
+            approvals.clone(),
+        ))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code, refusal.exit),
+        (code::CAPABILITY, exit::SAFETY)
+    );
+    assert_eq!(h.db.frontier().unwrap(), before);
+    assert_eq!(h.db.vertices().unwrap(), rows);
+
+    let activated = h
+        .runtime
+        .block_on(activate_rule_version(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            &policy,
+            plan.clone(),
+            approvals.clone(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(!activated.already_recorded);
+    let control = read_entry(&h.db, activated.control_entry)
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(control.proposal.class, EntryClass::POLICY_CONTROL);
+
+    let head = h.db.frontier().unwrap();
+    let rows = h.db.vertices().unwrap();
+    for capability in [&schema, &policy] {
+        let result = h
+            .runtime
+            .block_on(activate_rule_version(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                capability,
+                plan.clone(),
+                approvals.clone(),
+            ))
+            .unwrap();
+        if capability == &schema {
+            let refusal = result.unwrap_err();
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                (code::CAPABILITY, exit::SAFETY)
+            );
+        } else {
+            let retry = result.unwrap();
+            assert!(retry.already_recorded);
+            assert_eq!(retry.control_entry, activated.control_entry);
+        }
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+    }
+}
+
 fn large_rule_source() -> String {
     let mut source = String::from(
         "rule large_balanced_sale v1 for event Sale {\n\

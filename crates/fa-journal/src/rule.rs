@@ -362,8 +362,10 @@ pub fn rule_version_at<V: Vfs + Clone>(
     }
 }
 
-/// Admit `capability` to change rules, before anything is observed: whole-
-/// book `rule_change` authority, current at the head.
+/// Admit `capability` to propose an immutable rule version before anything
+/// is observed: whole-book `rule_change` authority for the journaled
+/// `SchemaControl`, current at the head. Activation has its own
+/// `PolicyControl` admission in [`admit_rule_activation`].
 pub fn admit_rule_change<V: Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
@@ -381,7 +383,7 @@ pub fn admit_rule_change<V: Vfs + Clone>(
         },
         &Reach::whole_book(true),
         None,
-        EntryClass::POLICY_CONTROL,
+        EntryClass::SCHEMA_CONTROL,
     ) {
         return Ok(Some(crate::policy::refusal(&d)));
     }
