@@ -8873,16 +8873,17 @@ impl Book {
         with_store!(&self.store, core => core.spec(&self.purposes()))
     }
 
-    /// Materialize a substrate storage checkpoint and retention cut over the
-    /// committed spine (plan §16.6): upon reopen, delta cursors prior to the
-    /// compacted frontier are retired while all certified reads remain intact.
+    /// Materialize a storage checkpoint over the committed spine (plan §16.6).
+    /// A fresh reopen starts with a lazy delta window at the compacted frontier.
+    /// Authorized head reads can reload retained commit capsules. Certified
+    /// reads remain intact.
     pub fn compact_storage(&mut self) -> Result<(), BookError> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.compact_storage(&purposes)))
     }
 
-    /// Whether the substrate's live delta stream still retains commits since
-    /// `since` (`false` once `since` precedes a reopened compaction cut).
+    /// Whether the current resident delta window includes commits since `since`.
+    /// A fresh reopen can return `false` until retained capsules are loaded.
     pub fn has_delta_since(&self, since: CommitSeq) -> Result<bool, BookError> {
         with_store!(&self.store, core => core.has_delta_since(&self.purposes(), since))
     }

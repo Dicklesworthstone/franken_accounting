@@ -2464,6 +2464,9 @@ fn the_genesis_workflow_end_to_end_with_the_exit_code_contract() -> std::io::Res
 #[test]
 fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pinned()
 -> std::io::Result<()> {
+    use fa::{Book, BookKeys, Entropy};
+    use fgdb_types::CommitSeq;
+
     let dir = tmp("authorized-head-reports")?;
     let book = dir.join("book");
     let run = |args: &[&str]| {
@@ -2720,6 +2723,59 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
         let (code, out, _) = run(&args);
         assert_eq!(code, 7, "{out}");
         assert!(out.contains("FA-REF-011"), "{out}");
+    }
+
+    // A fresh process can load the tail before compaction. Reopening after
+    // the cut starts with a lazy delta window.
+    let march_end = ["tb", "--as-of", "2026-03-31"];
+    let before_cut = doc(&ok(&march_end));
+    let served = before_cut.get("served").unwrap();
+    assert_eq!(
+        served.get("mode").and_then(Json::as_str),
+        Some("maintained")
+    );
+    assert_eq!(int(&arr(served, "periods")[0], "served_at"), Some(cursor));
+    let cursor = CommitSeq(u64::try_from(cursor).unwrap());
+    let keys = BookKeys::load(&book.join("book.keys")).unwrap();
+    let head = {
+        let mut handle = Book::open_dir(&book, keys.clone(), Entropy::production()).unwrap();
+        let head = handle.head().unwrap();
+        assert!(cursor < head);
+        handle.compact_storage().unwrap();
+        assert_eq!(handle.head().unwrap(), head);
+        head
+    };
+    let reopened = Book::open_dir(&book, keys, Entropy::production()).unwrap();
+    assert_eq!(reopened.head().unwrap(), head);
+    assert!(!reopened.has_delta_since(cursor).unwrap());
+    assert!(reopened.has_delta_since(head).unwrap());
+    drop(reopened);
+
+    let selected = head.0.to_string();
+    let pinned = doc(&ok(&[
+        "tb",
+        "--as-of",
+        "2026-03-31",
+        "--as-known-at",
+        &selected,
+    ]));
+    let served = pinned.get("served").unwrap();
+    assert_eq!(served.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        served
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("delta window")
+    );
+    // A HEAD request can authenticate and load the retained capsules.
+    let rehydrated = doc(&ok(&march_end));
+    assert_eq!(rehydrated.get("served"), before_cut.get("served"));
+    assert_eq!(int(&pinned, "known_at"), Some(i128::from(head.0)));
+    for report in [&pinned, &rehydrated] {
+        for field in ["known_at", "effective_through", "rows", "unit_totals"] {
+            assert_eq!(report.get(field), before_cut.get(field), "{field}");
+        }
     }
     Ok(())
 }
