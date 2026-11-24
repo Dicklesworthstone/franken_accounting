@@ -740,6 +740,7 @@ class XbrlFacts(unittest.TestCase):
 
     DUPLICATED = (
         '<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"'
+        ' xmlns:iso4217="http://www.xbrl.org/2003/iso4217"'
         ' xmlns:us-gaap="http://fasb.org/us-gaap/2022">\n'
         '<xbrli:context id="c-1"><xbrli:period><xbrli:instant>2022-12-31</xbrli:instant>'
         '</xbrli:period></xbrli:context>\n'
@@ -750,7 +751,7 @@ class XbrlFacts(unittest.TestCase):
         '<us-gaap:Liabilities contextRef="c-1" unitRef="usd" decimals="-5">900100000</us-gaap:Liabilities>\n'
         '</xbrli:xbrl>\n')
 
-    def bind_duplicated(self, concept, literal):
+    def bind_duplicated(self, concept, literal, document=None):
         fact = {"anchor": f"{concept}|c-1", "anchor_kind": "xbrl",
                 "quote_sha256": cf.sha256_hex(literal.encode("utf-8")),
                 "cell": f"{concept.split(':')[1]}@2022-12-31"}
@@ -758,7 +759,7 @@ class XbrlFacts(unittest.TestCase):
                    "value": str(int(literal) * 100), "unit": "USD", "precision": 3}]
         b = cf.Binding(fact)
         b.member_ok = True
-        cf.bind_xbrl(self.DUPLICATED, fact, values, {"USD": 2}, b)
+        cf.bind_xbrl(document or self.DUPLICATED, fact, values, {"USD": 2}, b)
         return b
 
     def test_duplicates_that_agree_are_one_fact(self):
@@ -766,6 +767,27 @@ class XbrlFacts(unittest.TestCase):
         self.assertEqual(b.problems, [])
         self.assertIs(b.found_once, True)
         self.assertIs(b.aligned, True)
+
+    def test_same_number_requires_the_selected_currency_precision_and_instant(self):
+        changes = [
+            ("iso4217:USD", "iso4217:EUR", "unit:"),
+            ("http://www.xbrl.org/2003/iso4217", "urn:example:other-measures", "unit:"),
+            ('unitRef="usd"', 'unitRef="missing"', "unit:"),
+            (' decimals="-3"', "", "decimals:"),
+            ('decimals="-3"', 'decimals="invalid"', "decimals:"),
+            ("2022-12-31", "2021-12-31", "period:"),
+            ('context id="c-1"', 'context id="absent"', "context:"),
+        ]
+        for old, new, diagnostic in changes:
+            with self.subTest(change=new):
+                result = self.bind_duplicated("us-gaap:Assets", "1616334000",
+                                              self.DUPLICATED.replace(old, new))
+                self.assertFalse(result.member_ok)
+                self.assertTrue(any(diagnostic in problem for problem in result.problems),
+                                result.problems)
+        aliased = self.DUPLICATED.replace("xmlns:iso4217=", "xmlns:money=").replace(
+            ">iso4217:USD<", ">money:USD<")
+        self.assertEqual(self.bind_duplicated("us-gaap:Assets", "1616334000", aliased).problems, [])
 
     def test_duplicates_that_disagree_fail(self):
         b = self.bind_duplicated("us-gaap:Liabilities", "900000000")

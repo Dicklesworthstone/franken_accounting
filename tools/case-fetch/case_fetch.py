@@ -1766,6 +1766,10 @@ class Instance:
 
     def __init__(self, text):
         self.contexts, self.units, self.facts = {}, {}, []
+        self.currencies = {}
+        namespaces = {}
+        unit_measures = []
+        unit_currency = None
         parser = xml.parsers.expat.ParserCreate()
         stack, ctx, text_buf = [], None, []
         dims = []
@@ -1773,11 +1777,24 @@ class Instance:
         def local(name):
             return name.split(":", 1)[-1]
 
+        def expanded(name):
+            prefix, _, tag = name.rpartition(":")
+            return namespaces.get(prefix), tag
+
         def start(name, attrs):
-            nonlocal ctx, dims
-            stack.append((name, dict(attrs), parser.CurrentLineNumber))
+            nonlocal ctx, unit_currency
+            previous = {}
+            for key, uri in attrs.items():
+                if key == "xmlns" or key.startswith("xmlns:"):
+                    prefix = key.partition(":")[2]
+                    previous[prefix] = namespaces.get(prefix)
+                    namespaces[prefix] = uri
+            stack.append((name, attrs, parser.CurrentLineNumber, previous))
             text_buf.append([])
             ln = local(name)
+            if expanded(name) == ("http://www.xbrl.org/2003/instance", "unit"):
+                unit_measures.clear()
+                unit_currency = None
             if ln == "context":
                 ctx = {"id": attrs.get("id", ""), "period": "", "members": []}
             elif ln == "explicitMember" and ctx is not None:
@@ -1788,12 +1805,13 @@ class Instance:
                 text_buf[-1].append(data)
 
         def end(name):
-            nonlocal ctx
-            _, attrs, line = stack.pop()
+            nonlocal ctx, unit_currency
+            _, attrs, line, previous = stack.pop()
             body = "".join(text_buf.pop()).strip()
             ln = local(name)
             if ln == "context" and ctx is not None:
-                self.contexts[ctx["id"]] = ctx
+                context_id = ctx["id"]
+                self.contexts[context_id] = None if context_id in self.contexts else ctx
                 ctx = None
             elif ctx is not None and ln in ("instant",):
                 ctx["period"] = body
@@ -1803,18 +1821,29 @@ class Instance:
                 ctx["period"] += body
             elif ctx is not None and ln == "explicitMember":
                 ctx["members"].append((dims.pop() if dims else "", body))
-            elif ln == "unit":
-                self.units[attrs.get("id", "")] = " ".join(self.unit_measures)
-                self.unit_measures = []
-            elif ln == "measure":
-                self.unit_measures.append(body)
+            elif expanded(name) == ("http://www.xbrl.org/2003/instance", "unit"):
+                unit_id = attrs.get("id", "")
+                currency = unit_currency if len(unit_measures) == 1 else None
+                self.currencies[unit_id] = None if unit_id in self.units else currency
+                self.units[unit_id] = " ".join(unit_measures)
+            elif expanded(name) == ("http://www.xbrl.org/2003/instance", "measure"):
+                unit_measures.append(body)
+                uri, code = expanded(body)
+                if (stack and expanded(stack[-1][0]) == ("http://www.xbrl.org/2003/instance", "unit")
+                        and uri == "http://www.xbrl.org/2003/iso4217"):
+                    unit_currency = code
             elif "contextRef" in attrs:
                 self.facts.append({"concept": name, "context": attrs["contextRef"],
                                    "unit": attrs.get("unitRef", ""),
                                    "decimals": attrs.get("decimals", ""),
                                    "value": body, "line": line})
 
-        self.unit_measures = []
+            for prefix, old_uri in previous.items():
+                if old_uri is None:
+                    del namespaces[prefix]
+                else:
+                    namespaces[prefix] = old_uri
+
         parser.StartElementHandler = start
         parser.EndElementHandler = end
         parser.CharacterDataHandler = chars
@@ -1853,9 +1882,17 @@ def bind_xbrl(text, fact, values, scales, b):
     else:
         b.quote = value
         b.problems.append("the quote is not the instance fact's whole value")
-    members = sorted(m.split(":", 1)[-1] for _, m in inst.contexts.get(f["context"], {}).get(
-        "members", []))
+    context = inst.contexts.get(f["context"])
+    if not context or not context["period"]:
+        b.member_ok = False
+        b.problems.append(f"context: missing, ambiguous or undated context {f['context']}")
+        return
+    members = sorted(m.split(":", 1)[-1] for _, m in context["members"])
     cell = fact.get("cell", "")
+    period = cell.partition("@")[2]
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", period) and context["period"] != period:
+        b.member_ok = False
+        b.problems.append(f"period: the instance states {context['period']}, the cell names {period}")
     key = cell.split("@", 1)[0]
     want_members = [key.split(":", 1)[1]] if ":" in key else []
     if members != want_members:
@@ -1863,8 +1900,17 @@ def bind_xbrl(text, fact, values, scales, b):
                           f"names {want_members}")
         b.member_ok = False
     for v in values:
-        precision = precision_of(f["decimals"], v.get("unit", ""), scales) if f["decimals"] else None
-        if f["decimals"] and precision != v.get("precision"):
+        unit = v.get("unit", "")
+        if unit and inst.currencies.get(f["unit"]) != unit:
+            b.member_ok = False
+            b.problems.append(f"unit: {f['unit']!r} does not resolve to currency {unit}")
+        decimals = f["decimals"]
+        if decimals != "INF" and not re.fullmatch(r"[+-]?[0-9]+", decimals):
+            b.member_ok = False
+            b.problems.append(f"decimals: missing or invalid precision {decimals!r}")
+            continue
+        precision = precision_of(decimals, unit, scales)
+        if precision != v.get("precision"):
             b.problems.append(f"decimals: the instance states decimals={f['decimals']} "
                               f"(precision {precision}), value {v['ordinal']} has precision "
                               f"{v.get('precision')}")
@@ -2033,7 +2079,7 @@ def xbrl_facts(case, report):
         inst = Instance(decode(hit[0])[0])
         concept, _, context = fact["anchor"].partition("|")
         for f in inst.find(concept, context):
-            ctx = inst.contexts.get(f["context"], {})
+            ctx = inst.contexts.get(f["context"]) or {}
             members = ",".join(f"{d}={m}" for d, m in ctx.get("members", []))
             report.line("\t".join((
                 "XBRL", fid, f["concept"], f["context"], ctx.get("period", ""),
