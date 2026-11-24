@@ -137,6 +137,27 @@ TRANSFER = ("During the second quarter of 2001, the Example Company transferred 
 
 
 class VerifyFixture(unittest.TestCase):
+    def test_extraction_mismatch_preserves_previous_receipts(self):
+        case = Case(self).seed()
+        code, out, _ = case.run("verify")
+        self.assertEqual(code, 0, out)
+        receipt_file = case.dir / "receipts.toml"
+        original = receipt_file.read_bytes()
+        source = case.sources()[0]
+        pin = source["extraction"][2]
+        manifest = case.dir / "sources.toml"
+        contents = manifest.read_text(encoding="utf-8")
+        field = f'"{pin}"]'
+        self.assertIn(field, contents)
+        manifest.write_text(contents.replace(field, '"' + "0" * 64 + '"]', 1), encoding="utf-8")
+        code, out, _ = case.run("verify")
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL {source['id']}: extraction sha256", out)
+        for fact in read_toml(case.dir / "facts.toml")["fact"]:
+            if fact.get("source") == source["id"]:
+                self.assertNotIn(f"VERIFY {fact['id']} PASS", out)
+        self.assertEqual(receipt_file.read_bytes(), original)
+
     def test_verify_writes_receipts_with_all_four_booleans_true(self):
         case = Case(self).seed()
         code, out, _ = case.run("verify")

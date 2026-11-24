@@ -2024,10 +2024,14 @@ def verify(case, report):
                     if recorded and recorded[2] != field[2]:
                         report.fail(f"{sid}: extraction sha256 {field[2]} differs from "
                                     f"sources.toml {recorded[2]} ({recorded[1]} vs {method})")
-                    texts[sid] = (SourceText(text), field[2], hit[1])
+                        texts[sid] = None
+                    else:
+                        texts[sid] = (SourceText(text), field[2], hit[1])
                 except Unrun as e:
                     texts[sid] = e
         got = texts[sid]
+        if got is None:  # Source extraction failed its digest check above.
+            continue
         if isinstance(got, Unrun):
             report.unrun(f"{fid}: {got}")
             continue
@@ -2072,6 +2076,9 @@ def verify(case, report):
         else:
             for p in b.problems or ["a binding boolean is false"]:
                 report.fail(f"{fid} ({sid} {fact.get('anchor')}): {p}")
+    if None in texts.values():
+        report.note("verify: receipts.toml not written (source extraction digest mismatch)")
+        return
     if report.unruns:
         report.note("verify: receipts.toml not written (some facts did not run)")
         return

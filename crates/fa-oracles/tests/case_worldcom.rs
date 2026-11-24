@@ -670,6 +670,13 @@ fn wc_complaint_fact_with_page_anchor_fails_k_anchor() {
     // W1 lands no SRC-WC-002 fact (its paragraph facts are W2's), so the copy
     // adds one with a `page` anchor against the complaint's paragraph scheme.
     let mut files = worldcom();
+    let case = load_copy(&files).expect("the committed case loads");
+    let extraction = &case
+        .sources
+        .iter()
+        .find(|s| s.id == "SRC-WC-002")
+        .and_then(|s| s.extraction.as_ref())
+        .expect("the complaint pins its extraction")[2];
     let quote = "0000000000000000000000000000000000000000000000000000000000000002";
     let scope = "period:2001Q2";
     text_mut(&mut files, "facts.toml").push_str(&format!(
@@ -682,7 +689,7 @@ fn wc_complaint_fact_with_page_anchor_fails_k_anchor() {
     text_mut(&mut files, "receipts.toml").push_str(&format!(
         "\n[[receipt]]\nsource = \"SRC-WC-002\"\nfact = \"W-PLANT-002\"\nanchor = \"p3:l1-2\"\n\
          verified_utc = \"2026-10-29T01:59:22Z\"\ntool_version = \"case-fetch-v3\"\n\
-         extraction_sha256 = \"{quote}\"\nquote_sha256 = \"{quote}\"\nvalues_sha256 = \"{values_sha256}\"\n\
+         extraction_sha256 = \"{extraction}\"\nquote_sha256 = \"{quote}\"\nvalues_sha256 = \"{values_sha256}\"\n\
          alignment = \"sentence\"\nquote_found_once = true\naligned = true\nvalues_in_quote = true\n\
          scope_ok = true\noriginal_hash_compared = false\n"
     ));

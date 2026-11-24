@@ -655,13 +655,21 @@ fn cross_check(
                 expected.as_str()
             )));
         }
-        if let Some(src) = by_source.get(r.source.as_str())
-            && src.original_hash_compared != r.original_hash_compared
-        {
-            errs.push(mismatch(format!(
-                "`original_hash_compared = {}` differs from source `{}` (`{}`)",
-                r.original_hash_compared, src.id, src.original_hash_compared
-            )));
+        if let Some(src) = by_source.get(r.source.as_str()) {
+            if src.original_hash_compared != r.original_hash_compared {
+                errs.push(mismatch(format!(
+                    "`original_hash_compared = {}` differs from source `{}` (`{}`)",
+                    r.original_hash_compared, src.id, src.original_hash_compared
+                )));
+            }
+            if let Some(expected) = src.extraction.as_ref().and_then(|parts| parts.get(2))
+                && expected != &r.extraction_sha256
+            {
+                errs.push(mismatch(format!(
+                    "extraction_sha256 {} differs from source `{}` extraction {}",
+                    r.extraction_sha256, src.id, expected
+                )));
+            }
         }
     }
     let mut labels: BTreeSet<&str> = BTreeSet::new();

@@ -387,6 +387,28 @@ fn receipt_missing_a_binding_boolean_is_refused() {
 }
 
 #[test]
+fn receipt_must_name_its_sources_pinned_extraction() {
+    let mut files = pilot();
+    let field = RECEIPTS
+        .lines()
+        .find(|line| line.starts_with("extraction_sha256 = "))
+        .unwrap();
+    files[3].1 = files[3].1.replacen(
+        field,
+        &format!("extraction_sha256 = \"{}\"", "0".repeat(64)),
+        1,
+    );
+    let line = row_line(text_of(&files, RECEIPTS_FILE), "receipt", 0);
+    let error = refused(
+        load_files("worldcom", &files, CASE_EXTENSIONS),
+        RECEIPTS_FILE,
+        LoadErrorKind::ReceiptMismatch,
+        line,
+    );
+    assert!(error.detail.contains("extraction_sha256"), "{error}");
+}
+
+#[test]
 fn receipt_original_hash_compared_mismatch_is_refused() {
     let mut files = pilot();
     files[3].1 = files[3].1.replacen(
