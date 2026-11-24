@@ -882,9 +882,11 @@ fn leased_on_open_held(error: &crate::lease::LeaseError, dir: &Path) -> Refusal 
 /// the scenario's materialization (a scratch replay of the trunk prefix at
 /// its fork plus its intents) instead of trunk. `--branch draft:<name>`
 /// (plan §15.2, bead fa-s7x) reads the draft's rehearsal: trunk at the head
-/// with every planned intent posted together, exactly as promotion would,
-/// under the reader's current whole-book read authority (`bound`, else the
-/// embedded owner's read). Only read verbs register `--branch`, so no write
+/// with every planned intent posted together, exactly as promotion would.
+/// Both materializations require the reader's current whole-book read
+/// authority (`bound`, else the embedded owner's read) before looking up the
+/// named branch. A report's narrower selection does not narrow the complete
+/// source history replayed here. Only read verbs register `--branch`, so no write
 /// reaches a replay. A branch read is not yet certified, and trunk known-at
 /// selectors do not apply to it.
 fn select_branch<'b>(
@@ -925,24 +927,25 @@ fn select_branch<'b>(
             "drop --certify, --certificate-out, --as-originally-reported, --as-issued-to, --as-reported-in, --as-currently-stated and any known-at, --before or --after selector, or read trunk without --branch",
         ));
     }
+    let reader = match bound {
+        Some(capability) => capability.clone(),
+        None => {
+            let mut ops = vec!["read"];
+            ops.extend(args.flag_all("--grant"));
+            Capability::embedded(principal(args), &ops).map_err(|e| {
+                usage(
+                    e.to_string(),
+                    "--grant takes a registered op name; `fa capabilities --json` lists them",
+                )
+            })?
+        }
+    };
     let replay = if let Some(name) = draft {
-        let reader = match bound {
-            Some(capability) => capability.clone(),
-            None => {
-                let mut ops = vec!["read"];
-                ops.extend(args.flag_all("--grant"));
-                Capability::embedded(principal(args), &ops).map_err(|e| {
-                    usage(
-                        e.to_string(),
-                        "--grant takes a registered op name; `fa capabilities --json` lists them",
-                    )
-                })?
-            }
-        };
         let head = book.head()?;
         book.rehearse_draft_at(reader.holder(), &reader, name, head)??
             .0
     } else if let Some(name) = scenario {
+        admit_whole_book_read(&book, &reader, &[], "materializing a scenario for reading")?;
         book.materialize_scenario(name)??.book
     } else {
         return Err(unknown());

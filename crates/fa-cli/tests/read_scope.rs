@@ -352,6 +352,105 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
 }
 
 #[test]
+fn scenario_branch_reads_admit_the_complete_replay_before_looking_up_the_name() {
+    let f = Fixture::new();
+    let pin = number(data(&f.march), "recorded_at").to_string();
+    let (reader, reader_commitment) = f.issue("scenario-reader", &[]);
+    let (period, _) = f.issue("scenario-period", &["--period", "FY2026-P03"]);
+    let (effective, _) = f.issue("scenario-effective", &["--effective-through", "2026-03-31"]);
+    let (known_at, _) = f.issue("scenario-known-at", &["--known-at-most", &pin]);
+    let (account, _) = f.issue("scenario-account", &["--account", "1000"]);
+    let (writer, _) = f.issue_ops("scenario-writer", &["post"], &[]);
+    f.ok(&["scenario", "fork", "read-scope", "--date", "2026-03-15"]);
+
+    // Selecting only March's activity does not confine materialization: it
+    // replays April and the rest of the fork prefix too. A missing name must
+    // produce the same authority refusal as an existing branch, never disclose
+    // FA-REF-162 or observe its content before the scope check.
+    for (token, caveat) in [
+        (&period, "`periods`"),
+        (&effective, "`effective`"),
+        (&known_at, "`known_at`"),
+        (&account, "`accounts`"),
+        (&writer, "`read`"),
+    ] {
+        for branch in ["scenario:read-scope", "scenario:does-not-exist"] {
+            let argv = [
+                "--token",
+                token,
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--activity",
+                "--branch",
+                branch,
+            ];
+            let (exit, refused) = f.run(&argv);
+            assert_eq!(exit, 7, "{argv:?}: {refused:?}");
+            assert_eq!(text(&refused, "event"), "error", "{refused:?}");
+            assert_eq!(
+                text(data(&refused), "refusal_id"),
+                "FA-REF-011",
+                "{refused:?}"
+            );
+            assert!(
+                text(data(&refused), "message").contains(caveat),
+                "{argv:?}: {refused:?}"
+            );
+            assert_eq!(refused.get("book"), Some(&Json::Null), "{refused:?}");
+            assert_eq!(
+                refused.get("coordinate"),
+                Some(&Json::Null),
+                "refused replay must disclose no scratch coordinate: {refused:?}"
+            );
+        }
+    }
+
+    // The same period-scoped token still reads its admitted trunk activity.
+    let selected = ["tb", "--period", "FY2026-P03", "--activity"];
+    let mut scoped = vec!["--token", period.as_str()];
+    scoped.extend(selected);
+    assert_eq!(f.rows(&scoped), f.rows(&selected));
+
+    // A full reader whose issuance belongs to the fork can read the replay.
+    // Its later revocation is judged on trunk, not resurrected by that fork.
+    let mut branch_read = vec!["--token", reader.as_str()];
+    branch_read.extend(selected);
+    branch_read.extend(["--branch", "scenario:read-scope"]);
+    let read = f.ok(&branch_read);
+    assert_eq!(
+        text(read.get("coordinate").unwrap(), "branch"),
+        "scenario:read-scope"
+    );
+    assert_eq!(data(&read).get("rows"), Some(&f.rows(&selected)));
+    let (exit, missing) = f.run(&[
+        "--token",
+        &reader,
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--branch",
+        "scenario:does-not-exist",
+    ]);
+    assert_eq!(exit, 3, "{missing:?}");
+    assert_eq!(text(data(&missing), "refusal_id"), "FA-REF-162");
+    f.ok(&[
+        "capability",
+        "revoke",
+        "--commitment",
+        &reader_commitment,
+        "--grant",
+        "issue_capability",
+        "--yes",
+    ]);
+    let (exit, revoked) = f.run(&branch_read);
+    assert_eq!(exit, 7, "{revoked:?}");
+    assert!(text(data(&revoked), "message").contains("revoked"));
+    assert_eq!(revoked.get("book"), Some(&Json::Null));
+    assert_eq!(revoked.get("coordinate"), Some(&Json::Null));
+}
+
+#[test]
 fn exports_enforce_the_same_scope_as_stock_reads_before_disclosing_or_writing() {
     let f = Fixture::new();
     let pin = number(data(&f.march), "recorded_at");
