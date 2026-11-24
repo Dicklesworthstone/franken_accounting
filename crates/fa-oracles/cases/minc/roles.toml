@@ -1,0 +1,14 @@
+[[role]]
+label = "case-poster"
+kind = "harness"
+description = "posts the gross movements from the selected worksheet"
+
+[[role]]
+label = "case-second-reader"
+kind = "harness"
+description = "reviews the worksheet citation stub"
+
+[[role]]
+label = "case-period-owner"
+kind = "harness"
+description = "opens the reconstruction's fiscal periods"

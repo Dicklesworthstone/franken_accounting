@@ -2001,6 +2001,7 @@ fn self_row(run: &BookRun<'_>) -> Evaluated {
         .filter(cites_reviewed)
         .filter(|i| i.class != "Allocation")
         .map(|i| i.id.clone())
+        .chain(run.worksheet_entries.iter().cloned())
         .collect();
     let allocations: BTreeSet<String> = run
         .book

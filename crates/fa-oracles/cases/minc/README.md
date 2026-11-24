@@ -4,7 +4,7 @@
 
 Case `minc` (letter I), version 1. Scope: The issuing court's two FIFO worksheets for the March 2023 opening balance through the September 2024 petition, and its recorded non-Social-Security balance.
 
-The case runner catalogues the source record here. It has evaluated zero accounting claims. [Source ledger](sources.toml)
+The case runner reconstructs the receipt-bound movements, checks cash at the observation and final frontiers, and compares independently verified FIFO reports with the separate published figure.
 
 ## What the record says
 
@@ -23,3 +23,63 @@ Each fact is bound by its anchor and the SHA-256 of its quote, re-verified offli
 | `MINC-FIFO-RESULT` | `SRC-MINC-001` | `p10:l5-11` | 10,203.54 USD | the court held | dated_aggregate |
 | `MINC-APPENDIX-1` | `SRC-MINC-001` | `Appendix 1\|p44-49` | - | the court held | dated_aggregate |
 | `MINC-APPENDIX-2` | `SRC-MINC-001` | `Appendix 2\|p51-56` | - | the court held | dated_aggregate |
+
+## How this book was built
+
+### Book `ledger-schedule` (ledger)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`I-SELF-ledger-schedule`): not yet evaluated: filler_invariance.
+
+Opened 2023-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `2023` | 2023-01-01 | 2023-12-31 | 2023 | Normal |
+| `2024` | 2024-01-01 | 2024-12-31 | 2024 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1000` | Asset | `MINC-APPENDIX-1` |
+| `4000` | Equity | `MINC-APPENDIX-1` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+
+Each worksheet observation posts as one native batch. The postings keep exact printed dates and use the last permissible day for a date range.
+
+| Worksheet fact | Petition debit | Cash | Offset | Citation |
+|---|---|---|---|---|
+| `MINC-APPENDIX-1` | `schedule-debit` | `1000` | `4000` | `DOC-WORKSHEET` |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-WORKSHEET` | `MINC-APPENDIX-1` | AgentUpload |
+
+### Book `ledger-trustee` (ledger)
+
+franken_accounting's own `jet.self_sourced_evidence` self-disclosure (`I-SELF-ledger-trustee`): not yet evaluated: filler_invariance.
+
+Opened 2023-01-01 in USD, on the `custom` calendar.
+
+| Period | Start | End | Fiscal year | Kind |
+|---|---|---|---|---|
+| `2023` | 2023-01-01 | 2023-12-31 | 2023 | Normal |
+| `2024` | 2024-01-01 | 2024-12-31 | 2024 | Normal |
+
+| Account | Type | Named by |
+|---|---|---|
+| `1000` | Asset | `MINC-APPENDIX-2` |
+| `4000` | Equity | `MINC-APPENDIX-2` |
+
+| Intent | Fact | Class | Effective |
+|---|---|---|---|
+
+Each worksheet observation posts as one native batch. The postings keep exact printed dates and use the last permissible day for a date range.
+
+| Worksheet fact | Petition debit | Cash | Offset | Citation |
+|---|---|---|---|---|
+| `MINC-APPENDIX-2` | `trustee-debit` | `1000` | `4000` | `DOC-WORKSHEET` |
+
+| Document | Stands for | Grade |
+|---|---|---|
+| `DOC-WORKSHEET` | `MINC-APPENDIX-2` | AgentUpload |

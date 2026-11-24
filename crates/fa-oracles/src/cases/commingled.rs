@@ -4,6 +4,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::json::Json;
+
+use super::amount::format_amount;
 use super::date::Day;
 
 closed_set! {
@@ -25,11 +28,12 @@ impl MovementKind {
     }
 }
 
-/// Selects one of the two alternative withdrawals at the petition boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Endpoint {
-    Schedule,
-    Trustee,
+closed_set! {
+    /// Selects one of the two alternative withdrawals at the petition boundary.
+    Endpoint {
+        Schedule => "schedule-debit",
+        Trustee => "trustee-debit",
+    }
 }
 
 impl Endpoint {
@@ -38,11 +42,6 @@ impl Endpoint {
             Self::Schedule => MovementKind::ScheduleDebit,
             Self::Trustee => MovementKind::TrusteeDebit,
         }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.kind().as_str()
     }
 }
 
@@ -66,6 +65,89 @@ impl Movement<'_> {
     pub const fn reconstruction_day(&self) -> Day {
         self.latest
     }
+
+    /// The stable posting key within one replay, keyed by physical source line.
+    #[must_use]
+    pub fn entry_key(&self, replay: &str) -> String {
+        format!("{replay}-row-{}", self.line)
+    }
+
+    /// The signed change in the reconstructed cash account.
+    #[must_use]
+    pub const fn cash_delta(&self) -> i128 {
+        if self.kind.is_debit() {
+            -self.cents
+        } else {
+            self.cents
+        }
+    }
+}
+
+/// The native batch request for one observation of the selected worksheet.
+/// The layout's amounts are USD cents. The source dates stay in the entry's
+/// description alongside the representative effective day used for replay.
+#[must_use]
+pub fn render_batch(
+    id: &str,
+    observed: Day,
+    movements: &[&Movement<'_>],
+    cash_account: &str,
+    offset_account: &str,
+    evidence: &str,
+) -> Json {
+    let object = |pairs: Vec<(&str, Json)>| {
+        Json::Object(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        )
+    };
+    let intents = movements
+        .iter()
+        .map(|movement| {
+            let (debit, credit) = if movement.kind.is_debit() {
+                (offset_account, cash_account)
+            } else {
+                (cash_account, offset_account)
+            };
+            let amount = format!("{} USD", format_amount(movement.cents, 2));
+            let leg = |side: &str, account: &str| {
+                object(vec![
+                    ("side", Json::Str(side.into())),
+                    ("account", Json::Str(account.into())),
+                    ("amount", Json::Str(amount.clone())),
+                ])
+            };
+            object(vec![
+                ("idempotency_key", Json::Str(movement.entry_key(id))),
+                (
+                    "effective_date",
+                    Json::Str(movement.reconstruction_day().to_string()),
+                ),
+                (
+                    "description",
+                    Json::Str(format!(
+                        "Worksheet line {} observed {}; printed {}; allowed {} through {}",
+                        movement.line,
+                        movement.observed,
+                        movement.printed,
+                        movement.earliest,
+                        movement.latest
+                    )),
+                ),
+                ("evidence", Json::Array(vec![Json::Str(evidence.into())])),
+                (
+                    "legs",
+                    Json::Array(vec![leg("debit", debit), leg("credit", credit)]),
+                ),
+            ])
+        })
+        .collect();
+    object(vec![
+        ("idempotency_key", Json::Str(format!("{id}-{observed}"))),
+        ("intents", Json::Array(intents)),
+    ])
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -232,6 +314,63 @@ impl<'a> Transcript<'a> {
             withdrawals_cents: withdrawals,
         })
     }
+
+    /// Exact terminal remainder per deposit whose classification enters this
+    /// worksheet comparison, including the opening for either classification.
+    ///
+    /// # Errors
+    /// Some admissible ordering is unfunded, or the deposit at the FIFO
+    /// boundary cannot be separated from every other deposit by date.
+    pub fn fifo_remainders(
+        &self,
+        endpoint: Endpoint,
+    ) -> Result<BTreeMap<usize, i128>, &'static str> {
+        let funding = self.funding_bound(endpoint)?;
+        if funding.minimum_cents < 0 {
+            return Err("an admissible worksheet ordering is unfunded");
+        }
+        let mut deposits: Vec<_> = self
+            .movements(endpoint)
+            .filter(|row| !row.kind.is_debit())
+            .collect();
+        deposits.sort_by_key(|row| (row.earliest, row.latest, row.line));
+        let mut withdrawals = funding.withdrawals_cents;
+        let mut boundary = None;
+        for (index, row) in deposits.iter().enumerate() {
+            if withdrawals <= row.cents {
+                boundary = Some((index, row.cents - withdrawals));
+                break;
+            }
+            withdrawals -= row.cents;
+        }
+        let (boundary, remainder) = boundary.ok_or("withdrawals exceed admitted deposits")?;
+        let pivot = deposits[boundary];
+        // Order may vary on either side of the pivot. Every feasible cash
+        // history consumes the same deposit prefix and the same pivot cents.
+        if pivot.kind != MovementKind::Opening
+            && (deposits[..boundary]
+                .iter()
+                .any(|row| row.kind != MovementKind::Opening && row.latest >= pivot.earliest)
+                || deposits[boundary + 1..]
+                    .iter()
+                    .any(|row| row.earliest <= pivot.latest))
+        {
+            return Err("the admissible deposit dates overlap the FIFO boundary");
+        }
+        Ok(deposits
+            .into_iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.kind, MovementKind::Opening | MovementKind::Other))
+            .map(|(index, row)| {
+                let amount = match index.cmp(&boundary) {
+                    std::cmp::Ordering::Less => 0,
+                    std::cmp::Ordering::Equal => remainder,
+                    std::cmp::Ordering::Greater => row.cents,
+                };
+                (row.line, amount)
+            })
+            .collect())
+    }
 }
 
 fn printed_day(s: &str) -> Option<Day> {
@@ -270,6 +409,13 @@ mod tests {
             assert_eq!(bound.withdrawals_cents, withdrawals);
             assert_eq!(bound.minimum_cents, 2_287_531);
             assert_eq!(bound.minimum_day, Day::parse("2023-05-23").unwrap());
+            let remainders = transcript.fifo_remainders(endpoint).unwrap();
+            assert_eq!(remainders.len(), 21);
+            assert_eq!(
+                (remainders[&14], remainders[&16], remainders[&20]),
+                (0, 0, 433_333)
+            );
+            assert_eq!(remainders.values().sum::<i128>(), 1_020_354);
         }
         let older_printed_credit = transcript
             .rows
@@ -308,6 +454,37 @@ mod tests {
         assert_eq!((schedule.ending_cents, schedule.minimum_cents), (5, -5));
         let trustee = transcript.funding_bound(Endpoint::Trustee).unwrap();
         assert_eq!((trustee.ending_cents, trustee.minimum_cents), (12, 2));
+        assert_eq!(
+            transcript.fifo_remainders(Endpoint::Schedule),
+            Err("an admissible worksheet ordering is unfunded")
+        );
+        assert_eq!(
+            transcript.fifo_remainders(Endpoint::Trustee).unwrap(),
+            [(1, 2), (2, 10)].into()
+        );
+    }
+
+    #[test]
+    fn fifo_boundary_overlapping_two_deposits_refuses_even_with_funded_cash() {
+        let transcript = Transcript::parse(
+            "2024-01-01\t01/01/24\topening\t20\n\
+             2024-01-10\tunknown\tother\t10\n\
+             2024-01-10\t01/07/24\tsocial\t10\n\
+             2024-01-31\t01/31/24\tschedule-debit\t25\n\
+             2024-01-31\t01/31/24\ttrustee-debit\t18\n",
+        )
+        .unwrap();
+        assert_eq!(
+            transcript
+                .funding_bound(Endpoint::Schedule)
+                .unwrap()
+                .minimum_cents,
+            15
+        );
+        assert_eq!(
+            transcript.fifo_remainders(Endpoint::Schedule),
+            Err("the admissible deposit dates overlap the FIFO boundary")
+        );
     }
 
     #[test]

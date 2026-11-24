@@ -3,6 +3,7 @@
 //! the native kernel; no synthetic report certificate enters these tests.
 
 use super::*;
+use fa::certificate::code::CERTIFICATE_INVALID;
 use fa::{
     CloseRunRehearsalCertificate, CloseTaskRehearsalOutcome, ReportCertificate, ReportOutput,
     Statement, StatementDefinition, StatementSelection,
@@ -221,21 +222,24 @@ fn issued_statement_close_requires_retained_review_and_resumes_after_reopen() {
             .unwrap(),
         original.certificate,
     );
-    assert_eq!(
-        f.book
-            .execute_reviewed_close_task(
-                "issued",
-                "statement",
-                closer(),
-                "Unretained review",
-                &original.certificate,
-                None,
-                Vec::new(),
-            )
-            .unwrap()
-            .unwrap_err()
-            .code,
-        code::PLAN_INVALIDATED
+    let unretained = f
+        .book
+        .execute_reviewed_close_task(
+            "issued",
+            "statement",
+            closer(),
+            "Unretained review",
+            &original.certificate,
+            None,
+            Vec::new(),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(unretained.code, CERTIFICATE_INVALID);
+    assert_eq!(unretained.exit, fa_journal::exit::VERIFICATION);
+    assert!(
+        unretained.message.contains("is not retained in this book"),
+        "{unretained:?}"
     );
     assert_eq!(f.book.head().unwrap(), before);
 

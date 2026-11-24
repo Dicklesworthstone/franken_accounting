@@ -2,8 +2,10 @@
 //! The appendices omit individual dates for several aggregate movements.
 
 use super::*;
-use fa_oracles::cases::commingled::{Endpoint, Movement, MovementKind, Transcript};
+use fa_oracles::cases::commingled::{Endpoint, Movement, MovementKind, Transcript, render_batch};
 use fa_oracles::cases::date::Day;
+use fgdb_types::CommitSeq;
+use std::collections::{BTreeMap, BTreeSet};
 
 const PETITION: &str = "2024-09-19";
 
@@ -59,6 +61,51 @@ fn evidence(fixture: &Fixture, path: &str) -> String {
 
 fn dollars(cents: i128) -> String {
     format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+fn post_observation(
+    fixture: &Fixture,
+    movements: &[&Movement<'_>],
+    evidence: &str,
+) -> (CommitSeq, Vec<String>) {
+    let observed = movements[0].observed;
+    let request = render_batch(
+        "minc-observation",
+        observed,
+        movements,
+        "1000",
+        "4000",
+        evidence,
+    );
+    let file = write(
+        &fixture.dir,
+        &format!("{observed}.json"),
+        &request.to_string(),
+    );
+    let before = fixture.head();
+    let posted = ok(&fixture.book, &["batch", "--intent", &file]);
+    assert_eq!(text(&posted, "event"), "batch_posted");
+    assert_eq!(integer(&posted, "recorded_at"), i128::from(before + 1));
+    let members = get(&posted, "members").as_arr().unwrap();
+    assert_eq!(members.len(), movements.len());
+    let vids = members
+        .iter()
+        .enumerate()
+        .map(|(index, member)| {
+            assert_eq!(integer(member, "index"), index as i128);
+            text(member, "vid").to_owned()
+        })
+        .collect();
+    (CommitSeq(before + 1), vids)
+}
+
+fn cash_at(fixture: &Fixture, through: Day, known_at: CommitSeq) -> i128 {
+    let day = fa_time::DateDay::parse(&through.to_string()).unwrap();
+    let report = fixture.open().balance_as_of(day, Some(known_at)).unwrap();
+    assert_eq!(report.known_at, known_at);
+    assert_eq!(report.effective_through, Some(day));
+    let cash = report.rows.iter().find(|row| row.code == "1000").unwrap();
+    cash.debits - cash.credits
 }
 
 struct RecipientClaim {
@@ -360,27 +407,37 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
         }
         let transcription = write(&fixture.dir, "fifo-movements.tsv", movement_table);
         let doc = evidence(&fixture, &transcription);
+        let periods: BTreeSet<_> = movements
+            .iter()
+            .map(|movement| {
+                let date = movement.reconstruction_day();
+                format!("FY{}-P{:02}", date.year, date.month)
+            })
+            .collect();
+        for period in periods {
+            ok(&fixture.book, &["period", "open", &period]);
+        }
         let mut sources = Vec::new();
-        let mut open_periods = std::collections::BTreeSet::new();
-        for (i, m) in movements.iter().copied().enumerate() {
-            // Use a representative day within the source bounds and post
-            // any same-day rows in table order.
-            let date = m.reconstruction_day().to_string();
-            let period = format!("FY{}-P{}", &date[..4], &date[5..7]);
-            if open_periods.insert(period.clone()) {
-                ok(&fixture.book, &["period", "open", &period]);
-            }
-            let key = format!("minc-{i}");
-            let amount = dollars(m.cents);
-            if m.kind.is_debit() {
-                withdrawal(&fixture, &key, &date, &amount, &doc);
-            } else {
-                let entry = fixture.post(&key, &date, &amount, &doc);
+        let mut frontiers = BTreeMap::new();
+        let mut observed_cash = 0;
+        for group in movements.chunk_by(|a, b| a.observed == b.observed) {
+            let observed = group[0].observed;
+            let (known_at, entries) = post_observation(&fixture, group, &doc);
+            assert!(frontiers.insert(observed, known_at).is_none());
+            for (m, entry) in group.iter().copied().zip(entries) {
+                observed_cash += if m.kind.is_debit() { -m.cents } else { m.cents };
                 if matches!(m.kind, MovementKind::Opening | MovementKind::Other) {
-                    sources.push((m, text(&entry, "vid").to_owned()));
+                    sources.push((m, entry));
                 }
             }
+            assert_eq!(cash_at(&fixture, observed, known_at), observed_cash);
         }
+        assert_eq!(frontiers.len(), 18);
+        assert_eq!(observed_cash, expected_balance);
+        let december = Day::parse("2023-12-26").unwrap();
+        let petition = Day::parse(PETITION).unwrap();
+        assert_eq!(cash_at(&fixture, december, frontiers[&december]), 2_850_675);
+        assert_eq!(cash_at(&fixture, december, frontiers[&petition]), 3_006_875);
         let (opening, others) = sources.split_first().unwrap();
         assert_eq!(opening.0.kind, MovementKind::Opening);
         assert_eq!(others.len(), 20);

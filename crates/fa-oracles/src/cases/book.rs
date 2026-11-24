@@ -21,8 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_registry::toml::{Document, Table, Value as TomlValue};
 
 use super::amount::{UnitTotals, format_amount, parse_amount};
+use super::commingled::Endpoint;
 use super::error::{LoadError, LoadErrorKind};
-use super::fact::{Fact, Provenance, Value};
+use super::fact::{Fact, Provenance, RowsLayout, Value};
 use super::fields::{Row, is_date};
 use super::roles::Roles;
 use super::rows::{row_key_line, row_line};
@@ -276,11 +277,20 @@ pub struct BookVariant {
     pub branch_classes: Vec<BranchClassDef>,
     pub defaults: Vec<DefaultDef>,
     pub ledger_maps: Vec<LedgerMapDef>,
+    pub commingled_replays: Vec<CommingledReplayDef>,
     pub events: Vec<EventDef>,
     pub migration_imports: Vec<MigrationImportDef>,
 }
 
 impl BookVariant {
+    /// A declared source replay selected by a batch step.
+    #[must_use]
+    pub fn commingled_replay(&self, id: &str) -> Option<&CommingledReplayDef> {
+        self.commingled_replays
+            .iter()
+            .find(|replay| replay.id == id)
+    }
+
     /// In a ledger variant, a named ledger map takes precedence over an
     /// authored intent range in a batch step.
     #[must_use]
@@ -528,6 +538,31 @@ pub struct LedgerMapDef {
     pub line: Option<usize>,
 }
 
+/// A single-account worksheet reconstructed through native observation batches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommingledReplayDef {
+    pub id: String,
+    pub fact: String,
+    pub published: String,
+    pub endpoint: Endpoint,
+    pub cash_account: String,
+    pub offset_account: String,
+    pub document: String,
+    pub line: Option<usize>,
+}
+
+impl CommingledReplayDef {
+    pub(crate) fn cites_reviewed_worksheet(&self, document: &DocumentDef) -> bool {
+        document.id == self.document
+            && document.stub_of == self.fact
+            && document.grade == "AgentUpload"
+            && document
+                .reviewed_by
+                .as_ref()
+                .is_some_and(|reviewer| !reviewer.is_empty())
+    }
+}
+
 /// `[[event]]` (L3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventDef {
@@ -697,7 +732,7 @@ impl Registries {
 }
 
 /// The arrays a book file may hold.
-const ARRAYS: [&str; 14] = [
+const ARRAYS: [&str; 15] = [
     "period",
     "principal",
     "account",
@@ -710,6 +745,7 @@ const ARRAYS: [&str; 14] = [
     "branch_class",
     "default",
     "ledger_map",
+    "commingled_replay",
     "event",
     "migration_import",
 ];
@@ -853,6 +889,7 @@ pub(crate) fn parse(
         branch_classes: p.branch_classes(),
         defaults: p.defaults(),
         ledger_maps: p.ledger_maps(),
+        commingled_replays: p.commingled_replays(),
         events: p.events(),
         migration_imports: p.migration_imports(),
     };
@@ -1442,6 +1479,43 @@ impl<'a> Parser<'a, '_> {
         out
     }
 
+    fn commingled_replays(&mut self) -> Vec<CommingledReplayDef> {
+        let mut out = Vec::new();
+        for (index, table) in self.rows("commingled_replay").iter().enumerate() {
+            let mut row = self.row("commingled_replay", index, table);
+            let errs = &mut *self.errs;
+            let id = row.req_str("id", errs);
+            let fact = row.req_str("fact", errs);
+            let published = row.req_str("published", errs);
+            let endpoint = row.req_str("endpoint", errs);
+            let cash_account = row.req_str("cash_account", errs);
+            let offset_account = row.req_str("offset_account", errs);
+            let document = row.req_str("document", errs);
+            row.finish(&[], " in `[[commingled_replay]]`", errs);
+            let Some(endpoint) = Endpoint::parse(&endpoint) else {
+                errs.push(LoadError {
+                    file: self.path.into(),
+                    line: row.line(),
+                    kind: LoadErrorKind::UnknownValue,
+                    row: Some(id),
+                    detail: "endpoint must be schedule-debit or trustee-debit".into(),
+                });
+                continue;
+            };
+            out.push(CommingledReplayDef {
+                id,
+                fact,
+                published,
+                endpoint,
+                cash_account,
+                offset_account,
+                document,
+                line: row.line(),
+            });
+        }
+        out
+    }
+
     fn events(&mut self) -> Vec<EventDef> {
         let mut out = Vec::new();
         for (i, t) in self.rows("event").iter().enumerate() {
@@ -1682,6 +1756,7 @@ impl<'a> Check<'a, '_> {
         self.cases();
         self.branch_classes_and_defaults();
         self.ledger_maps();
+        self.commingled_replays();
         self.events();
         self.migration_imports();
         self.steps();
@@ -2761,6 +2836,112 @@ impl<'a> Check<'a, '_> {
         }
     }
 
+    fn commingled_replays(&mut self) {
+        let mut ids = BTreeSet::new();
+        for replay in &self.book.commingled_replays {
+            let row = Some(replay.id.as_str());
+            if self.book.kind != VariantKind::Ledger || self.book.book.base_unit != "USD" {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::UnknownValue,
+                    "a commingled replay requires a USD ledger variant".into(),
+                );
+            }
+            if replay.id.is_empty()
+                || replay.id.len() > 32
+                || !replay
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                self.push(replay.line, row, LoadErrorKind::BadId,
+                    "a commingled replay id must use 1–32 lower-case ASCII letters, digits or hyphens".into());
+            }
+            if !ids.insert(&replay.id)
+                || self.book.batch_uses_ledger_map(&replay.id)
+                || self.book.intents.iter().any(|intent| {
+                    intent.id == replay.id || intent.id.starts_with(&format!("{}-row-", replay.id))
+                })
+            {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::DuplicateId,
+                    "a commingled replay must have an unambiguous batch reference".into(),
+                );
+            }
+            if !self
+                .fact(&replay.fact)
+                .and_then(Fact::sourced)
+                .is_some_and(|fact| {
+                    fact.rows_layout == Some(RowsLayout::CommingledFifoV1)
+                        && fact.rows_file.is_some()
+                })
+            {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    "a commingled replay requires a receipt-bound commingled_fifo_v1 fact".into(),
+                );
+            }
+            if !self
+                .fact(&replay.published)
+                .and_then(Fact::sourced)
+                .is_some_and(|fact| fact.rows_file.is_none())
+            {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    "a commingled replay requires a separate sourced result fact".into(),
+                );
+            }
+            if !self
+                .document(&replay.document)
+                .is_some_and(|doc| replay.cites_reviewed_worksheet(doc))
+            {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    "the replay document must be a reviewed AgentUpload citing the selected worksheet fact".into(),
+                );
+            }
+            if replay.cash_account == replay.offset_account
+                || !self
+                    .account(&replay.cash_account)
+                    .is_some_and(|a| a.account_type == "Asset")
+                || self.account(&replay.offset_account).is_none()
+            {
+                self.push(
+                    replay.line,
+                    row,
+                    LoadErrorKind::DanglingKey,
+                    "the replay requires a cash asset and a distinct offset account".into(),
+                );
+            }
+            let mut steps = self.book.steps.iter().filter(|step| {
+                step.step_kind() == Some(StepKind::Batch) && step.reference == replay.id
+            });
+            if !steps
+                .next()
+                .and_then(|step| step.principal.as_deref())
+                .is_some_and(|label| {
+                    self.book
+                        .principals
+                        .iter()
+                        .any(|p| p.label == label && p.grants.iter().any(|g| g == "post"))
+                })
+                || steps.next().is_some()
+            {
+                self.push(replay.line, row, LoadErrorKind::DanglingKey,
+                    "a commingled replay must have one batch step naming a declared posting principal".into());
+            }
+        }
+    }
+
     fn events(&mut self) {
         let mut seen = BTreeSet::new();
         for (i, e) in self.book.events.iter().enumerate() {
@@ -3182,7 +3363,9 @@ impl<'a> Check<'a, '_> {
                     Some(_) => None,
                 },
                 StepKind::Batch | StepKind::MigrateStage => {
-                    if kind == StepKind::Batch && self.book.batch_uses_ledger_map(r) {
+                    if kind == StepKind::Batch
+                        && (self.book.batch_uses_ledger_map(r) || self.book.commingled_replay(r).is_some())
+                    {
                         None
                     } else {
                         self.range(r)
@@ -3740,6 +3923,23 @@ impl BookVariant {
                     put(&mut t, "attribute", &d.attribute);
                     put(&mut t, "rule", &d.rule);
                     put(&mut t, "rationale", &d.rationale);
+                    t
+                })
+                .collect(),
+        );
+        array(
+            "commingled_replay",
+            self.commingled_replays
+                .iter()
+                .map(|replay| {
+                    let mut t = Table::new();
+                    put(&mut t, "id", &replay.id);
+                    put(&mut t, "fact", &replay.fact);
+                    put(&mut t, "published", &replay.published);
+                    put(&mut t, "endpoint", replay.endpoint.as_str());
+                    put(&mut t, "cash_account", &replay.cash_account);
+                    put(&mut t, "offset_account", &replay.offset_account);
+                    put(&mut t, "document", &replay.document);
                     t
                 })
                 .collect(),

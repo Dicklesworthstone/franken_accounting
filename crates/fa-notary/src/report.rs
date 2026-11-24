@@ -424,6 +424,8 @@ fn custom_statement_certificate(certificate: &[u8]) -> bool {
 /// definitions, source completeness and output arithmetic are independently
 /// checked by fa-verify; this does not claim Instrument attribute coverage.
 fn regulatory_schedule_certificate(certificate: &[u8]) -> bool {
+    const DEFINITION_FORMAT: &[u8] = b"fa:regulatory-schedule-def:v1";
+    const MAX_SCHEDULE_BYTES: usize = 131_072;
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
         if reader.fixed::<{ b"fa:report-certificate:v9".len() }>("regulatory format")?
@@ -435,9 +437,16 @@ fn regulatory_schedule_certificate(certificate: &[u8]) -> bool {
             return Ok(false);
         }
         reader.fixed::<16>("regulatory book")?;
-        Ok(reader.fixed::<16>("regulatory branch")? == [0; 16]
-            && reader.u64("regulatory frontier")? > 0
-            && reader.u8("regulatory selector")? == 7)
+        if reader.fixed::<16>("regulatory branch")? != [0; 16]
+            || reader.u64("regulatory frontier")? == 0
+            || reader.u8("regulatory selector")? != 7
+        {
+            return Ok(false);
+        }
+        let definition = reader.bytes(MAX_SCHEDULE_BYTES, "regulatory schedule definition")?;
+        Ok(definition
+            .strip_prefix(DEFINITION_FORMAT)
+            .is_some_and(|fields| matches!(fields.first(), Some(0..=2))))
     };
     certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
@@ -1681,34 +1690,50 @@ mod format_tests {
 
     #[test]
     fn regulatory_schedule_routing_requires_its_exact_native_profile() {
-        let valid = native_header(9, "fa:regulatory-schedule:v1", 7);
-        assert!(regulatory_schedule_certificate(&valid));
-        for malformed in [
-            native_header(9, "fa:statement:v1", 7),
-            native_header(9, "fa:regulatory-schedule:v1", 2),
-            native_header(4, "fa:regulatory-schedule:v1", 7),
-            native_header(90, "fa:regulatory-schedule:v1", 7),
-            native_header(11, "fa:custom-statement-report:v1", 9),
-            valid[..valid.len() - 1].to_vec(),
-        ] {
-            assert!(!regulatory_schedule_certificate(&malformed));
-        }
-        for (branch, frontier, authority) in [
-            ([1; 16], 9, "embedded-owner"),
-            ([0; 16], 0, "embedded-owner"),
-            ([0; 16], 9, "untrusted"),
-        ] {
+        const OUTPUT: &str = "fa:regulatory-schedule:v1";
+        const DEFINITION: &[u8] = b"fa:regulatory-schedule-def:v1\0";
+        let profile = |version,
+                       output,
+                       selector,
+                       (branch, frontier, authority): ([u8; 16], u64, &str),
+                       definition: &[u8]| {
             let mut writer = Writer::new();
             writer
-                .fixed(b"fa:report-certificate:v9")
+                .fixed(format!("fa:report-certificate:v{version}").as_bytes())
                 .str("fa-fold-over-prefix")
                 .str(authority)
-                .str("fa:regulatory-schedule:v1")
+                .str(output)
                 .fixed(&[3; 16])
                 .fixed(&branch)
                 .u64(frontier)
-                .u8(7);
-            assert!(!regulatory_schedule_certificate(&writer.finish().unwrap()));
+                .u8(selector)
+                .bytes(definition);
+            writer.finish().unwrap()
+        };
+        let trunk = ([0; 16], 9, "embedded-owner");
+        let valid = profile(9, OUTPUT, 7, trunk, DEFINITION);
+        assert!(regulatory_schedule_certificate(&valid));
+        let mut oversized_definition = DEFINITION.to_vec();
+        oversized_definition.resize(131_073, 0);
+        for malformed in [
+            profile(9, "fa:statement:v1", 7, trunk, DEFINITION),
+            profile(9, OUTPUT, 2, trunk, DEFINITION),
+            profile(4, OUTPUT, 7, trunk, DEFINITION),
+            profile(90, OUTPUT, 7, trunk, DEFINITION),
+            profile(11, "fa:custom-statement-report:v1", 9, trunk, DEFINITION),
+            profile(9, OUTPUT, 7, ([1; 16], 9, "embedded-owner"), DEFINITION),
+            profile(9, OUTPUT, 7, ([0; 16], 0, "embedded-owner"), DEFINITION),
+            profile(9, OUTPUT, 7, ([0; 16], 9, "untrusted"), DEFINITION),
+            profile(9, OUTPUT, 7, trunk, b""),
+            profile(9, OUTPUT, 7, trunk, b"fa:regulatory-schedule-def:v2\0"),
+            profile(9, OUTPUT, 7, trunk, b"fa:regulatory-schedule-def:v10\0"),
+            profile(9, OUTPUT, 7, trunk, b"fa:regulatory-schedule-def:v1\x03"),
+            profile(9, OUTPUT, 7, trunk, &oversized_definition),
+        ] {
+            assert!(!regulatory_schedule_certificate(&malformed));
+        }
+        for prefix in 0..valid.len() {
+            assert!(!regulatory_schedule_certificate(&valid[..prefix]));
         }
     }
 

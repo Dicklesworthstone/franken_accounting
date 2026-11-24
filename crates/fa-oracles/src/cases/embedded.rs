@@ -36,6 +36,15 @@ pub const MINC: EmbeddedCase = EmbeddedCase {
             "receipts.toml",
             include_str!("../../cases/minc/receipts.toml"),
         ),
+        ("roles.toml", include_str!("../../cases/minc/roles.toml")),
+        (
+            "books/ledger-schedule.toml",
+            include_str!("../../cases/minc/books/ledger-schedule.toml"),
+        ),
+        (
+            "books/ledger-trustee.toml",
+            include_str!("../../cases/minc/books/ledger-trustee.toml"),
+        ),
     ],
 };
 

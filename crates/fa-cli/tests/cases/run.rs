@@ -8,15 +8,16 @@
 //! runner does not run yet makes every row of that variant UNRUN with
 //! `reason=unrun_step:<kind>`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use fa_oracles::cases::book::{BookVariant, IntentDef, StepDef, StepKind};
+use fa_oracles::cases::book::{BookVariant, CommingledReplayDef, IntentDef, StepDef, StepKind};
 use fa_oracles::cases::check::{self, Verdict};
+use fa_oracles::cases::commingled::{Movement, Transcript, render_batch};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
 use fa_oracles::cases::expect::ExpectationType;
@@ -120,6 +121,21 @@ pub struct Call {
 }
 
 impl Call {
+    fn from_stdout(argv: Vec<String>, exit: i32, stdout: String, started: Instant) -> Self {
+        let (observations, parse_error) = match Observation::from_stdout(&stdout) {
+            Ok(o) => (o, None),
+            Err((line, e)) => (Vec::new(), Some(format!("stdout line {line}: {e:?}"))),
+        };
+        Self {
+            argv,
+            exit,
+            stdout,
+            observations,
+            parse_error,
+            elapsed_ms: i128::try_from(started.elapsed().as_millis()).unwrap_or(i128::MAX),
+        }
+    }
+
     /// The first observation of `event`.
     pub fn event(&self, event: &str) -> Option<&Observation> {
         self.observations.iter().find(|o| o.event == event)
@@ -169,19 +185,12 @@ pub fn fa(book: &Path, args: &[String]) -> Call {
         .env("NO_COLOR", "1")
         .output()
         .expect("run fa");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let (observations, parse_error) = match Observation::from_stdout(&stdout) {
-        Ok(o) => (o, None),
-        Err((line, e)) => (Vec::new(), Some(format!("stdout line {line}: {e:?}"))),
-    };
-    Call {
+    Call::from_stdout(
         argv,
-        exit: out.status.code().unwrap_or(-1),
-        stdout,
-        observations,
-        parse_error,
-        elapsed_ms: i128::try_from(started.elapsed().as_millis()).unwrap_or(i128::MAX),
-    }
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        started,
+    )
 }
 
 pub(crate) fn s<T: ToString>(v: T) -> String {
@@ -282,6 +291,8 @@ pub struct BookRun<'c> {
     pub accounts: BTreeMap<String, String>,
     /// Intent id → the call that tried to post it.
     pub posts: BTreeMap<String, Call>,
+    /// Entries generated from reviewed worksheet stubs, for the SELF check.
+    pub worksheet_entries: BTreeSet<String>,
     /// Procedure id → its recorded run.
     pub runs: BTreeMap<String, FindingRun>,
     /// Procedure id → the call that was refused or errored instead of
@@ -385,6 +396,7 @@ impl<'c> BookRun<'c> {
             legs: BTreeMap::new(),
             accounts: BTreeMap::new(),
             posts: BTreeMap::new(),
+            worksheet_entries: BTreeSet::new(),
             runs: BTreeMap::new(),
             failed_runs: BTreeMap::new(),
             texts,
@@ -479,6 +491,38 @@ impl<'c> BookRun<'c> {
         args: Vec<String>,
     ) -> Call {
         let call = fa(&self.dir, &args);
+        self.record_call(step, reference, verb, call)
+    }
+
+    pub(super) fn call_held(
+        &mut self,
+        book: &mut fa::Book,
+        step: i128,
+        reference: &str,
+        verb: &str,
+        args: Vec<String>,
+    ) -> Call {
+        use fa_cli::cli::{Books, Files, Stdin};
+        let mut argv = vec![s("--book"), self.dir.display().to_string()];
+        argv.extend(args);
+        let started = Instant::now();
+        let (exit, captured) = fa_cli::cli::run(
+            &argv,
+            Books::Held {
+                book,
+                dir: self.dir.clone(),
+            },
+            Files {
+                cwd: None,
+                stdin: Stdin::Missing,
+            },
+            true,
+        );
+        let call = Call::from_stdout(argv, i32::from(exit), captured.stdout, started);
+        self.record_call(step, reference, verb, call)
+    }
+
+    fn record_call(&mut self, step: i128, reference: &str, verb: &str, call: Call) -> Call {
         let (argv_redacted, binds) = self.redact(&call.argv);
         self.steps.push(StepRecord {
             case: self.case.header.id.clone(),
@@ -983,7 +1027,13 @@ impl<'c> BookRun<'c> {
                 Some(StepKind::Intent) => self.post(step.seq, &step.reference),
                 Some(StepKind::Allocate) => self.allocate(step.seq, &step.reference),
                 Some(StepKind::Batch) if !self.book.batch_uses_ledger_map(&step.reference) => {
-                    self.batch(step.seq, &step.reference);
+                    if let Some(replay) = self.book.commingled_replay(&step.reference) {
+                        if let Err(reason) = self.commingled(step, replay) {
+                            self.fail(reason);
+                        }
+                    } else {
+                        self.batch(step.seq, &step.reference);
+                    }
                 }
                 Some(StepKind::PeriodLock) => self.period_lock(step),
                 Some(StepKind::FindingRecord) => {
@@ -1547,6 +1597,330 @@ impl<'c> BookRun<'c> {
         Ok(args)
     }
 
+    /// Post one worksheet batch per observation and compare cash at the
+    /// exact recorded frontier returned by the native batch.
+    fn commingled(&mut self, step: &StepDef, spec: &CommingledReplayDef) -> Result<(), String> {
+        let bound = check::bind::check(&check::Context::new(self.case));
+        if bound.verdict != Verdict::Pass
+            || !bound.rows.contains(&spec.fact)
+            || !bound.rows.contains(&spec.published)
+        {
+            return Err(format!(
+                "worksheet {} and comparison {} require passing receipt bindings",
+                spec.fact, spec.published
+            ));
+        }
+        let source = self
+            .case
+            .facts
+            .iter()
+            .find(|fact| fact.id == spec.fact)
+            .and_then(|fact| fact.sourced())
+            .and_then(|fact| fact.rows_file.as_deref())
+            .and_then(|path| self.case.rows.get(path))
+            .ok_or_else(|| format!("worksheet {} has no movement bytes", spec.fact))?;
+        let transcript = Transcript::parse(source)?;
+        let remainders = transcript
+            .fifo_remainders(spec.endpoint)
+            .map_err(|why| format!("worksheet {}: {why}", spec.fact))?;
+        let movements: Vec<_> = transcript.movements(spec.endpoint).collect();
+        let opening_line = movements[0].line;
+        if remainders.get(&opening_line) != Some(&0) {
+            return Err(format!(
+                "worksheet {} does not agree under both opening classifications",
+                spec.fact
+            ));
+        }
+        let last_observation = movements
+            .last()
+            .ok_or("empty worksheet")?
+            .observed
+            .to_string();
+        let open = filler::open_at(self.book, step.seq);
+        for movement in &movements {
+            let day = movement.reconstruction_day().to_string();
+            if !self.book.periods.iter().any(|period| {
+                open.contains(&period.code) && period.start <= day && day <= period.end
+            }) {
+                return Err(format!(
+                    "worksheet {} line {} has no open period on {day}",
+                    spec.fact, movement.line
+                ));
+            }
+        }
+        let evidence = self
+            .documents
+            .get(&spec.document)
+            .cloned()
+            .ok_or_else(|| format!("worksheet document {} was not added", spec.document))?;
+        let principal = step
+            .principal
+            .as_ref()
+            .ok_or_else(|| "worksheet has no posting principal".to_string())?;
+        let mut frontiers = Vec::new();
+        let mut entries = Vec::new();
+        let mut balance = 0_i128;
+        let mut native = None;
+        for group in movements.chunk_by(|first, second| first.observed == second.observed) {
+            let observed = group[0].observed;
+            let request = render_batch(
+                &spec.id,
+                observed,
+                group,
+                &spec.cash_account,
+                &spec.offset_account,
+                &evidence,
+            );
+            let reference = format!("{}-{observed}", spec.id);
+            let file = self.write(&format!("{reference}.json"), request.to_string().as_bytes());
+            let before = self.head;
+            let args = vec![
+                s("batch"),
+                s("--intent"),
+                file,
+                s("--as"),
+                principal.clone(),
+                s("--json"),
+            ];
+            let call = match native.as_mut() {
+                Some(book) => self.call_held(book, step.seq, &reference, "batch", args),
+                None => self.call(step.seq, &reference, "batch", args),
+            };
+            if call.exit != 0 {
+                self.lines.push(reproduce(&call));
+                return Err(format!("worksheet batch {reference} was refused"));
+            }
+            let recorded = call
+                .event("batch_posted")
+                .and_then(|o| o.field("recorded_at"))
+                .and_then(Json::as_int)
+                .filter(|&seq| seq > before && call.known_at() == Some(seq))
+                .ok_or_else(|| {
+                    format!("worksheet batch {reference} has no new recorded frontier")
+                })?;
+            let recorded = fgdb_types::CommitSeq(
+                u64::try_from(recorded)
+                    .map_err(|_| "worksheet commit is outside the native sequence domain")?,
+            );
+            let members = call.array_field("batch_posted", "members");
+            if members.len() != group.len() {
+                return Err(format!(
+                    "worksheet batch {reference} returned {} members for {} rows",
+                    members.len(),
+                    group.len()
+                ));
+            }
+            for (index, (row, member)) in group.iter().zip(&members).enumerate() {
+                let vid = member
+                    .get("vid")
+                    .and_then(Json::as_str)
+                    .filter(|_| member.get("index").and_then(Json::as_int) == Some(index as i128))
+                    .ok_or_else(|| {
+                        format!("worksheet batch {reference} has no entry at member {index}")
+                    })?;
+                let key = row.entry_key(&spec.id);
+                self.bind(
+                    vid,
+                    format!("${key}"),
+                    "batch_posted.members.vid",
+                    step.seq,
+                    &key,
+                );
+                self.vids.insert(key.clone(), vid.into());
+                self.posted_steps.insert(key.clone(), step.seq);
+                self.worksheet_entries.insert(key.clone());
+                self.posts.insert(key, call.clone());
+                let native_id =
+                    u128::from_str_radix(vid, 16)
+                        .map(fgdb_types::VId)
+                        .map_err(|_| {
+                            format!(
+                                "worksheet batch {reference} returned an invalid entry identity"
+                            )
+                        })?;
+                entries.push((*row, native_id, recorded));
+                balance = balance
+                    .checked_add(row.cash_delta())
+                    .ok_or_else(|| "worksheet cash exceeds exact cents".to_string())?;
+            }
+            frontiers.push((observed, recorded, balance));
+            if native.is_none() {
+                // Exercise the cold binary first, then reuse the variant's
+                // private book in the same CLI handler for later observations.
+                native = Some(
+                    fa::BookKeys::load(&self.dir.join("book.keys"))
+                        .and_then(|keys| {
+                            fa::Book::open_dir(&self.dir, keys, fa::Entropy::production())
+                        })
+                        .map_err(|error| format!("reopen the worksheet book: {error}"))?,
+                );
+            }
+        }
+        let native = native.ok_or("worksheet has no posted observations")?;
+        Self::check_worksheet_entries(&native, spec, &evidence, &entries)?;
+        let head = native.head().map_err(|error| error.to_string())?;
+        for &(observed, recorded, expected) in &frontiers {
+            let earlier = Self::commingled_cash(&native, &spec.cash_account, observed, recorded)?;
+            if earlier != expected {
+                return Err(format!(
+                    "worksheet cash at {observed} was {earlier}, expected {expected} cents at commit {}",
+                    recorded.0
+                ));
+            }
+            let later_expected = movements
+                .iter()
+                .filter(|movement| movement.reconstruction_day() <= observed)
+                .try_fold(0_i128, |total, movement| {
+                    total.checked_add(movement.cash_delta())
+                })
+                .ok_or_else(|| "worksheet cash exceeds exact cents".to_string())?;
+            let later = Self::commingled_cash(&native, &spec.cash_account, observed, head)?;
+            if later != later_expected {
+                return Err(format!(
+                    "worksheet cash at {observed} was {later}, expected {later_expected} cents at commit {}",
+                    head.0
+                ));
+            }
+            if earlier != later {
+                self.lines.push(format!(
+                    "COMMINGLED CASH {} {} effective={observed} observed_cents={earlier} final_cents={later}",
+                    self.case.header.id, self.book.stem
+                ));
+            }
+        }
+        self.lines.push(format!(
+            "COMMINGLED {} {} worksheet={} endpoint={} rows={} frontiers={} cash_cents={balance}",
+            self.case.header.id,
+            self.book.stem,
+            spec.fact,
+            spec.endpoint.as_str(),
+            movements.len(),
+            frontiers.len()
+        ));
+        let context = native.context();
+        let cash = fa_model::account_vid(context.book_id, &spec.cash_account);
+        let account = format!("{:032x}", cash.0);
+        let book = context.book_id.to_hex();
+        let unit = context
+            .units
+            .lookup("USD")
+            .ok_or("worksheet unit USD is unavailable")?;
+        let effective_through =
+            fa_time::DateDay::parse(&last_observation).map_err(|error| error.to_string())?;
+        let coordinate = fa_oracles::cases::verify_report::FifoCoordinate {
+            book: &book,
+            branch: "00000000000000000000000000000000",
+            account: &account,
+            known_at: head.0,
+            effective_through: effective_through.0,
+            intraday_order: 0,
+            unit: unit.0,
+            scale: 2,
+        };
+        let sources: Vec<_> = entries
+            .iter()
+            .filter_map(|(row, vid, _)| remainders.get(&row.line).map(|amount| (*vid, *amount)))
+            .collect();
+        let verified = self.verify_fifo_deposits(native, &spec.id, cash, &coordinate, &sources)?;
+        let (published, unit) = self
+            .value_of(&spec.published)
+            .ok_or_else(|| format!("{} has no published comparison amount", spec.published))?;
+        if unit != "USD" || verified != published {
+            return Err(format!(
+                "worksheet {} verified {verified} USD cents, {} publishes {published} {unit}",
+                spec.fact, spec.published
+            ));
+        }
+        self.lines.push(format!(
+            "COMMINGLED FIFO {} {} published={} sources={} retained_cents={verified} opening_cents=0 outsider=verified",
+            self.case.header.id, self.book.stem, spec.published, sources.len()
+        ));
+        Ok(())
+    }
+
+    fn check_worksheet_entries(
+        book: &fa::Book,
+        spec: &CommingledReplayDef,
+        evidence: &str,
+        entries: &[(&Movement<'_>, fgdb_types::VId, fgdb_types::CommitSeq)],
+    ) -> Result<(), String> {
+        use fa_money::Side::{Credit, Debit};
+        let context = book.context();
+        let unit = context
+            .units
+            .lookup("USD")
+            .ok_or("worksheet unit USD is unavailable")?;
+        let cash = fa_model::account_vid(context.book_id, &spec.cash_account);
+        let offset = fa_model::account_vid(context.book_id, &spec.offset_account);
+        let mut seen = BTreeSet::new();
+        for &(row, vid, recorded) in entries {
+            let (entry, known_at) = book
+                .read_entry(vid)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("worksheet line {} has no native entry", row.line))?;
+            let expected_day = fa_time::DateDay::parse(&row.reconstruction_day().to_string())
+                .map_err(|error| error.to_string())?;
+            let proposal = &entry.proposal;
+            let (debit, credit) = if row.kind.is_debit() {
+                (offset, cash)
+            } else {
+                (cash, offset)
+            };
+            let exact_legs = proposal.legs.len() == 2
+                && [(Debit, debit), (Credit, credit)]
+                    .iter()
+                    .all(|&(side, account)| {
+                        proposal.legs.iter().any(|leg| {
+                            leg.side == side
+                                && leg.account_ref == account
+                                && leg.amount == fa_money::Amount::new(unit, row.cents)
+                        })
+                    });
+            let cites_worksheet = matches!(proposal.evidence.as_slice(), [document]
+                if fa_verify::blake3::hex(&document.document_oid.0) == evidence);
+            if !seen.insert(vid)
+                || known_at != recorded
+                || proposal.effective_date != expected_day
+                || !exact_legs
+                || !cites_worksheet
+            {
+                return Err(format!(
+                    "worksheet line {} does not match its native entry and citation",
+                    row.line
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn commingled_cash(
+        book: &fa::Book,
+        account: &str,
+        observed: Day,
+        recorded: fgdb_types::CommitSeq,
+    ) -> Result<i128, String> {
+        let day =
+            fa_time::DateDay::parse(&observed.to_string()).map_err(|error| error.to_string())?;
+        let report = book
+            .balance_as_of(day, Some(recorded))
+            .map_err(|error| error.to_string())?;
+        if report.known_at != recorded || report.effective_through != Some(day) {
+            return Err(format!(
+                "worksheet cash read at {observed} has the wrong coordinate"
+            ));
+        }
+        let mut rows = report.rows.iter().filter(|row| row.code == account);
+        let cash = rows
+            .next()
+            .and_then(|row| row.debits.checked_sub(row.credits));
+        match (cash, rows.next()) {
+            (Some(cents), None) => Ok(cents),
+            _ => Err(format!(
+                "worksheet cash at {observed} has no unique account balance"
+            )),
+        }
+    }
+
     /// A `batch` step over the intent range `A..B` (file order), posted as
     /// one `PostBatch` whose members carry their own evidence.
     fn batch(&mut self, seq: i128, range: &str) {
@@ -1927,11 +2301,32 @@ impl<'c> BookRun<'c> {
             );
         }
     }
+
+    fn replay_and_read(&mut self) {
+        self.replay();
+        self.self_procedure();
+        if self.failure.is_none() && self.unrun_steps.is_empty() {
+            self.trial_balances();
+        }
+    }
 }
 
 /// Runs a case through every stage with the given verb table.
 pub fn run_case(files: &CaseFiles<'_>, verbs: &[(&str, Option<&str>)]) -> RunOutcome {
     run_case_with(files, verbs, None)
+}
+
+fn build_variant<'c>(
+    case: &'c Case,
+    book: &'c BookVariant,
+    files: &'c [(&'c str, &'c str)],
+    root: &Path,
+) -> BookRun<'c> {
+    let work = root.join(&book.stem);
+    std::fs::create_dir_all(&work).expect("variant dir");
+    let mut run = BookRun::new(case, book, work, files);
+    run.build();
+    run
 }
 
 /// [`run_case`] under a budget of `budget_ms` (else `FA_CASES_BUDGET_MS`,
@@ -2020,22 +2415,48 @@ pub fn run_case_with(
     let mut sweep_failed = false;
     let mut outsider_failed = false;
     let mut budget = Budget::new(budget_ms);
+    let build = |book| build_variant(&case, book, files.files, &root);
+    let mut replayed = BTreeMap::new();
+    let variants: Vec<_> = case.books.values().collect();
+    if let [first, second] = variants.as_slice()
+        && !first.commingled_replays.is_empty()
+        && !second.commingled_replays.is_empty()
+    {
+        // The two books have independent writer leases and evidence. Keep
+        // both real CLI histories, and assemble their transcripts in the
+        // original variant order after the bounded pair completes.
+        std::thread::scope(|scope| {
+            let other = scope.spawn(|| {
+                let started = Instant::now();
+                let mut run = build(second);
+                run.replay_and_read();
+                (run, started.elapsed().as_millis())
+            });
+            let started = Instant::now();
+            let mut run = build(first);
+            if let Some(code) = run.periods.values().next() {
+                budget.measure_warm(&run.dir, code);
+            }
+            run.replay_and_read();
+            replayed.insert(first.stem.as_str(), (run, started.elapsed().as_millis()));
+            replayed.insert(
+                second.stem.as_str(),
+                other.join().expect("worksheet runner"),
+            );
+        });
+    }
     for (index, book) in case.books.values().enumerate() {
         let book_started = Instant::now();
         let steps_before = out.steps.len();
-        let work = root.join(&book.stem);
-        std::fs::create_dir_all(&work).expect("variant dir");
-        let mut run = BookRun::new(&case, book, work, files.files);
-        run.build();
-        if let Some(code) = run.periods.values().next() {
-            budget.measure_warm(&run.dir, code);
-        }
+        let (mut run, replayed_ms) = replayed.remove(book.stem.as_str()).unwrap_or_else(|| {
+            let mut run = build(book);
+            if let Some(code) = run.periods.values().next() {
+                budget.measure_warm(&run.dir, code);
+            }
+            run.replay_and_read();
+            (run, 0)
+        });
         out.books.insert(book.stem.clone(), run.dir.clone());
-        run.replay();
-        run.self_procedure();
-        if run.failure.is_none() && run.unrun_steps.is_empty() {
-            run.trial_balances();
-        }
         // A failed outsider check fails the case whatever its rows say
         // (§12.1).
         outsider_failed |= run.outsider.as_ref().is_some_and(|o| !o.ok());
@@ -2137,7 +2558,7 @@ pub fn run_case_with(
             &book.stem,
             index + 1,
             out.steps.len() - steps_before,
-            book_started.elapsed().as_millis(),
+            replayed_ms + book_started.elapsed().as_millis(),
         );
         // The book's slowest step, so a book over its budget names it.
         if let Some(slow) = out

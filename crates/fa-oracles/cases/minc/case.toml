@@ -7,4 +7,4 @@ scope = "The issuing court's two FIFO worksheets for the March 2023 opening bala
 claims = []
 capabilities = ["procedure:trace.fifo@2"]
 pinned_commit = "46e48c36"
-variants = []
+variants = ["ledger-schedule", "ledger-trustee"]

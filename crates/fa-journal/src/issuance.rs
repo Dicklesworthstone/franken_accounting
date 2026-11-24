@@ -944,8 +944,13 @@ pub(crate) fn record_of_at<V: asupersync::fs::Vfs + Clone>(
             vid.0
         )));
     }
-    let issuance =
-        StatementIssuance::decode(&bytes(&row, property::FA_PAYLOAD, "issuance._fa_payload")?)?;
+    let payload = bytes(&row, property::FA_PAYLOAD, "issuance._fa_payload")?;
+    let issuance = StatementIssuance::decode(&payload).map_err(|error| {
+        KernelError::Corrupt(format!(
+            "cannot decode stored statement issuance {:032x}: {error}",
+            vid.0
+        ))
+    })?;
     if issuance.vid() != vid
         || issuance.book_id != book.book_id
         || row.props != issuance_properties(&issuance)?

@@ -16,7 +16,8 @@
 //!   of a `[[case]]`'s disclosure document.
 //! - On `statement` and `ledger` stems every posting cites the citation stub
 //!   of the filing that publishes it (a Δ the restating filing's); each
-//!   `[[ledger_map]]` row has a stub of its source fact's source.
+//!   `[[ledger_map]]` row has a stub of its source fact's source. Each
+//!   commingled worksheet replay cites its own reviewed exhibit stub.
 //! - A `rows:` document is never evidence and never filed; a `legacy_tb`
 //!   document is cited only by a Migration intent and never filed; a
 //!   placeholder is never filed.
@@ -79,7 +80,7 @@ fn inputs(case: &Case, book: &BookVariant) -> usize {
         .filter(|s| !s.reference.starts_with("finding:"))
         .count();
     let rows = expectations_of(case, &book.stem).len();
-    book.intents.len() + filings + book.ledger_maps.len() + rows
+    book.intents.len() + filings + book.ledger_maps.len() + book.commingled_replays.len() + rows
 }
 
 fn expectations_of<'c>(case: &'c Case, stem: &str) -> Vec<&'c Expectation> {
@@ -251,6 +252,21 @@ fn book_evidence(cx: &Context<'_>, book: &BookVariant, r: &mut CheckReport) {
                     "a [[ledger_map]] row's rendered intents cite the stub of its source fact's source ({}), and the variant has none",
                     want.as_deref().unwrap_or("no sourced fact")
                 ),
+            );
+        }
+    }
+    for replay in &book.commingled_replays {
+        r.examined(format!("{}:commingled_replay:{}", book.stem, replay.id));
+        if !book
+            .documents
+            .iter()
+            .any(|doc| replay.cites_reviewed_worksheet(doc))
+        {
+            r.fail(
+                &file,
+                replay.line,
+                &replay.id,
+                "the replay document must be a reviewed AgentUpload citing the selected worksheet fact",
             );
         }
     }

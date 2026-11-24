@@ -138,7 +138,7 @@ fn oversized_scenario_plan_reopens_and_replays_real_certified_accounting() {
     let intent = PostIntent::new(proposal, Vec::new()).unwrap();
     assert!(intent.canonical_bytes().unwrap().len() > 16 * 1024);
     let before = book.head().unwrap();
-    let baseline = book.trial_balance(&[period.clone()]).unwrap();
+    let baseline = book.trial_balance(std::slice::from_ref(&period)).unwrap();
     let ran = book
         .run_in_scenario(planner.clone(), "large", intent.clone())
         .unwrap()
@@ -156,7 +156,9 @@ fn oversized_scenario_plan_reopens_and_replays_real_certified_accounting() {
         EntryClass::SCENARIO_CONTROL
     );
     assert_eq!(
-        book.trial_balance(&[period.clone()]).unwrap().rows,
+        book.trial_balance(std::slice::from_ref(&period))
+            .unwrap()
+            .rows,
         baseline.rows
     );
     assert!(
@@ -173,7 +175,13 @@ fn oversized_scenario_plan_reopens_and_replays_real_certified_accounting() {
     let producer = Capability::embedded(principal, &["read", "produce"]).unwrap();
     let certified_at = book.head().unwrap();
     let certified = book
-        .certify_scenario_diff(principal, &producer, "large", &[period.clone()], false)
+        .certify_scenario_diff(
+            principal,
+            &producer,
+            "large",
+            std::slice::from_ref(&period),
+            false,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(book.head().unwrap(), certified_at);

@@ -99,8 +99,8 @@ fn _selftest() {
     );
 }
 
-/// The normal case binds the independent comparison and each worksheet for
-/// the gross movements posted by the signed FIFO exercise.
+/// The normal runner reconstructs both worksheet ledgers from the bound
+/// movements and compares cash at their native observation frontiers.
 #[test]
 fn minc() {
     let o = outcome("minc");
@@ -117,6 +117,57 @@ fn minc() {
             "{text}"
         );
     }
+    for (variant, fact, endpoint, cash) in [
+        (
+            "ledger-schedule",
+            "MINC-APPENDIX-1",
+            "schedule-debit",
+            3_778_946,
+        ),
+        (
+            "ledger-trustee",
+            "MINC-APPENDIX-2",
+            "trustee-debit",
+            3_753_741,
+        ),
+    ] {
+        assert!(o.books.contains_key(variant), "{text}");
+        assert!(o.lines.contains(&format!(
+            "COMMINGLED minc {variant} worksheet={fact} endpoint={endpoint} rows=70 frontiers=18 cash_cents={cash}"
+        )), "{text}");
+        assert!(o.lines.contains(&format!(
+            "COMMINGLED CASH minc {variant} effective=2023-12-26 observed_cents=2850675 final_cents=3006875"
+        )), "{text}");
+        assert!(o.lines.contains(&format!(
+            "COMMINGLED FIFO minc {variant} published=MINC-FIFO-RESULT sources=21 retained_cents=1020354 opening_cents=0 outsider=verified"
+        )), "{text}");
+        assert_eq!(
+            o.steps
+                .iter()
+                .filter(|step| step.book_variant == variant
+                    && step.verb == "batch"
+                    && step.exit == 0)
+                .count(),
+            18,
+            "{text}"
+        );
+        assert_eq!(
+            o.steps
+                .iter()
+                .filter(|step| step.book_variant == variant
+                    && step.reference == "minc-worksheet"
+                    && step.verb == "fa-verify"
+                    && step.exit == 0)
+                .count(),
+            21,
+            "{text}"
+        );
+    }
+    assert!(
+        o.lines
+            .contains(&"CHECK minc K-EVID PASS examined=2/2".to_string()),
+        "{text}"
+    );
     if std::env::var("FA_CASES_RENDER").is_ok_and(|v| v == "print") {
         use fa_oracles::cases::render::{RunRecords, render_readme};
         let case =
@@ -143,6 +194,10 @@ fn minc_neg_one_cent_movement_edit_fails_both_source_bindings() {
         HARNESS_VERBS,
     )
     .expect_err("a one-cent input edit differs from both worksheets");
+    assert!(
+        changed.books.is_empty(),
+        "invalid evidence must stop before creating a book"
+    );
     for id in ["MINC-APPENDIX-1", "MINC-APPENDIX-2"] {
         assert!(
             changed
@@ -155,6 +210,26 @@ fn minc_neg_one_cent_movement_edit_fails_both_source_bindings() {
             changed.text()
         );
     }
+}
+
+#[test]
+fn minc_neg_wrong_worksheet_citation_stops_before_book_creation() {
+    let changed = run_planted(
+        "minc",
+        &[PlantedEdit {
+            file: "books/ledger-schedule.toml",
+            old: "stub_of = \"MINC-APPENDIX-1\"",
+            new: "stub_of = \"MINC-APPENDIX-2\"",
+        }],
+        HARNESS_VERBS,
+    )
+    .expect_err("the selected worksheet needs its own reviewed citation");
+    assert!(changed.books.is_empty(), "{}", changed.text());
+    assert!(
+        changed
+            .text()
+            .contains("reviewed AgentUpload citing the selected worksheet fact")
+    );
 }
 
 #[test]

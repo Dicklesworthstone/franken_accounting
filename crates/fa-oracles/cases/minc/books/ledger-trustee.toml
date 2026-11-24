@@ -1,0 +1,80 @@
+[book]
+variant = "ledger-trustee"
+opening_date = "2023-01-01"
+calendar = "custom"
+base_unit = "USD"
+posture = "embedded-owner"
+
+[[period]]
+code = "2023"
+start = "2023-01-01"
+end = "2023-12-31"
+fiscal_year = 2023
+kind = "Normal"
+
+[[period]]
+code = "2024"
+start = "2024-01-01"
+end = "2024-12-31"
+fiscal_year = 2024
+kind = "Normal"
+
+[[principal]]
+label = "case-poster"
+profile = "Human"
+grants = ["read", "post"]
+
+[[principal]]
+label = "case-second-reader"
+profile = "Human"
+grants = ["read", "approve"]
+
+[[principal]]
+label = "case-period-owner"
+profile = "Human"
+grants = ["read", "close"]
+
+[[account]]
+code = "1000"
+name_fact = "MINC-APPENDIX-2"
+type = "Asset"
+opened = "2023-01-01"
+
+[[account]]
+code = "4000"
+name_fact = "MINC-APPENDIX-2"
+type = "Equity"
+opened = "2023-01-01"
+
+[[document]]
+id = "DOC-WORKSHEET"
+stub_of = "MINC-APPENDIX-2"
+grade = "AgentUpload"
+reviewed_by = "case-second-reader"
+
+[[commingled_replay]]
+id = "minc-worksheet"
+fact = "MINC-APPENDIX-2"
+published = "MINC-FIFO-RESULT"
+endpoint = "trustee-debit"
+cash_account = "1000"
+offset_account = "4000"
+document = "DOC-WORKSHEET"
+
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2023"
+principal = "case-period-owner"
+
+[[step]]
+seq = 2
+kind = "period_open"
+ref = "2024"
+principal = "case-period-owner"
+
+[[step]]
+seq = 3
+kind = "batch"
+ref = "minc-worksheet"
+principal = "case-poster"

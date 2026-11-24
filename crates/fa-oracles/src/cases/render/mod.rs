@@ -75,7 +75,7 @@ pub fn render_readme(case: &Case, run: &RunRecords<'_>) -> Result<String, Render
     results(case, &rows, &mut out)?;
     runner_rows(case, &rows, &mut out);
     not_yet(case, &rows, &mut out);
-    if case.books.is_empty() && case.expectations.is_none() {
+    if case.expectations.is_none() {
         out.truncate(out.trim_end_matches('\n').len());
         out.push('\n');
     }
@@ -178,6 +178,16 @@ fn header(case: &Case, out: &mut String) {
         let _ = writeln!(
             out,
             "The case runner catalogues the source record here. It has evaluated zero accounting claims. [Source ledger](sources.toml)\n"
+        );
+    } else if h.claims.is_empty()
+        && case
+            .books
+            .values()
+            .any(|book| !book.commingled_replays.is_empty())
+    {
+        let _ = writeln!(
+            out,
+            "The case runner reconstructs the receipt-bound movements, checks cash at the observation and final frontiers, and compares independently verified FIFO reports with the separate published figure.\n"
         );
     } else {
         let _ = writeln!(
@@ -392,6 +402,28 @@ fn books(case: &Case, rows: &BTreeMap<&str, Vec<&VerdictRecord>>, out: &mut Stri
                 "| `{}` | `{}` | {} | {} |",
                 i.id, i.fact, i.class, i.effective_date
             );
+        }
+        if !book.commingled_replays.is_empty() {
+            let _ = writeln!(
+                out,
+                "\nEach worksheet observation posts as one native batch. The postings keep exact printed dates and use the last permissible day for a date range.\n"
+            );
+            let _ = writeln!(
+                out,
+                "| Worksheet fact | Petition debit | Cash | Offset | Citation |"
+            );
+            let _ = writeln!(out, "|---|---|---|---|---|");
+            for replay in &book.commingled_replays {
+                let _ = writeln!(
+                    out,
+                    "| `{}` | `{}` | `{}` | `{}` | `{}` |",
+                    replay.fact,
+                    replay.endpoint.as_str(),
+                    replay.cash_account,
+                    replay.offset_account,
+                    replay.document
+                );
+            }
         }
         if !book.documents.is_empty() {
             let _ = writeln!(out, "\n| Document | Stands for | Grade |");

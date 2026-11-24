@@ -40,7 +40,7 @@ use fa_oracles::cases::book::{StepDef, StepKind};
 use fa_oracles::cases::expect::{Expectation, ExpectationType, Target};
 use fa_oracles::cases::log::StepRecord;
 use fa_oracles::cases::outsider_kind::{OutsiderKind, Recomputed, outsider_kind};
-use fa_oracles::cases::verify_report::recomputed;
+use fa_oracles::cases::verify_report::{FifoCoordinate, fifo_cohort, recomputed};
 use fa_oracles::json::{self, Json};
 
 use super::lifecycle::as_principal;
@@ -963,6 +963,122 @@ impl BookRun<'_> {
             .to_string());
         }
         Ok(file.display().to_string())
+    }
+
+    pub(super) fn verify_fifo_deposits(
+        &mut self,
+        mut book: fa::Book,
+        reference: &str,
+        account: fgdb_types::VId,
+        coordinate: &FifoCoordinate<'_>,
+        sources: &[(fgdb_types::VId, i128)],
+    ) -> Result<i128, String> {
+        let principal = fa_model::principal_vid("operator");
+        let capability = fa_policy::Capability::embedded(principal, &["read", "produce"])
+            .map_err(|error| error.to_string())?;
+        let parameters = fa_lantern::Params::defaults("trace.fifo")
+            .and_then(|p| p.set("intraday_order", i128::from(coordinate.intraday_order)))
+            .map_err(|error| error.to_string())?;
+        let mut selected = Vec::new();
+        for &(source, expected) in sources {
+            let request = fa::ProcedureRequest {
+                procedure: "trace.fifo".into(),
+                version: Some(2),
+                parameters: parameters.clone(),
+                inputs: fa_lantern::catalog::Inputs {
+                    account: Some(account),
+                    source: Some(source),
+                },
+                known_at: Some(fgdb_types::CommitSeq(coordinate.known_at)),
+                effective_through: Some(fa_time::DateDay(coordinate.effective_through)),
+                budget: None,
+            };
+            let issued = book
+                .certify_procedure_with_history(principal, &capability, &request)
+                .map_err(|error| error.to_string())?
+                .map_err(|refusal| refusal.to_string())?;
+            let source = format!("{:032x}", source.0);
+            if !matches!(issued.report.findings.as_slice(), [finding] if
+                finding.statistic.name == "traced_mantissa"
+                    && finding.statistic.value == expected
+                    && finding.statistic.scale == coordinate.scale)
+            {
+                return Err(format!(
+                    "native FIFO for entry {source} disagrees with the dated source bound"
+                ));
+            }
+            let bytes = issued
+                .certificate
+                .canonical_bytes()
+                .map_err(|error| error.to_string())?;
+            let file = self.write(&format!("fifo-{source}.cert"), &bytes);
+            let pin = fa_verify::blake3::hex(issued.certificate.digest());
+            selected.push((source, pin, file, expected));
+        }
+        // The ordinary CLI opens the book itself for the checkpoint.
+        drop(book);
+        let checkpoint = self.anchor()?;
+        let mut book = fa::BookKeys::load(&self.dir.join("book.keys"))
+            .and_then(|keys| fa::Book::open_dir(&self.dir, keys, fa::Entropy::production()))
+            .map_err(|error| format!("reopen the worksheet book for bundle production: {error}"))?;
+        let mut reports = Vec::new();
+        for (source, pin, file, _) in &selected {
+            let bundle = self
+                .work
+                .join(format!("fifo-{source}.fab"))
+                .display()
+                .to_string();
+            let receipt = self
+                .work
+                .join(format!("fifo-{source}.receipt"))
+                .display()
+                .to_string();
+            let produced = self.call_held(
+                &mut book,
+                self.head,
+                reference,
+                "bundle",
+                vec![
+                    s("bundle"),
+                    s("produce"),
+                    s("--certificate"),
+                    file.clone(),
+                    s("--out"),
+                    bundle.clone(),
+                    s("--receipt-out"),
+                    receipt.clone(),
+                    s("--json"),
+                ],
+            );
+            if produced.exit != 0 || produced.event("bundle_produced").is_none() {
+                self.lines.push(reproduce(&produced));
+                return Err(format!("no delivered FIFO bundle for entry {source}"));
+            }
+            let report =
+                self.verify_selected_report(reference, pin, &bundle, &checkpoint, &receipt)?;
+            if report.exit != 0 {
+                return Err(format!(
+                    "FIFO recipient refused entry {source} with exit {} {}",
+                    report.exit,
+                    failed_check(&report.stdout)
+                ));
+            }
+            reports.push(report.stdout);
+        }
+        let pins: Vec<_> = selected
+            .iter()
+            .map(|(source, pin, _, _)| (source.as_str(), pin.as_str()))
+            .collect();
+        let verified = fifo_cohort(coordinate, &pins, &reports)?;
+        if let Some((source, _, _, _)) = selected
+            .iter()
+            .find(|(source, _, _, expected)| verified.sources.get(source) != Some(expected))
+        {
+            return Err(format!(
+                "recipient FIFO for entry {source} disagrees with the dated source bound"
+            ));
+        }
+        Ok(verified.total)
     }
 
     /// One T read's report route ([`Self::outsider_reads`]).
