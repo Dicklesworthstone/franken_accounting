@@ -175,3 +175,149 @@ fn scenario_question_and_signed_math_bundle_travel_without_the_source_book() -> 
     assert_eq!(fa_verify::cli::run(&mixed, &no_read).exit, 2);
     Ok(())
 }
+
+#[test]
+fn large_scenario_plan_survives_reopen_retry_and_historical_certified_replay() -> std::io::Result<()>
+{
+    let dir = tmp("large-scenario-control")?;
+    let book = dir.join("book");
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.push("--json");
+        let (code, out, err) = fa(Some(&book), &full);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    run(&["book", "create", "--name", "Large scenario review"]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    run(&["chart", "import", &chart]);
+    run(&["period", "create", "--fiscal-year", "2026"]);
+    run(&["period", "open", "FY2026-P03"]);
+    let evidence = source_doc(&dir, &book);
+    run(&["scenario", "fork", "large-plan", "--as", "analyst"]);
+    let open = || {
+        fa::Book::open_dir(
+            &book,
+            fa::BookKeys::load(&book.join("book.keys")).unwrap(),
+            fa::Entropy::deterministic(0x5ca1),
+        )
+        .unwrap()
+    };
+    let head = || open().head().unwrap();
+    let original_rows = doc(&run(&["tb", "--period", "FY2026-P03"]))
+        .get("rows")
+        .unwrap()
+        .clone();
+    let legs = (0..256)
+        .flat_map(|_| {
+            [
+                r#"{"side":"debit","account":"1000","amount":"1.00 USD"}"#,
+                r#"{"side":"credit","account":"4000","amount":"1.00 USD"}"#,
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let intent = write(
+        &dir,
+        "large-plan.json",
+        &format!(
+            r#"{{"effective_date":"2026-03-15","idempotency_key":"large-scenario-entry","evidence":["{evidence}"],"legs":[{legs}]}}"#
+        ),
+    );
+    let args = [
+        "scenario",
+        "run",
+        "large-plan",
+        "--intent",
+        &intent,
+        "--as",
+        "analyst",
+    ];
+    let before = head();
+    let planned = doc(&run(&args));
+    assert_eq!(planned.get("already_recorded"), Some(&Json::Bool(false)));
+    assert_eq!(
+        head().0,
+        before.0 + 1,
+        "root, fragments and claim publish together"
+    );
+    let saved = {
+        let reopened = open();
+        let view = reopened.scenario("large-plan").unwrap().unwrap();
+        assert_eq!(view.intents.len(), 1);
+        assert!(view.intents[0].intent.canonical_bytes().unwrap().len() > 16_384);
+        let (control, _) = reopened
+            .read_entry(view.intents[0].record)
+            .unwrap()
+            .unwrap();
+        assert!(
+            control.encode().unwrap().len() > 16_384,
+            "the actual ScenarioControl exceeds a native row"
+        );
+        assert_eq!(
+            control.proposal.class,
+            fa_model::EntryClass::SCENARIO_CONTROL
+        );
+        view.intents[0].clone()
+    };
+    let recorded = head();
+    let retry = doc(&run(&args));
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(retry.get("control_entry"), planned.get("control_entry"));
+    assert_eq!(head(), recorded);
+    assert_eq!(
+        open().scenario("large-plan").unwrap().unwrap().intents,
+        [saved]
+    );
+    let certificate_file = dir.join("large-scenario.cert").display().to_string();
+    let certified = run(&[
+        "scenario",
+        "diff",
+        "large-plan",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        &certificate_file,
+    ]);
+    assert_eq!(certified.lines().count(), 2);
+    let first = json::parse(certified.lines().next().unwrap()).unwrap();
+    let expected = first.get("data").unwrap().clone();
+    assert_eq!(int(&expected, "intents"), Some(1));
+    let rows = arr(&expected, "rows");
+    assert_eq!(rows.len(), 2);
+    let cash = rows.iter().find(|row| text(row, "code") == "1000").unwrap();
+    assert_eq!(text(cash, "delta"), "256.00 USD");
+    let retained_at = head();
+    assert_eq!(
+        retained_at.0,
+        recorded.0 + 1,
+        "certification retains its complete certificate in one metadata publication"
+    );
+    assert_eq!(
+        int(&doc(&certified), "recorded_at"),
+        Some(i128::from(retained_at.0))
+    );
+    assert_eq!(
+        doc(&run(&["tb", "--period", "FY2026-P03"])).get("rows"),
+        Some(&original_rows)
+    );
+    run(&["scenario", "discard", "large-plan", "--as", "analyst"]);
+    let discarded = head();
+    let replay = run(&["replay", &certificate_file]);
+    let replayed = json::parse(replay.lines().next().unwrap()).unwrap();
+    assert_eq!(replayed.get("data"), Some(&expected));
+    assert_eq!(
+        head(),
+        discarded,
+        "historical replay does not repeat scenario effects"
+    );
+    assert_eq!(
+        doc(&run(&["tb", "--period", "FY2026-P03"])).get("rows"),
+        Some(&original_rows)
+    );
+    Ok(())
+}

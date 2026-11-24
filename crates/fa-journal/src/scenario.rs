@@ -35,7 +35,7 @@ use fa_intents::PostIntent;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload, Erasable, Id128, Oid,
-    Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid, scenario_vid,
+    Reader, TypedRef, Writer, domain_digest, entry_vid, scenario_vid,
 };
 use fa_policy::{Capability, Denial, Intent, Op};
 use fa_time::DateDay;
@@ -602,13 +602,16 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
     row: &VertexRow,
     proposal: &EntryPayload,
 ) -> Outcome<CommitSeq> {
-    // Monetary entries can reuse the caller's key; only this writer's
-    // inline ScenarioControl representation reaches the pure decoder.
+    // Monetary entries can reuse the caller's key. Select this writer's
+    // control class before resolving any retained Entry fragments.
     if !crate::entry_storage::has_class_mirror(row, EntryClass::SCENARIO_CONTROL) {
         return Ok(Err(conflict_with(row)));
     }
-    let (stored, recorded_at) = crate::post::entry_of(row)?;
-    if !crate::outcome::verify_control_recorded(db, row, &stored)? {
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    let recorded_at = row.created_at;
+    if !crate::entry_storage::mirrors_match(row, &stored)?
+        || !crate::outcome::verify_control_recorded(db, row, &stored)?
+    {
         return Ok(Err(conflict_with(row)));
     }
     if stored.proposal_digest == proposal.proposal_digest()? {
@@ -894,7 +897,12 @@ pub async fn open_scenario<V: asupersync::fs::Vfs + Clone>(
     ];
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut in_case, &entry, evid)?;
     crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(scenario, vec![label::SCENARIO], props);
     in_case.add_edge(
@@ -1305,7 +1313,12 @@ pub async fn plan_into_scenario<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut in_case, &entry, evid)?;
     crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.add_edge(
         edge_id(relation::IN_CASE, evid, scenario),
@@ -1387,7 +1400,12 @@ pub async fn discard_scenario<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut in_case, &entry, evid)?;
     crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.compare_and_set_vertex_property(
         scenario,

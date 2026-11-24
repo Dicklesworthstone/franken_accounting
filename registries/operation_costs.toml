@@ -223,10 +223,10 @@ today_posture = "The ScenarioControl, common-key IntentOutcome and scenario proj
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "Open creates Scenario, Entry and IntentOutcome vertices plus one IN_CASE edge. Plan and Discard create Entry and IntentOutcome vertices plus one IN_CASE edge; Discard also moves the existing state. Counterfactual accounting remains confined to scratch replay."
+derived_objects = "Open creates Scenario, Entry and IntentOutcome vertices plus one IN_CASE edge. Plan and Discard create Entry and IntentOutcome vertices plus one IN_CASE edge; Discard also moves the existing state. Entries exceeding 4 KiB add ceil(canonical_entry_bytes/4096) immutable EntryFragment vertices in that same publication. Counterfactual accounting remains confined to scratch replay."
 hot_object_exceptions = []
 external_authorities = "none"
-complexity_witness = "Existing source-prefix selection and scenario intent reads retain their history-dependent cost. Common-key admission uses metadata point witnesses and authenticated genesis or recovered-key coverage. Each lifecycle record observed by a view or retry additionally authenticates original Entry and claim snapshots; this does not make scenario replay constant-time."
+complexity_witness = "Existing source-prefix selection and scenario intent reads retain their history-dependent cost. Common-key admission uses metadata point witnesses and authenticated genesis or recovered-key coverage. Each lifecycle record observed by a view or retry additionally authenticates original Entry and claim snapshots. Storage publication and authenticated reads add O(canonical entry bytes + fragment count); this does not make scenario replay constant-time."
 notes = "The lifecycle record key is distinct from its retained counterfactual intent key. Exact retries publish nothing and remain valid after discard. Immutable pre-claim records remain retry anchors, while damaged modern claims fail closed. No shared mutable outcome head, extra publication or measured latency claim."
 
 [[operation_class]]
@@ -444,15 +444,15 @@ id = "restatement_case_post"
 name = "Restatement case post"
 substrate_class = "Batch post"
 substrate_transactions = "1 — the case's entries and its Posted LifecycleTransition are one write_ordered transaction, so a crash leaves either nothing or everything"
-today_posture = "One publication (two ordered syncs) committing the case's derived entries as one batch, the CaseControl Post record (LifecycleTransition Approved → Posted, extension 24) and the case state compare-and-set; PriorPeriodAdjustment cases only in this build (fa-75j4). The diff Certificate is retained by the earlier Rehearse record, not by this publication"
+today_posture = "One publication (two ordered syncs) committing the case's derived entries as one batch, the CaseControl Post record (LifecycleTransition Approved → Posted, extension 24), its Entry fragments and the case state compare-and-set. The diff Certificate is retained by the earlier Rehearse record, not by this publication"
 today_transactions = 1
 barrier_count = 2
 today_barrier_count = 2
-derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member claims + 1 batch IntentOutcome root + N IN_BATCH edges + 1 CaseControl Post entry + N+1 IN_CASE edges; the diff Certificate is a prior Rehearse transaction's"
+derived_objects = "N case Entry/Leg censuses + N common-key IntentOutcome member claims + 1 batch IntentOutcome root + N IN_BATCH edges + 1 CaseControl Post entry + N+1 IN_CASE edges. A Post control exceeding 4 KiB adds ceil(canonical_entry_bytes/4096) immutable EntryFragment vertices; the diff Certificate is a prior Rehearse transaction's"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "Sum of N member preparations, each re-reading the Approved case state (a point witness), its manifest and the scenario Plan record and re-deriving its entry, + final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + 1 state compare-and-set in one transaction. A PriorPeriodAdjustment member additionally witnesses its recorded historical PeriodRef and folds O(snapshot vertices + account-role controls) retained_earnings history; the batch carries the exact-prefix publication guard so intervening role changes require fresh preparation. No extra publication or shared cell."
-notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell; bounded by max_batch_entries (8190) and max_batch_template_bytes (14439152 B, FA-REF-201)"
+complexity_witness = "Sum of N member preparations, each re-reading the Approved case state, its authenticated lifecycle controls and the selected scenario Plan record and re-deriving its entry. Source roots, fragments, original outcome claims and membership edges are point witnesses; reads scale with their canonical bytes and fragment counts. Add final-overlay capacity fold O(snapshot vertices + journal legs) with native row/insertion witnesses + 1 Post entry + its fragment bytes + 1 state compare-and-set in one transaction. The existing exact batch template tracker includes every Post fragment. A PriorPeriodAdjustment member additionally witnesses its recorded historical PeriodRef and folds O(snapshot vertices + account-role controls) retained_earnings history; the batch carries the exact-prefix publication guard so intervening role changes require fresh preparation. No extra publication or shared cell."
+notes = "dual-control approvals and the rehearsal's diff Certificate are prior transactions; the case state compare-and-set is on the case's own RestatementCase vertex, not a book-wide cell. Case manifests and Post controls also retain max_proof_refs (256) and canonical extension limits, even though max_batch_entries is 8190; max_batch_template_bytes remains 14439152 B (FA-REF-201). Fragment storage changes no accounting, approval or proof-count bound."
 
 [[operation_class]]
 id = "register_maintenance_flush"

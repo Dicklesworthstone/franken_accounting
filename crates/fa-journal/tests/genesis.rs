@@ -71,6 +71,8 @@ mod external_subledger_tests;
 mod fx_law_tests;
 #[path = "genesis/import_outcome_keys.rs"]
 mod import_outcome_keys;
+#[path = "genesis/large_control_storage.rs"]
+mod large_control_storage;
 #[path = "genesis/migration_limits.rs"]
 mod migration_limit_tests;
 #[path = "genesis/outcome_batch_integrity.rs"]
@@ -11922,7 +11924,7 @@ fn raw_case_disclosure_requires_comparisons_and_the_exact_post_witness() {
             (0..fa_journal::case::MAX_DISCLOSURE_COMPARISONS)
                 .map(|index| token(post, index as u128))
                 .collect(),
-            "12 KiB",
+            "not retained",
         ),
     ] {
         let head = h.db.frontier().unwrap();

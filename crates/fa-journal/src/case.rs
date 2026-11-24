@@ -67,8 +67,8 @@ use fa_model::limits::{MAX_BATCH_ENTRIES, MAX_PERIOD_REF_BYTES};
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
     AccountType, ApprovalRef, ControlKind, ControlPayload, EntryClass, EntryOrigin, EntryPayload,
-    Erasable, Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_mirrors, entry_vid,
-    period_vid, report_certificate_vid, restatement_case_vid, scenario_vid,
+    Erasable, Id128, Oid, Reader, TypedRef, Writer, domain_digest, entry_vid, period_vid,
+    report_certificate_vid, restatement_case_vid, scenario_vid,
 };
 use fa_policy::{Capability, Intent};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -118,11 +118,6 @@ pub const DISCLOSURE_VERSION: u16 = 2;
 const DISCLOSURE_DOMAIN: &[u8] = b"fa:case-disclosure:v2";
 /// Document and review consume two of the lifecycle's bounded proof refs.
 pub const MAX_DISCLOSURE_COMPARISONS: usize = fa_model::limits::MAX_PROOF_REFS - 2;
-/// A 12 KiB payload leaves room for byte-scalar expansion and the fixed
-/// Entry mirrors within the pinned substrate's 16 KiB encoded vertex row.
-/// The full entry (both copies of the digests and sealed description) is
-/// priced before opening the publication transaction.
-const MAX_DISCLOSURE_ENTRY_BYTES: usize = 12 * 1024;
 const CLOSE_DOMAIN: &[u8] = b"fa:case-close:v1";
 const RECORD_KEY_DOMAIN: &[u8] = b"fa:case-record-key:v1";
 
@@ -946,13 +941,15 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
             "resubmit the identical request to get its recorded outcome, or use a new --key",
         )
     };
-    // This writer emits inline CaseControl records. A monetary root at a
-    // reused key is refused before the pure control decoder sees its manifest.
+    // A monetary root at a reused key is refused before resolving any
+    // retained Entry fragments under this control's authority.
     if !crate::entry_storage::has_class_mirror(row, EntryClass::CASE_CONTROL) {
         return Ok(Err(conflict()));
     }
-    let (stored, recorded_at) = crate::post::entry_of(row)?;
-    if stored.approvals.as_slice() != approvals
+    let stored = crate::entry_storage::decode_at(db, row, db.frontier()?)?;
+    let recorded_at = row.created_at;
+    if !crate::entry_storage::mirrors_match(row, &stored)?
+        || stored.approvals.as_slice() != approvals
         || !crate::outcome::verify_control_recorded(db, row, &stored)?
     {
         return Ok(Err(conflict()));
@@ -980,6 +977,82 @@ fn recorded_or_conflict<V: asupersync::fs::Vfs + Clone>(
         }
         (Err(e), _) | (_, Err(e)) => Err(e.into()),
     }
+}
+
+/// Bind an already selected immutable control and all of its storage
+/// fragments to this transaction. A manifest, rehearsal or transition may
+/// have been read before the transaction began; its root alone cannot
+/// witness a concurrent change to a retained fragment.
+fn witness_control_source<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    record: VId,
+    class: EntryClass,
+    object: VId,
+) -> Result<(), KernelError> {
+    let corrupt = || {
+        KernelError::Corrupt(format!(
+            "case source control {:032x} no longer matches its original record",
+            record.0
+        ))
+    };
+    let row = txn.vertex(db, record)?.ok_or_else(corrupt)?;
+    // Select the admitted book and class before resolving fragments.
+    if !crate::entry_storage::has_class_mirror(&row, class)
+        || bytes(&row, property::BOOK_ID, "case source book")? != book.book_id.0
+    {
+        return Err(corrupt());
+    }
+    let entry = crate::entry_storage::decode_staged(txn, db, &row)?;
+    if !crate::entry_storage::mirrors_match(&row, &entry)?
+        || entry.proposal.book_id != book.book_id
+        || entry.proposal.branch_id != Id128::TRUNK
+        || entry.proposal.class != class
+        || !matches!(&entry.proposal.control,
+            Some(ControlPayload::LifecycleTransition { object_ref, .. }) if *object_ref == object)
+        || !crate::outcome::verify_control_recorded_at(db, &row, &entry, txn.basis())?
+    {
+        return Err(corrupt());
+    }
+    // Absence is a witness too for authentic legacy controls that predate
+    // the common successful-intent claim protocol.
+    txn.vertex(db, crate::outcome::entry_outcome_vid(&entry.proposal))?;
+    let membership = txn
+        .edge(db, edge_id(relation::IN_CASE, record, object))?
+        .ok_or_else(corrupt)?;
+    if membership.entry.src != record
+        || membership.entry.dst != object
+        || membership.entry.relation != relation::IN_CASE
+        || membership.entry.created_at != row.created_at
+        || membership
+            .entry
+            .retired_at
+            .is_some_and(|at| at <= txn.basis())
+        || !membership.props.is_empty()
+    {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
+fn witness_case_history<V: asupersync::fs::Vfs + Clone>(
+    txn: &WriteTxn,
+    db: &Database<V>,
+    book: &BookContext,
+    view: &CaseView,
+) -> Result<(), KernelError> {
+    for transition in &view.transitions {
+        witness_control_source(
+            txn,
+            db,
+            book,
+            transition.control_entry,
+            EntryClass::CASE_CONTROL,
+            view.vid,
+        )?;
+    }
+    Ok(())
 }
 
 /// The case body an Open record carries; `None` for any other entry.
@@ -1131,7 +1204,12 @@ pub async fn open_case<V: asupersync::fs::Vfs + Clone>(
     ];
     props.sort_by_key(|(k, _)| k.0);
     let mut in_case = WriteBatch::new(relation::IN_CASE);
-    in_case.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_case.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut in_case, &entry, evid)?;
     crate::outcome::stage_control(&mut in_case, &entry, evid)?;
     in_case.create_vertex(vid, vec![label::RESTATEMENT_CASE], props);
     in_case.add_edge(edge_id(relation::IN_CASE, evid, vid), evid, vid, vec![]);
@@ -1279,6 +1357,9 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(wrong_state(ordinal, state, "Determine", "Proposed")));
     }
+    let view = read_case(db, book, ordinal)?
+        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?;
+    witness_case_history(&txn, db, book, &view)?;
     if let Err(r) = witness_document(&txn, db, &determination.authority, "authority")? {
         txn.abort();
         return Ok(Err(r));
@@ -1292,7 +1373,12 @@ pub async fn determine_case<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
-    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
     crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
@@ -1449,6 +1535,9 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(wrong_state(ordinal, state, "Rehearse", "Determined")));
     }
+    let view = read_case(db, book, ordinal)?
+        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?;
+    witness_case_history(&txn, db, book, &view)?;
     let body = CaseBody::decode(&bytes(&row, property::FA_PAYLOAD, "case._fa_payload")?)?;
     let missing: Vec<&str> = body
         .periods
@@ -1508,6 +1597,16 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
             rehearsal.scenario
         ))));
     }
+    for record in &rehearsal.intents {
+        witness_control_source(
+            &txn,
+            db,
+            book,
+            *record,
+            EntryClass::SCENARIO_CONTROL,
+            scenario,
+        )?;
+    }
     if body.kind == CaseKind::PriorPeriodAdjustment {
         for planned in planned.iter().take(rehearsal.intents.len()) {
             let input = planned.intent.proposal();
@@ -1553,7 +1652,12 @@ pub async fn rehearse_case<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
-    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
     crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
@@ -1764,6 +1868,21 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
         txn.abort();
         return Ok(Err(wrong_state(ordinal, state, "Approve", "Rehearsed")));
     }
+    witness_case_history(&txn, db, book, &view)?;
+    let rehearsal = view.rehearsal.as_ref().ok_or_else(|| {
+        KernelError::Corrupt(format!("rehearsed case {ordinal} carries no rehearsal"))
+    })?;
+    let scenario = scenario_vid(book.book_id, &rehearsal.scenario);
+    for entry in &manifest.entries {
+        witness_control_source(
+            &txn,
+            db,
+            book,
+            entry.plan,
+            EntryClass::SCENARIO_CONTROL,
+            scenario,
+        )?;
+    }
     // Segregation of duties (plan §8.3, §14.3): two Human approvals of
     // exactly this manifest under the current epoch, none by a principal
     // who planned any of the case's entries.
@@ -1811,7 +1930,12 @@ pub async fn approve_case<V: asupersync::fs::Vfs + Clone>(
     }
     let entry = proposal.clone().seal(approvals, None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
-    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
     crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
@@ -2291,6 +2415,7 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
     let Some(view) = read_case(db, book, member.ordinal)? else {
         return Ok(Err(unknown(member.ordinal)));
     };
+    witness_case_history(txn, db, book, &view)?;
     // A delta-law entry corrects the period it is dated in, so that period
     // is one the case affects.
     let delta = posting_class(view.body.kind).and_then(delta_kind).is_some();
@@ -2351,6 +2476,14 @@ pub(crate) fn admit_member<V: asupersync::fs::Vfs + Clone>(
                 member.ordinal, member.plan.0, rehearsal.scenario
             ))
         })?;
+    witness_control_source(
+        txn,
+        db,
+        book,
+        member.plan,
+        EntryClass::SCENARIO_CONTROL,
+        scenario_vid(book.book_id, &rehearsal.scenario),
+    )?;
     let intent = planned
         .intent
         .canonical_bytes()
@@ -2614,7 +2747,7 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
         )));
     }
     let entry = proposal.seal(Vec::new(), None)?;
-    let mirrors = entry_mirrors(&entry)?;
+    let mirrors = crate::entry_storage::stored_mirrors(&entry)?;
     staged
         .template_tracker
         .create_vertex(relation::IN_CASE, evid, 1, &mirrors);
@@ -2627,6 +2760,10 @@ pub async fn post_case_with_crash<V: asupersync::fs::Vfs + Clone>(
     );
     let mut in_case = WriteBatch::new(relation::IN_CASE);
     in_case.create_vertex(evid, vec![label::ENTRY], mirrors);
+    crate::entry_storage::stage(&ctx.query(), &mut in_case, &entry, evid)?;
+    staged
+        .template_tracker
+        .record_object_stage(relation::IN_CASE, &entry.encode()?);
     crate::outcome::stage_control_tracked(
         &mut in_case,
         &mut staged.template_tracker,
@@ -2984,6 +3121,9 @@ where
         txn.abort();
         return Ok(Err(r));
     }
+    let view = read_case(db, book, ordinal)?
+        .ok_or_else(|| KernelError::Corrupt(format!("case {ordinal} vanished")))?;
+    witness_case_history(&txn, db, book, &view)?;
     if proposal.validate().is_err() {
         txn.abort();
         return Ok(Err(usage(
@@ -2996,7 +3136,12 @@ where
     }
     let entry = proposal.seal(Vec::new(), None)?;
     let mut batch = WriteBatch::new(relation::IN_CASE);
-    batch.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    batch.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut batch, &entry, evid)?;
     crate::outcome::stage_control(&mut batch, &entry, evid)?;
     batch.compare_and_set_vertex_property(
         vid,
@@ -3092,11 +3237,6 @@ pub async fn disclose_case<V: asupersync::fs::Vfs + Clone>(
         Some((fa_model::entry::CASE_DISCLOSURE_EXTENSION, bytes)),
     );
     proposal.schema_minor = fa_model::entry::CASE_DISCLOSURE_SCHEMA_MINOR;
-    if proposal.clone().seal(Vec::new(), None)?.encode()?.len() > MAX_DISCLOSURE_ENTRY_BYTES {
-        return Ok(Err(comparison_refused(
-            "the complete disclosure entry exceeds the 12 KiB native payload bound; its comparison set cannot be truncated",
-        )));
-    }
     transition(
         db,
         ctx,
