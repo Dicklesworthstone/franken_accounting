@@ -76,10 +76,11 @@ fn manifest(bytes: &[u8]) -> Result<Manifest, DecodeError> {
     let book = r.fixed("bank_import.book")?;
     let account = r.u128("bank_import.account")?;
     let parser = r.u8("bank_import.parser")?;
-    if !(1..=6).contains(&parser) {
+    if !(1..=7).contains(&parser) {
         return Err(r.error("bank_import.parser", Reason::BadTag(parser)));
     }
-    if r.u16("bank_import.parser_revision")? != 1 {
+    let revision = r.u16("bank_import.parser_revision")?;
+    if revision != 1 && (parser != 4 || revision != 2) {
         return Err(r.error("bank_import.parser_revision", Reason::BadTag(0)));
     }
     let statement_oid = r.fixed("bank_import.statement_oid")?;

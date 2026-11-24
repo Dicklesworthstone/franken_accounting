@@ -24,7 +24,6 @@ use crate::rows::{edge_id, prop, scalar_bytes};
 
 const IMPORT_MAGIC: &[u8; 14] = b"FA-BANK-IMPORT";
 const IMPORT_MINOR: u16 = 0;
-const PARSER_REVISION: u16 = 1;
 const LINK_MAGIC: &[u8; 12] = b"FA-BANK-LINK";
 const LINK_DOMAIN: &[u8] = b"fa:bank-statement-link:v1";
 const COMPACT_LINK_DOMAIN: &[u8] = b"fa:bank-statement-link:v2";
@@ -97,6 +96,8 @@ pub enum BankFormat {
     Camt052,
     Bai2,
     Ofx,
+    /// A retained OFX parser revision 1 manifest. New requests select `Ofx`.
+    OfxRevisionOne,
     Mt940,
     Csv,
     /// A saved `fwc` Plaid `transactions_sync` robot payload (`fa_formats::fwc`,
@@ -111,7 +112,7 @@ impl BankFormat {
             Self::Camt053 => "camt053",
             Self::Camt052 => "camt052",
             Self::Bai2 => "bai2",
-            Self::Ofx => "ofx",
+            Self::Ofx | Self::OfxRevisionOne => "ofx",
             Self::Mt940 => "mt940",
             Self::Csv => "csv",
             Self::PlaidSync => "plaid-sync",
@@ -132,12 +133,20 @@ impl BankFormat {
         }
     }
 
+    #[must_use]
+    pub const fn parser_revision(self) -> u16 {
+        match self {
+            Self::Ofx => 2,
+            _ => 1,
+        }
+    }
+
     const fn tag(self) -> u8 {
         match self {
             Self::Camt053 => 1,
             Self::Camt052 => 2,
             Self::Bai2 => 3,
-            Self::Ofx => 4,
+            Self::Ofx | Self::OfxRevisionOne => 4,
             Self::Mt940 => 5,
             Self::Csv => 6,
             Self::PlaidSync => 7,
@@ -162,7 +171,7 @@ impl BankFormat {
         match self {
             Self::Camt053 | Self::Camt052 => "application/xml",
             Self::Csv => "text/csv",
-            Self::Ofx => "application/x-ofx",
+            Self::Ofx | Self::OfxRevisionOne => "application/x-ofx",
             Self::Bai2 | Self::Mt940 => "text/plain",
             Self::PlaidSync => "application/json",
         }
@@ -207,7 +216,7 @@ impl BankImportManifest {
             .fixed(&self.book_id.0)
             .u128(self.account.0)
             .u8(self.format.tag())
-            .u16(PARSER_REVISION)
+            .u16(self.format.parser_revision())
             .fixed(&self.statement_oid.0)
             .fixed(&self.statement_commit)
             .u32(self.unit.0)
@@ -241,9 +250,11 @@ impl BankImportManifest {
         let account = VId(r.u128("bank_import.account")?);
         let format = BankFormat::from_tag(r.u8("bank_import.parser")?)
             .ok_or_else(|| r.invalid("bank_import.parser"))?;
-        if r.u16("bank_import.parser_revision")? != PARSER_REVISION {
-            return Err(r.invalid("bank_import.parser_revision"));
-        }
+        let format = match (format, r.u16("bank_import.parser_revision")?) {
+            (BankFormat::Ofx, 1) => BankFormat::OfxRevisionOne,
+            (current, revision) if revision == current.parser_revision() => current,
+            _ => return Err(r.invalid("bank_import.parser_revision")),
+        };
         let result = Self {
             book_id,
             account,

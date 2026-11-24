@@ -49,8 +49,6 @@ pub use fa_registers::reconciliation::{ReconciliationRegister, UnpostedResidualF
 pub(crate) use kiting::PreparedBankTransfers;
 pub use reconciliation::BankReconciliationRequest;
 
-const PARSER_REVISION: u16 = 1;
-
 /// A statement and its manifest occupy the two remaining slots of the
 /// registered atomic Docket import bound. No partial statement is admitted.
 pub const MAX_BANK_LINES: usize = fa_model::limits::MAX_IMPORT_DOCUMENTS - 2;
@@ -325,6 +323,7 @@ fn parsed(
         BankFormat::Camt052 => fa_formats::bank::parse_camt052,
         BankFormat::Bai2 => fa_formats::bank::parse_bai2,
         BankFormat::Ofx => fa_formats::bank::parse_ofx_qbo,
+        BankFormat::OfxRevisionOne => fa_formats::bank::replay_ofx_qbo_revision_one,
         BankFormat::Mt940 => fa_formats::bank::parse_mt940,
         BankFormat::Csv => fa_formats::bank::parse_bank_csv,
         BankFormat::PlaidSync => parse_plaid_sync,
@@ -405,6 +404,14 @@ struct VerifiedBankImport {
     witness: BankImportWitness,
 }
 
+/// Canonical output of one interpretation before any ledger effects.
+struct BankInterpretation {
+    extract: BankStatementExtract,
+    documents: Vec<Document>,
+    manifest: BankImportManifest,
+    manifest_document: Document,
+}
+
 fn predecessor_error(message: impl Into<String>) -> Refusal {
     Refusal::new(
         code::BANK_CONTINUITY,
@@ -417,12 +424,13 @@ fn predecessor_error(message: impl Into<String>) -> Refusal {
 
 fn same_bank_source(
     current: &BankStatementExtract,
-    previous: &BankStatementExtract,
+    previous_instrument: &str,
+    previous_currency: &str,
 ) -> Result<(), Refusal> {
     if current.instrument_account_id.trim().is_empty()
-        || previous.instrument_account_id.trim().is_empty()
-        || current.instrument_account_id != previous.instrument_account_id
-        || current.currency != previous.currency
+        || previous_instrument.trim().is_empty()
+        || current.instrument_account_id != previous_instrument
+        || current.currency != previous_currency
     {
         return Err(predecessor_error(
             "the retained predecessor identifies a different bank account or currency, or its bank identity is absent",
@@ -514,6 +522,81 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .await
     }
 
+    fn interpret_bank_statement(
+        &self,
+        source: &Document,
+        format: BankFormat,
+        account: VId,
+        csv_layout: Option<&BankCsvLayout>,
+        previous: Option<&BankImportWitness>,
+        policy: &EvidencePolicy,
+    ) -> Outcome<BankInterpretation> {
+        let extract = match parsed(format, &source.bytes, csv_layout) {
+            Ok(extract) => extract,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let Some(unit) = self.context().units.lookup(&extract.currency) else {
+            return Ok(Err(intake_error(
+                "the statement currency is not registered in this book",
+            )));
+        };
+        if extract.lines.iter().any(|line| line.amount.unit != unit) {
+            return Ok(Err(intake_error(
+                "parsed line units differ from the statement's registered book currency",
+            )));
+        }
+        let lines = bank_lines(&extract, source.oid());
+        let mut documents = Vec::with_capacity(lines.len() + 2);
+        let derived_grade = fa_journal::upload::upload_grade(policy, Profile::Agent)?;
+        let line_kind = policy_kind(policy, "Other")?;
+        let mut line_oids = Vec::with_capacity(lines.len());
+        for line in lines {
+            let bytes = line.canonical_bytes().map_err(|e| corrupt(e.to_string()))?;
+            BankStatementLine::decode(&bytes).map_err(|e| corrupt(e.to_string()))?;
+            let document = Document {
+                book_id: self.context().book_id,
+                kind: line_kind,
+                mime: LINE_MIME.into(),
+                grade: derived_grade,
+                retrieved_by: source.retrieved_by,
+                bytes,
+            };
+            line_oids.push(document.oid());
+            documents.push(document);
+        }
+        let manifest = BankImportManifest {
+            book_id: self.context().book_id,
+            account,
+            format,
+            statement_oid: source.oid(),
+            statement_commit: source.doc_commit(),
+            unit,
+            sequence_number: extract.sequence_number,
+            statement_date: extract.statement_date,
+            opening_balance: extract.opening_balance,
+            closing_balance: extract.closing_balance,
+            line_oids,
+            csv_layout: csv_layout.cloned(),
+            predecessor: previous.map(BankImportWitness::predecessor),
+        };
+        let manifest_document = Document {
+            book_id: manifest.book_id,
+            kind: policy_kind(policy, "Workpaper")?,
+            mime: MANIFEST_MIME.into(),
+            grade: derived_grade,
+            retrieved_by: source.retrieved_by,
+            bytes: manifest
+                .canonical_bytes()
+                .map_err(|e| corrupt(e.to_string()))?,
+        };
+        Ok(Ok(BankInterpretation {
+            extract,
+            documents,
+            manifest,
+            manifest_document,
+        }))
+    }
+
     async fn import_bank_statement_inner(
         &mut self,
         cx: &PurposeContexts,
@@ -532,25 +615,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 policy.max_document_bytes,
             ))));
         }
-        let extract = match parsed(request.format, &request.bytes, csv_layout.as_ref()) {
-            Ok(extract) => extract,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let Some(unit) = self.context().units.lookup(&extract.currency) else {
+        if request.format == BankFormat::OfxRevisionOne {
             return Ok(Err(intake_error(
-                "the statement currency is not registered in this book",
-            )));
-        };
-        if extract.lines.iter().any(|line| line.amount.unit != unit) {
-            return Ok(Err(intake_error(
-                "parsed line units differ from the statement's registered book currency",
+                "OFX revision 1 is available only to replay retained evidence",
             )));
         }
-        let known_at = self.head(cx)?;
-        let account = match self.bank_account(cx, request.account, unit, known_at)? {
-            Ok(account) => account,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
         let source = Document {
             book_id: self.context().book_id,
             kind: policy_kind(&policy, "BankStatement")?,
@@ -559,7 +628,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             retrieved_by: capability.holder(),
             bytes: request.bytes,
         };
-        let predecessors = if let Some(previous_oid) = request.previous_manifest {
+        let known_at = self.head(cx)?;
+        let (predecessors, previous_source) = if let Some(previous_oid) = request.previous_manifest
+        {
             let previous = match self
                 .load_bank_import(cx, capability, previous_oid, known_at)
                 .await?
@@ -567,9 +638,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(previous) => previous,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            if let Err(refusal) = same_bank_source(&extract, &previous.extract) {
-                return Ok(Err(refusal));
-            }
             let witnesses = match self
                 .verify_bank_predecessors(cx, capability, &previous, known_at)
                 .await?
@@ -588,68 +656,87 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "the selected predecessor history already contains this source statement",
                 )));
             }
-            witnesses
+            (
+                witnesses,
+                Some((
+                    previous.extract.instrument_account_id,
+                    previous.extract.currency,
+                )),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
-        let lines = bank_lines(&extract, source.oid());
-        let mut documents = Vec::with_capacity(lines.len() + 2);
-        let derived_grade = fa_journal::upload::upload_grade(&policy, Profile::Agent)?;
-        let line_kind = policy_kind(&policy, "Other")?;
-        let mut line_oids = Vec::with_capacity(lines.len());
-        for line in lines {
-            let bytes = line.canonical_bytes().map_err(|e| corrupt(e.to_string()))?;
-            BankStatementLine::decode(&bytes).map_err(|e| corrupt(e.to_string()))?;
-            let document = Document {
-                book_id: self.context().book_id,
-                kind: line_kind,
-                mime: LINE_MIME.into(),
-                grade: derived_grade,
-                retrieved_by: capability.holder(),
-                bytes,
-            };
-            line_oids.push(document.oid());
-            documents.push(document);
+        let interpret = |format| {
+            self.interpret_bank_statement(
+                &source,
+                format,
+                request.account,
+                csv_layout.as_ref(),
+                predecessors.first(),
+                &policy,
+            )
+        };
+        let mut candidate = interpret(request.format)?;
+        let mut previous_receipt = if let Ok(current) = &candidate {
+            match self.bank_import_receipt(
+                cx,
+                &current.manifest,
+                current.manifest_document.oid(),
+            )? {
+                Ok(receipt) => receipt,
+                Err(refusal) => return Ok(Err(refusal)),
+            }
+        } else {
+            None
+        };
+        // Only a verified, exact old receipt selects revision 1. In particular,
+        // holding the source XML (or an unrelated import) cannot admit new
+        // evidence under the retired interpretation. Current exact retries have
+        // already resolved above and do not consult the retired reader.
+        if request.format == BankFormat::Ofx
+            && previous_receipt.is_none()
+            && self.query(cx, |db, _| {
+                Ok(fa_journal::evidence::document_record(db, &source.oid())?.is_some())
+            })?
+            && let Ok(old) = interpret(BankFormat::OfxRevisionOne)?
+        {
+            match self.bank_import_receipt(cx, &old.manifest, old.manifest_document.oid())? {
+                Ok(Some(receipt)) => {
+                    candidate = Ok(old);
+                    previous_receipt = Some(receipt);
+                }
+                Ok(None) => {}
+                Err(refusal) => return Ok(Err(refusal)),
+            }
         }
-        let manifest = BankImportManifest {
-            book_id: self.context().book_id,
-            account: request.account,
-            format: request.format,
-            statement_oid: source.oid(),
-            statement_commit: source.doc_commit(),
-            unit,
-            sequence_number: extract.sequence_number,
-            statement_date: extract.statement_date,
-            opening_balance: extract.opening_balance,
-            closing_balance: extract.closing_balance,
-            line_oids,
-            csv_layout,
-            predecessor: predecessors.first().map(BankImportWitness::predecessor),
+        let BankInterpretation {
+            extract,
+            mut documents,
+            manifest,
+            manifest_document,
+        } = match candidate {
+            Ok(candidate) => candidate,
+            Err(refusal) => return Ok(Err(refusal)),
         };
+        let account = match self.bank_account(cx, request.account, manifest.unit, known_at)? {
+            Ok(account) => account,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Some((instrument, currency)) = previous_source
+            && let Err(refusal) = same_bank_source(&extract, &instrument, &currency)
+        {
+            return Ok(Err(refusal));
+        }
         if let Some(previous) = predecessors.first()
             && let Err(refusal) = manifest.verify_predecessor(previous)
         {
             return Ok(Err(refusal));
         }
+        let manifest_oid = manifest_document.oid();
         let mut derivations = documents.clone();
         documents.push(source);
-        let manifest_document = Document {
-            book_id: manifest.book_id,
-            kind: policy_kind(&policy, "Workpaper")?,
-            mime: MANIFEST_MIME.into(),
-            grade: derived_grade,
-            retrieved_by: capability.holder(),
-            bytes: manifest
-                .canonical_bytes()
-                .map_err(|e| corrupt(e.to_string()))?,
-        };
-        let manifest_oid = manifest_document.oid();
         derivations.push(manifest_document.clone());
         documents.push(manifest_document);
-        let previous_receipt = match self.bank_import_receipt(cx, &manifest, manifest_oid)? {
-            Ok(receipt) => receipt,
-            Err(refusal) => return Ok(Err(refusal)),
-        };
         // An unlinked import recorded before this statement gained predecessor
         // linkage stays an exact repeat: it returns its original receipt. Only
         // a new unlinked manifest meets the recorded link below.
@@ -1258,7 +1345,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &[
                 &manifest.book_id.0,
                 &epoch.to_le_bytes(),
-                &PARSER_REVISION.to_le_bytes(),
+                &manifest.format.parser_revision().to_le_bytes(),
             ],
         );
         let native: Vec<_> = candidates

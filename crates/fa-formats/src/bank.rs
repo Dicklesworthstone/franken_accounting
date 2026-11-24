@@ -11,6 +11,7 @@ use fgdb_crypto::Hasher;
 use crate::{FormatError, UnitCatalog, parse_date_iso, parse_exact_decimal};
 
 mod csv_layout;
+mod ofx;
 pub use csv_layout::parse_bank_csv_with_layout;
 
 /// One parsed bank statement line (`BankLine` projection, plan §9.5).
@@ -342,8 +343,8 @@ fn camt_blocks<'a>(
             }
             let attributes = open[split..].trim();
             camt_attribute(format, attributes, None)?;
-            let selected =
-                name.rsplit(':').next() == Some(tag) && (descendants || stack.is_empty());
+            let selected = (tag == "*" || name.rsplit(':').next() == Some(tag))
+                && (descendants || stack.is_empty());
             if empty {
                 if selected {
                     found.push((
@@ -441,23 +442,6 @@ fn camt_one<'a>(
 ) -> Result<CamtBlock<'a>, FormatError> {
     camt_optional(format, xml, tag)?
         .ok_or_else(|| camt_error(format, format!("missing bank XML {tag}")))
-}
-
-fn bank_xml_one<'a>(
-    format: &'static str,
-    xml: &'a str,
-    tag: &str,
-) -> Result<CamtBlock<'a>, FormatError> {
-    let blocks = camt_blocks(format, xml, tag, true)?;
-    match blocks.as_slice() {
-        [block] => Ok(*block),
-        _ => Err(camt_error(
-            format,
-            format!(
-                "bank XML input needs exactly one {tag}; select one complete account statement"
-            ),
-        )),
-    }
 }
 
 fn camt_text<'a>(format: &'static str, block: CamtBlock<'a>) -> Result<Cow<'a, str>, FormatError> {
@@ -1515,20 +1499,29 @@ fn bai2_trailer(
 }
 
 /// Parse an OFX / Intuit QBO v2 XML statement into a [`BankStatementExtract`].
-/// The bounded profile requires one account, explicit OPENBAL and ISO civil
-/// dates. SGML, timestamp dates and multiple statements are not inferred.
+/// A single bank statement must carry an explicit opening and ledger balance.
+/// Dates may be ISO civil dates or native OFX dates and timestamps.
 pub fn parse_ofx_qbo(text: &str, units: &UnitCatalog) -> Result<BankStatementExtract, FormatError> {
+    ofx_extract(ofx::Statement::parse(text)?, units, ofx::civil_date)
+}
+
+/// Replay OFX interpretations retained under bank parser revision 1.
+pub fn replay_ofx_qbo_revision_one(
+    text: &str,
+    units: &UnitCatalog,
+) -> Result<BankStatementExtract, FormatError> {
+    ofx_extract(ofx::Statement::revision_one(text)?, units, |date| {
+        parse_date_iso("ofx_qbo_v2", date.trim())
+    })
+}
+
+fn ofx_extract(
+    scope: ofx::Statement<'_>,
+    units: &UnitCatalog,
+    date: fn(&str) -> Result<DateDay, FormatError>,
+) -> Result<BankStatementExtract, FormatError> {
     const FMT: &str = "ofx_qbo_v2";
-    // Every value is selected by the same complete-document parser. Textual
-    // searches could otherwise read fake tags inside a comment, even after
-    // the real elements' multiplicity and closing tags had been validated.
-    if camt_blocks(FMT, text, "STMTRS", true)?.len() > 1 {
-        return Err(camt_error(
-            FMT,
-            "multiple OFX statements are outside the bounded profile",
-        ));
-    }
-    let currency = camt_text(FMT, bank_xml_one(FMT, text, "CURDEF")?)?.into_owned();
+    let currency = camt_text(FMT, scope.currency)?.into_owned();
     let (unit_id, unit_scale) =
         units
             .lookup_code(&currency)
@@ -1536,50 +1529,31 @@ pub fn parse_ofx_qbo(text: &str, units: &UnitCatalog) -> Result<BankStatementExt
                 format: FMT,
                 unit: currency.clone(),
             })?;
-    let instrument_id = camt_text(FMT, bank_xml_one(FMT, text, "ACCTID")?)?.into_owned();
-    let sequences = camt_blocks(FMT, text, "TRNUID", true)?;
-    let seq: u64 = match sequences.as_slice() {
-        [] => 1,
-        [sequence] => camt_text(FMT, *sequence)?
-            .parse()
-            .map_err(|_| camt_error(FMT, "invalid OFX TRNUID"))?,
-        _ => {
-            return Err(camt_error(
-                FMT,
-                "multiple OFX sequences are outside the bounded profile",
-            ));
-        }
-    };
-    let opening_balance = parse_exact_decimal(
-        FMT,
-        &camt_text(FMT, bank_xml_one(FMT, text, "OPENBAL")?)?,
-        unit_scale,
-    )?;
-    let ledger_bal_block = bank_xml_one(FMT, text, "LEDGERBAL")?.body;
+    let instrument_id = camt_text(FMT, scope.account)?.into_owned();
+    let seq: u64 = scope
+        .sequence
+        .map(|sequence| {
+            camt_text(FMT, sequence)?
+                .parse()
+                .map_err(|_| camt_error(FMT, "invalid OFX TRNUID"))
+        })
+        .transpose()?
+        .unwrap_or(1);
+    let opening_balance = parse_exact_decimal(FMT, &camt_text(FMT, scope.opening)?, unit_scale)?;
+    let ledger_bal_block = scope.ledger.body;
     let closing_balance = parse_exact_decimal(
         FMT,
         &camt_text(FMT, camt_one(FMT, ledger_bal_block, "BALAMT")?)?,
         unit_scale,
     )?;
-    let statement_date = parse_date_iso(
-        FMT,
-        camt_text(FMT, camt_one(FMT, ledger_bal_block, "DTASOF")?)?.trim(),
-    )?;
+    let statement_date = date(&camt_text(FMT, camt_one(FMT, ledger_bal_block, "DTASOF")?)?)?;
 
     let mut lines = Vec::new();
-    for (idx, block) in camt_blocks(FMT, text, "STMTTRN", true)?
-        .into_iter()
-        .enumerate()
-    {
+    for (idx, block) in scope.transactions.into_iter().enumerate() {
         let trn = block.body;
-        if !camt_blocks(FMT, trn, "STMTTRN", true)?.is_empty() {
-            return Err(camt_error(
-                FMT,
-                "nested OFX transaction envelopes are invalid",
-            ));
-        }
-        let ordinal = (idx as u32) + 1;
-        let dt = parse_date_iso(FMT, camt_text(FMT, camt_one(FMT, trn, "DTPOSTED")?)?.trim())?;
+        let ordinal =
+            u32::try_from(idx + 1).map_err(|_| camt_error(FMT, "too many OFX transactions"))?;
+        let dt = date(&camt_text(FMT, camt_one(FMT, trn, "DTPOSTED")?)?)?;
         let signed = parse_exact_decimal(
             FMT,
             &camt_text(FMT, camt_one(FMT, trn, "TRNAMT")?)?,

@@ -1372,3 +1372,124 @@ fn malformed_declared_csv_never_publishes_partial_imports() {
         assert_eq!(h.book.db.vertices_at(before).unwrap().len(), vertices);
     }
 }
+
+#[test]
+fn retained_ofx_revision_replays_after_reopen_and_cannot_admit_a_new_import() {
+    let mut h = Harness::new(176);
+    let cx = h.cx();
+    let account = account_vid(h.book.context().book_id, "1000");
+    let xml = "<OFX><EXTENSION><CURDEF>USD</CURDEF><ACCTID>CASH</ACCTID><OPENBAL>0.00</OPENBAL><LEDGERBAL><BALAMT>0.00</BALAMT><DTASOF>2026-03-31</DTASOF></LEDGERBAL></EXTENSION></OFX>";
+    let request = |bytes: &str| BankImportRequest {
+        account,
+        format: BankFormat::Ofx,
+        bytes: bytes.as_bytes().to_vec(),
+        previous_manifest: None,
+    };
+    assert!(
+        h.runtime
+            .block_on(
+                h.book
+                    .import_bank_statement(&cx, &cap(PRINCIPAL), request(xml))
+            )
+            .unwrap()
+            .is_err()
+    );
+
+    // Construct the bytes and native receipt a revision-1 writer published.
+    let mut source = h.document("BankStatement", xml.as_bytes().to_vec());
+    source.mime = BankFormat::Ofx.mime().into();
+    let policy = EvidencePolicy::embedded().unwrap();
+    source.grade = fa_journal::upload::upload_grade(&policy, cap(PRINCIPAL).sod_profile()).unwrap();
+    let manifest = BankImportManifest {
+        book_id: h.book.context().book_id,
+        account,
+        format: BankFormat::OfxRevisionOne,
+        statement_oid: source.oid(),
+        statement_commit: source.doc_commit(),
+        unit: h.book.context().units.lookup("USD").unwrap(),
+        sequence_number: 1,
+        statement_date: day(),
+        opening_balance: 0,
+        closing_balance: 0,
+        line_oids: Vec::new(),
+        csv_layout: None,
+        predecessor: None,
+    };
+    let raw = manifest.canonical_bytes().unwrap();
+    assert_eq!(&raw[50..53], &[4, 1, 0]);
+    assert_eq!(BankImportManifest::decode(&raw).unwrap(), manifest);
+    let mut paper = h.document("Workpaper", raw);
+    paper.mime = MANIFEST_MIME.into();
+    let oid = paper.oid();
+    let mut prepared = h.prepare(b"old-ofx", vec![source, paper.clone()]);
+    assert!(
+        prepared
+            .bind_bank_statement(&mut h.book.db, &manifest, None)
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    let prepared = prepared
+        .with_document_derivations(&mut h.book.db, &cx, &[paper])
+        .unwrap()
+        .unwrap();
+    let recorded = h
+        .runtime
+        .block_on(prepared.commit(&mut h.book.db, &cx))
+        .unwrap()
+        .unwrap();
+    let at = h.head();
+    drop(h.book);
+    h.book = h
+        .runtime
+        .block_on(AsyncBook::open_with_vfs(
+            &cx,
+            h.vfs.clone(),
+            Path::new(PATH),
+            h.keys.clone(),
+            Entropy::deterministic(177),
+        ))
+        .unwrap();
+
+    let retry = h
+        .runtime
+        .block_on(
+            h.book
+                .import_bank_statement(&cx, &cap(PRINCIPAL), request(xml)),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.manifest_oid, oid);
+    assert_eq!(retry.receipt.receipt, recorded.receipt);
+    assert!(retry.receipt.already_recorded);
+    let replay = h
+        .runtime
+        .block_on(h.book.match_bank_statement(
+            &cx,
+            &privileged_cap(PRINCIPAL),
+            BankMatchRequest {
+                manifest_oid: oid,
+                known_at: Some(at),
+                date_window_days: 3,
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.manifest, manifest);
+    assert_eq!(h.head(), at);
+
+    let direct = xml.replace("<EXTENSION>", "").replace("</EXTENSION>", "");
+    let fresh = h
+        .runtime
+        .block_on(
+            h.book
+                .import_bank_statement(&cx, &cap(PRINCIPAL), request(&direct)),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        &fresh.manifest.canonical_bytes().unwrap()[50..53],
+        &[4, 2, 0]
+    );
+    assert_eq!(fresh.manifest.format, BankFormat::Ofx);
+}

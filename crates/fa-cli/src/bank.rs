@@ -467,7 +467,7 @@ fn statement(
         ("statement_oid", s(hex(&manifest.statement_oid.0))),
         ("statement_commit", s(hex(&manifest.statement_commit))),
         ("bank_format", s(manifest.format.name())),
-        ("parser_revision", Json::Int(1)),
+        ("parser_revision", Json::Int(i128::from(manifest.format.parser_revision()))),
         ("layout_name", manifest.csv_layout.as_ref().map_or(Json::Null, |layout| s(&layout.name))),
         ("layout_digest", manifest.csv_layout.as_ref().map(|layout| {
             layout.digest().map(|digest| s(hex(&digest.0)))

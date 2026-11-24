@@ -163,6 +163,24 @@ impl Fixture {
 }
 
 #[test]
+fn reconciled_manifest_accepts_only_registered_parser_revisions() {
+    for parser in 0..=8 {
+        for revision in 0_u16..=3 {
+            let mut fixture = Fixture::new(false);
+            fixture.manifest[50] = parser;
+            fixture.manifest[51..53].copy_from_slice(&revision.to_le_bytes());
+            fixture.rebind_manifest();
+            let expected = matches!((parser, revision), (1..=7, 1) | (4, 2));
+            assert_eq!(
+                fixture.verify().is_ok(),
+                expected,
+                "parser {parser} revision {revision}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reconciled_records_preserve_envelopes_for_unlinked_and_linked_manifests() {
     for linked in [false, true] {
         let f = Fixture::new(linked);
