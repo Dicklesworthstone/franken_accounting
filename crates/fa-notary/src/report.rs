@@ -548,6 +548,8 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "numbers.relative_size_factor"
                     | "numbers.threshold_splitting"
                     | "completeness.unrecorded_liabilities"
+                    | "graph.circular_flows"
+                    | "graph.layering"
                     | "ponzi.net_investment"
             )
         {
@@ -1220,6 +1222,103 @@ mod format_tests {
             .bytes(&aging.finish().unwrap())
             .bytes(control);
         outer.finish().unwrap()
+    }
+
+    #[test]
+    fn extended_graph_and_investor_routing_requires_exact_formats_and_versions() {
+        let mut source = Writer::new();
+        source
+            .fixed(b"fa:report-certificate:v3")
+            .str("fa-fold-over-prefix")
+            .str("embedded-owner")
+            .str("fa:open-items:v1")
+            .fixed(&[3; 16])
+            .fixed(&[0; 16])
+            .u64(9)
+            .u8(1)
+            .u8(0);
+        let source = source.finish().unwrap();
+        let wrap =
+            |id: &str, version: u16, evidence: &str, parameters: &[(&str, i128)], extended| {
+                let mut output = Writer::new();
+                output
+                    .bytes(b"fa:procedure-output:v1")
+                    .str(id)
+                    .u16(version)
+                    .u8(0)
+                    .str(evidence)
+                    .fixed(&[3; 16])
+                    .u64(9)
+                    .u8(0)
+                    .list(parameters, |writer, (name, value)| {
+                        writer.str(name).i128(*value);
+                    })
+                    .list::<()>(&[], |_, _| {});
+                let mut certificate = Writer::new();
+                certificate
+                    .bytes(if extended {
+                        b"fa:procedure-certificate:v2"
+                    } else {
+                        b"fa:procedure-certificate:v1"
+                    })
+                    .bytes(&source)
+                    .bytes(&[]);
+                if extended {
+                    certificate.list(&[&[][..]; 6], |writer, witness| {
+                        writer.bytes(witness);
+                    });
+                }
+                certificate
+                    .fixed(&[0; 32])
+                    .u128(7)
+                    .fixed(&[0; 32])
+                    .bytes(&output.finish().unwrap())
+                    .fixed(&[0; 32]);
+                certificate.finish().unwrap()
+            };
+        for (id, version, evidence, parameters) in [
+            (
+                "graph.circular_flows",
+                2,
+                "FA-EVID-L34",
+                vec![
+                    ("max_hops", 6),
+                    ("min_retention_bps", 8500),
+                    ("window_days", 30),
+                ],
+            ),
+            (
+                "graph.layering",
+                3,
+                "FA-EVID-L35",
+                vec![
+                    ("min_hops", 3),
+                    ("min_passthrough_bps", 8000),
+                    ("window_days", 30),
+                ],
+            ),
+            (
+                "ponzi.net_investment",
+                5,
+                "FA-EVID-L56",
+                vec![("cohort_window_days", 90)],
+            ),
+        ] {
+            assert!(
+                procedure_certificate(&wrap(id, version, evidence, &parameters, true)),
+                "{id}"
+            );
+            assert!(
+                !procedure_certificate(&wrap(id, version, evidence, &parameters, false)),
+                "{id}"
+            );
+            for wrong in (0..=6).filter(|wrong| *wrong != version) {
+                assert!(
+                    !procedure_certificate(&wrap(id, wrong, evidence, &parameters, true)),
+                    "{id}@{wrong}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1685,6 +1685,31 @@ The portable profile requires all four parameters (`max_hops`,
 `max_search_steps`, `period_end_days`, `window_days`) and takes no effective
 cutoff.
 
+`graph.circular_flows` v2 and `graph.layering` v3 also export for independent
+offline replay. Circular flows find chronological cycles within strongly
+connected account groups and retain the smallest amount along each path.
+Layering finds chronological pass-through chains with a minimum share
+forwarded at each hop. The verifier reconstructs the transfers from original
+posting legs, keeps units and legal entities separate, and checks the complete
+findings, ordered citations, exact retained amounts, work counts and graph
+decision witnesses. It uses its own graph traversal and refuses the whole
+report if its resource bound is exhausted.
+
+The circular-flow profile accepts `max_hops` (2 through 8),
+`min_retention_bps` and `window_days`; layering accepts `min_hops` (2 through
+8), `min_passthrough_bps` and `window_days`. Their defaults are retained in
+the certificate. Both profiles use the complete population at the saved
+recorded frontier, including reversal and replacement liveness, and take no
+effective-date cutoff or external input handles. Earlier algorithm versions
+and party-projected variants remain outside these portable profiles.
+
+```bash
+fa procedure run graph.circular_flows@2 --certificate-out circular-flows.cert \
+  --book acme.fabook --json
+fa procedure run graph.layering@3 --certificate-out layering.cert \
+  --book acme.fabook --json
+```
+
 Corrected books can be exported when every Replacement uses the current
 target-derived identity and a later authenticated reversal, replacement or
 ordinary settlement reference resolves that identity within the certificate's
