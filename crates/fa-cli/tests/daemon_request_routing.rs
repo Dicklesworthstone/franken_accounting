@@ -44,6 +44,10 @@ fn socket_peer() -> (PathBuf, thread::JoinHandle<Request>) {
                 Err(error) => panic!("accept: {error}"),
             }
         };
+        // The listener bounds accept by polling. The accepted stream can
+        // inherit nonblocking mode on BSD, where timeouts do not make
+        // read_exact wait for the rest of a frame.
+        stream.set_nonblocking(false).expect("blocking test peer");
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
