@@ -738,6 +738,20 @@ class XbrlFacts(unittest.TestCase):
             self.assertIn(f">{row[8]}<", lines[n - 1])
         self.assertIn("srt:RestatementAxis=srt:RestatementAdjustmentMember", rows[1][7])
 
+    def test_each_command_parses_one_instance_for_all_cited_facts(self):
+        case = Case(self).seed()
+        for command in ("verify", "xbrl-facts"):
+            with self.subTest(command=command), mock.patch.object(
+                    cf, "Instance", wraps=cf.Instance) as parse, mock.patch.object(
+                    cf, "Located", wraps=cf.Located) as locate:
+                code, out, _ = case.run(command)
+                self.assertEqual(code, 0, out)
+                self.assertIn("FX-XBRL", out)
+                self.assertIn("FX-XBRL-ADJ", out)
+                self.assertEqual(parse.call_count, 1)
+                self.assertTrue(all("<xbrli:xbrl" not in call.args[0]
+                                    for call in locate.call_args_list))
+
     DUPLICATED = (
         '<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"'
         ' xmlns:iso4217="http://www.xbrl.org/2003/iso4217"'
@@ -759,7 +773,7 @@ class XbrlFacts(unittest.TestCase):
                    "value": str(int(literal) * 100), "unit": "USD", "precision": 3}]
         b = cf.Binding(fact)
         b.member_ok = True
-        cf.bind_xbrl(document or self.DUPLICATED, fact, values, {"USD": 2}, b)
+        cf.bind_xbrl(cf.Instance(document or self.DUPLICATED), fact, values, {"USD": 2}, b)
         return b
 
     def test_duplicates_that_agree_are_one_fact(self):

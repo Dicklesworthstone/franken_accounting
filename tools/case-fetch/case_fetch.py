@@ -75,6 +75,7 @@ import urllib.request
 import xml.parsers.expat
 import zlib
 from fractions import Fraction
+from functools import cached_property
 from pathlib import Path
 
 import fifo_worksheet
@@ -1765,7 +1766,7 @@ class Instance:
     """An XBRL instance's contexts, units and facts, each fact with its line."""
 
     def __init__(self, text):
-        self.contexts, self.units, self.facts = {}, {}, []
+        self.contexts, self.units, self.facts = {}, {}, {}
         self.currencies = {}
         namespaces = {}
         unit_measures = []
@@ -1833,10 +1834,10 @@ class Instance:
                         and uri == "http://www.xbrl.org/2003/iso4217"):
                     unit_currency = code
             elif "contextRef" in attrs:
-                self.facts.append({"concept": name, "context": attrs["contextRef"],
-                                   "unit": attrs.get("unitRef", ""),
-                                   "decimals": attrs.get("decimals", ""),
-                                   "value": body, "line": line})
+                context = attrs["contextRef"]
+                self.facts.setdefault((name, context), []).append({
+                    "concept": name, "context": context, "unit": attrs.get("unitRef", ""),
+                    "decimals": attrs.get("decimals", ""), "value": body, "line": line})
 
             for prefix, old_uri in previous.items():
                 if old_uri is None:
@@ -1850,7 +1851,22 @@ class Instance:
         parser.Parse(text.encode("utf-8"), True)
 
     def find(self, concept, context):
-        return [f for f in self.facts if f["concept"] == concept and f["context"] == context]
+        return self.facts.get((concept, context), ())
+
+
+class SourceText:
+    """Build only the lookup a cited anchor needs, once per source in this run."""
+
+    def __init__(self, text):
+        self.text = text
+
+    @cached_property
+    def located(self):
+        return Located(self.text)
+
+    @cached_property
+    def instance(self):
+        return Instance(self.text)
 
 
 def precision_of(decimals, unit, scales):
@@ -1859,12 +1875,11 @@ def precision_of(decimals, unit, scales):
     return -int(decimals)
 
 
-def bind_xbrl(text, fact, values, scales, b):
+def bind_xbrl(inst, fact, values, scales, b):
     parts = fact["anchor"].split("|")
     if len(parts) != 2:
         b.problems.append(f"anchor `{fact['anchor']}` is not `<concept>|<context id>`")
         return
-    inst = Instance(text)
     found = inst.find(parts[0], parts[1])
     # An instance may state one fact several times (once per table that shows it). Duplicates
     # that agree in value, unit and decimals are that one fact; any disagreement is a FAIL.
@@ -1917,16 +1932,16 @@ def bind_xbrl(text, fact, values, scales, b):
             b.member_ok = False
 
 
-def bind(fact, values, source, text, loc, scales, scope_ctx=(None, frozenset())):
+def bind(fact, values, source, scales, scope_ctx=(None, frozenset())):
     b = Binding(fact)
     b.member_ok = True
     kind = fact["anchor_kind"]
     if kind in PROSE_ANCHORS:
-        bind_prose(loc, fact, b)
+        bind_prose(source.located, fact, b)
     elif kind == "table_cell":
-        bind_table_cell(loc, fact, b)
+        bind_table_cell(source.located, fact, b)
     elif kind == "xbrl":
-        bind_xbrl(text, fact, values, scales, b)
+        bind_xbrl(source.instance, fact, values, scales, b)
     if b.quote is not None:
         ok, problems = values_bind(b.quote, values, scales, whole=kind in VALUE_ANCHORS)
         b.values = ok and b.member_ok
@@ -2009,14 +2024,14 @@ def verify(case, report):
                     if recorded and recorded[2] != field[2]:
                         report.fail(f"{sid}: extraction sha256 {field[2]} differs from "
                                     f"sources.toml {recorded[2]} ({recorded[1]} vs {method})")
-                    texts[sid] = (text, Located(text), field[2], hit[1])
+                    texts[sid] = (SourceText(text), field[2], hit[1])
                 except Unrun as e:
                     texts[sid] = e
         got = texts[sid]
         if isinstance(got, Unrun):
             report.unrun(f"{fid}: {got}")
             continue
-        text, loc, extraction_sha, fetched_utc = got
+        source, extraction_sha, fetched_utc = got
         rows = values.get(fid, [])
         if worksheet:
             b = Binding(fact)
@@ -2034,13 +2049,13 @@ def verify(case, report):
                 data = source_file.read_bytes()
                 if sha256_hex(data) != fact.get("quote_sha256"):
                     raise ValueError("worksheet file digest differs from the fact's quote_sha256")
-                fifo_worksheet.verify(text, b.anchor, fact.get("about_scope", ""), data)
+                fifo_worksheet.verify(source.text, b.anchor, fact.get("about_scope", ""), data)
                 b.anchor = b.anchor.split("|")[1]
                 b.found_once = b.aligned = b.values = b.scope = True
             except (OSError, ValueError) as e:
                 b.problems.append(str(e))
         else:
-            b = bind(fact, rows, src, text, loc, scales, scope_ctx)
+            b = bind(fact, rows, source, scales, scope_ctx)
         receipts.append({
             "source": sid, "fact": fid, "anchor": b.anchor, "verified_utc": fetched_utc,
             "tool_version": f"{TOOL_VERSION}/commingled_fifo_v1" if worksheet else TOOL_VERSION,
@@ -2067,16 +2082,19 @@ def verify(case, report):
 def xbrl_facts(case, report):
     sources = sources_of(case)
     facts, _ = facts_of(case)
+    instances = {}
     for fid in sorted(facts):
         fact = facts[fid]
         if fact.get("anchor_kind") != "xbrl":
             continue
-        src = sources.get(fact.get("source", ""), {})
-        hit = cached(src.get("sha256", ""))
-        if hit is None:
+        digest = sources.get(fact.get("source", ""), {}).get("sha256", "")
+        if digest not in instances:
+            hit = cached(digest)
+            instances[digest] = Instance(decode(hit[0])[0]) if hit is not None else None
+        inst = instances[digest]
+        if inst is None:
             report.unrun(f"{fid}: {fact.get('source')} is not in the cache")
             continue
-        inst = Instance(decode(hit[0])[0])
         concept, _, context = fact["anchor"].partition("|")
         for f in inst.find(concept, context):
             ctx = inst.contexts.get(f["context"]) or {}
