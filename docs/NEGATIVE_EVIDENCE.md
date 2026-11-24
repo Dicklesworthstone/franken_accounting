@@ -4377,3 +4377,11 @@ The workspace test at `9fbe0d52` failed the exact rendering check for
 links to the independent results and command in the README. Its rendered
 rows, byte-for-byte comparison and seeded undocumented divergence still run
 under `conformance_matrices_match_published_docs_and_refuse_undocumented_divergence`.
+
+The same native workspace run reached a stale draft-view assertion in
+`rewritten_or_restored_plan_cannot_erase_the_retained_automatic_group_claim`.
+The lifecycle check added in `7349d69e` refused the first rewritten record.
+The test now reads the genuine plan before damage, decodes the rewritten
+record and the byte-restored record at their respective frontiers, and
+requires the authenticated view to refuse both altered histories. The
+existing append, preview, promotion and no-publication assertions still run.

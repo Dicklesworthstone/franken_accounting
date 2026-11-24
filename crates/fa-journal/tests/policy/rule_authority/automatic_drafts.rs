@@ -442,6 +442,12 @@ fn rewritten_or_restored_plan_cannot_erase_the_retained_automatic_group_claim() 
             .recorded
             .control_entry;
         let (original, _) = read_entry(&h.db, record).unwrap().unwrap();
+        let ctx = h.ctx();
+        let intact = fa_journal::read_draft(&h.db, &ctx.query(), &h.book, name)
+            .unwrap()
+            .unwrap();
+        assert_eq!(intact.intents.len(), 1);
+        assert_eq!(intact.intents[0].record, record);
         let mut proposal = original.proposal.clone();
         let bytes = &proposal.extensions[0].1;
         let mut reader = fa_model::Reader::new(bytes);
@@ -465,7 +471,6 @@ fn rewritten_or_restored_plan_cannot_erase_the_retained_automatic_group_claim() 
         proposal.extensions[0].1 = writer.finish().unwrap();
         let changed = proposal.seal(Vec::new(), None).unwrap();
         assert!(fa_model::Entry::decode(&changed.encode().unwrap()).is_ok());
-        let ctx = h.ctx();
         let mut damage = WriteBatch::new(relation::IN_CASE);
         for (key, value) in fa_model::entry_mirrors(&changed).unwrap() {
             damage.set_vertex_property(record, key, Some(value));
@@ -482,14 +487,20 @@ fn rewritten_or_restored_plan_cannot_erase_the_retained_automatic_group_claim() 
                 .block_on(h.db.write(&ctx.commit(), restore_bytes))
                 .unwrap();
         }
-        // The hostile record is structurally canonical and still has a full
-        // flattened member. Native original-birth authentication must reject it.
-        let view = fa_journal::read_draft(&h.db, &ctx.query(), &h.book, name)
-            .unwrap()
-            .unwrap();
-        assert_eq!(view.intents.len(), 1);
+        // Both states decode as Entries. Restoring the exact bytes does not
+        // restore the immutable publication of the lifecycle control.
+        let (stored, _) = read_entry(&h.db, record).unwrap().unwrap();
+        assert_eq!(stored, if restore { original } else { changed });
         let head = h.db.frontier().unwrap();
         let rows = h.db.vertices().unwrap();
+        assert!(
+            matches!(
+                fa_journal::read_draft(&h.db, &ctx.query(), &h.book, name),
+                Err(KernelError::Corrupt(ref message))
+                    if message.contains("does not retain its original lifecycle outcome")
+            ),
+            "restore={restore}"
+        );
         let retry = if restore {
             automatic
         } else {
