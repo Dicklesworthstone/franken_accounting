@@ -92,6 +92,94 @@ fn resident_report_memo_contention_keeps_the_exact_nonblocking_read() {
     assert_eq!(work(&book).1, ReportHistoryWork::default());
 }
 
+#[test]
+fn civil_date_convenience_reads_reuse_history_and_keep_exact_frontiers() {
+    let (mut book, usd, day, _) = certified_fixture();
+    let principal = VId(1);
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    book.advance_registers(principal, &maintenance_capability(principal), "FY2026-P03")
+        .unwrap()
+        .unwrap();
+    let selected = book.head().unwrap();
+    let purposes = book.purposes();
+    let expected = with_store!(&book.store, core => core.query(&purposes, |db, context| {
+        Ok(fa_registers::balance_as_of(db, context, through, Some(selected))?)
+    }))
+    .unwrap();
+    assert_eq!(book.balance_as_of(through, None).unwrap(), expected);
+    let (at, cold) = work(&book);
+    assert_eq!(at, Some(selected));
+    assert_eq!((cold.metadata_scans, cold.population_scans), (1, 1));
+
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    let scope = book.read_scope(principal, &reader).unwrap().unwrap();
+    assert_eq!(scope.balance_as_of(through, None).unwrap().unwrap(), expected);
+    assert_eq!(work(&book), (Some(selected), ReportHistoryWork::default()));
+
+    // Both convenience routes remain exact without waiting for another
+    // reader's optional memo, just like the explicit served API.
+    let held = with_store!(&book.store, core => core.report_history.lock().unwrap());
+    assert_eq!(book.balance_as_of(through, None).unwrap(), expected);
+    assert_eq!(scope.balance_as_of(through, None).unwrap().unwrap(), expected);
+    drop(held);
+
+    post_rent(&mut book, usd, principal, day, b"convenience-as-of-tail", 150_000)
+        .unwrap()
+        .unwrap();
+    let head = book.head().unwrap();
+    let current = book.balance_as_of(through, None).unwrap();
+    assert_eq!(current.known_at, head);
+    assert_eq!(current.unit_totals[&usd.0], (300_000, 300_000));
+    let (at, suffix) = work(&book);
+    assert_eq!(at, Some(head));
+    assert_eq!((suffix.metadata_scans, suffix.population_scans, suffix.snapshot_rows), (0, 0, 0));
+    assert_eq!(suffix.entries_decoded, 1);
+    assert!(suffix.delta_rows > 0);
+
+    assert_eq!(book.balance_as_of(through, Some(selected)).unwrap(), expected);
+    assert_eq!(work(&book).0, Some(head), "historical reads do not evict the newer memo");
+    assert_eq!(book.head().unwrap(), head, "reads never publish or repair");
+}
+
+#[test]
+fn civil_date_convenience_caveats_precede_any_register_history_access() {
+    let (mut book, usd, _, _) = certified_fixture();
+    let principal = VId(1);
+    let through = DateDay::from_ymd(2026, 3, 31).unwrap();
+    book.advance_registers(principal, &maintenance_capability(principal), "FY2026-P03")
+        .unwrap()
+        .unwrap();
+    let reader = Capability::embedded(principal, &["read"]).unwrap();
+    let limited = reader.clone().effective_through(through);
+    let restricted = book.read_scope(principal, &limited).unwrap().unwrap();
+    let allowed = restricted.balance_as_of(through, None).unwrap().unwrap();
+    assert_eq!(allowed.unit_totals[&usd.0], (150_000, 150_000));
+    assert_eq!(work(&book), (None, ReportHistoryWork::default()));
+    let refusal = restricted
+        .balance_as_of(DateDay::from_ymd(2026, 4, 1).unwrap(), None)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", 7));
+    assert_eq!(work(&book), (None, ReportHistoryWork::default()));
+
+    // A later whole-book reader can populate the memo; the admitted narrow
+    // convenience read must still leave even its work counters untouched.
+    assert_eq!(book.balance_as_of(through, None).unwrap(), allowed);
+    let warmed = work(&book);
+    assert_eq!(warmed.1.metadata_scans, 1);
+    assert_eq!(restricted.balance_as_of(through, None).unwrap().unwrap(), allowed);
+    assert_eq!(work(&book), warmed);
+    let per_period = reader.for_periods(&["FY2026-P03"]).unwrap();
+    assert!(book
+        .read_scope(principal, &per_period)
+        .unwrap()
+        .unwrap()
+        .balance_as_of(through, None)
+        .unwrap()
+        .is_err());
+    assert_eq!(work(&book), warmed);
+}
+
 fn open_item_work(
     book: &Book,
 ) -> (

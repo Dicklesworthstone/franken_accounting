@@ -8831,6 +8831,8 @@ impl Book {
     }
 
     /// Stock balances through an inclusive civil date, including opening history.
+    /// Complete periods use checked maintained cells and their exact tails when
+    /// available; other cutoffs retain the literal journal fold.
     pub fn balance_as_of(
         &self,
         day: DateDay,
@@ -9642,11 +9644,9 @@ impl ReadScope<'_> {
         day: DateDay,
         known_at: Option<CommitSeq>,
     ) -> Outcome<TrialBalance> {
-        let seq = match self.admit_as_of(day, known_at)? {
-            Ok(seq) => seq,
-            Err(r) => return Ok(Err(r)),
-        };
-        Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
+        Ok(self
+            .balance_as_of_served(day, known_at)?
+            .map(|(report, _)| report))
     }
 
     /// The authorized civil-date report and its serving basis at the admitted
@@ -9662,8 +9662,12 @@ impl ReadScope<'_> {
             Err(refusal) => return Ok(Err(refusal)),
         };
         if let Err(refusal) = self.authority.whole_book(seq) {
+            let purposes = self.book.purposes();
+            let report = with_store!(&self.book.store, core => core.query(&purposes, |db, book| {
+                Ok(fa_registers::balance_as_of(db, book, day, Some(seq))?)
+            }))?;
             return Ok(Ok((
-                self.book.balance_as_of(day, Some(seq))?,
+                report,
                 fa_registers::Served::Literal(format!(
                     "this capability cannot inspect the register window ({}: {}); the read folds the journal",
                     refusal.code, refusal.message
@@ -9672,7 +9676,7 @@ impl ReadScope<'_> {
         }
         let purposes = self.book.purposes();
         Ok(Ok(
-            with_store!(&self.book.store, core => core.balance_as_of_served(&purposes, day, seq))?,
+            with_store!(&self.book.store, core => core.balance_as_of_served(&purposes, day, Some(seq)))?,
         ))
     }
 

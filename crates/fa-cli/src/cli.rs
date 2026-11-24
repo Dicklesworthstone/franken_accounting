@@ -13634,9 +13634,9 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // An admitted read is answered from maintained registers plus the
         // exact tail when they can serve its selected prefix, and says how
         // it was served (fa-715, plan §17). Loading the head window is only
-        // preparation; historical reads use their own retained state. A
-        // capability that cannot load it reads the journal literally, and
-        // the disclosure names its refusal.
+        // preparation; historical reads use their own retained state.
+        // Every read below rechecks its admitted scope before inspecting the
+        // register window and reports its actual maintained or literal basis.
         let window = if known_at.is_none() {
             Some(match &selection {
                 TrialBalanceSelection::AsOf(day) => {
@@ -13646,12 +13646,6 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             })
         } else {
             None
-        };
-        let refused = |refusal: Refusal| {
-            Some(fa_registers::Served::Literal(format!(
-                "this capability cannot load the register window ({}: {}); the read folds the journal",
-                refusal.code, refusal.message
-            )))
         };
         match (&selection, window) {
             (TrialBalanceSelection::Periods(periods), Some(Ok(()))) => {
@@ -13666,34 +13660,19 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     .period_activity_served(periods)??;
                 (report, None, Some(served))
             }
-            (TrialBalanceSelection::Periods(periods), Some(Err(refusal))) => (
-                book.trial_balance_at(periods, Some(admitted_at))?,
-                None,
-                refused(refusal),
-            ),
-            (TrialBalanceSelection::Activity(periods), Some(Err(refusal))) => (
-                book.period_activity(periods, Some(admitted_at))?,
-                None,
-                refused(refusal),
-            ),
-            (TrialBalanceSelection::AsOf(day), Some(Err(refusal))) => (
-                book.balance_as_of(*day, Some(admitted_at))?,
-                None,
-                refused(refusal),
-            ),
             (TrialBalanceSelection::AsOf(day), _) => {
                 let (report, served) = book
                     .read_scope(who, &read_cap)??
                     .balance_as_of_served(*day, Some(admitted_at))??;
                 (report, None, Some(served))
             }
-            (TrialBalanceSelection::Periods(periods), None) => {
+            (TrialBalanceSelection::Periods(periods), _) => {
                 let (report, served) = book
                     .read_scope(who, &read_cap)??
                     .trial_balance_served_at(periods, Some(admitted_at))??;
                 (report, None, Some(served))
             }
-            (TrialBalanceSelection::Activity(periods), None) => {
+            (TrialBalanceSelection::Activity(periods), _) => {
                 let (report, served) = book
                     .read_scope(who, &read_cap)??
                     .period_activity_served_at(periods, Some(admitted_at))??;

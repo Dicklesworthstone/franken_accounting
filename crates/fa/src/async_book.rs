@@ -8246,22 +8246,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         })
     }
 
+    /// Complete periods use checked maintained cells and their exact tails;
+    /// an interior civil-date cutoff retains the literal journal fold.
     pub fn balance_as_of(
         &self,
         cx: &PurposeContexts,
         day: DateDay,
         known_at: Option<CommitSeq>,
     ) -> Result<TrialBalance, BookError> {
-        self.query(cx, |db, book| {
-            Ok(fa_registers::balance_as_of(db, book, day, known_at)?)
-        })
+        self.balance_as_of_served(cx, day, known_at)
+            .map(|(report, _)| report)
     }
 
     pub(crate) fn balance_as_of_served(
         &self,
         cx: &PurposeContexts,
         day: DateDay,
-        seq: CommitSeq,
+        known_at: Option<CommitSeq>,
     ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
         self.query(cx, |db, book| {
             let mut history = self.report_history.try_lock().ok();
@@ -8270,7 +8271,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 &cx.query(),
                 book,
                 day,
-                Some(seq),
+                known_at,
                 history.as_deref_mut(),
             )?)
         })
