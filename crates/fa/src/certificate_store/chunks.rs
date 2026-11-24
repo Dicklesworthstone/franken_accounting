@@ -191,7 +191,11 @@ pub(super) fn read<V: Vfs + Clone>(
     for index in 0..manifest.count {
         cx.checkpoint().map_err(BookError::Context)?;
         let vid = fragment_vid(book.book_id, digest, index);
-        let Some(row) = db.vertex_at(vid, at).map_err(KernelError::from)? else {
+        let Some(row) = db
+            .vertex_at(vid, at)
+            .map_err(KernelError::from)?
+            .map(|row| row.seen_at(at))
+        else {
             return Ok(Err(invalid(format!(
                 "retained certificate fragment {index} is missing or retired"
             ))));

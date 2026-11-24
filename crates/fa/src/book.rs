@@ -2078,6 +2078,35 @@ impl Book {
             core.verify_close_run_checkpoints_at(&purposes, name, capability, at)))
     }
 
+    /// Authenticate an issued statement, fully replay its retained report and
+    /// require its accounting source to remain unchanged at the selected prefix.
+    /// This check records neither a new issuance nor a close completion.
+    pub fn verify_statement_issuance_checkpoint(
+        &mut self,
+        period: &str,
+        ordinal: u32,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::StatementIssuanceCheckpoint> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+        core.verify_statement_issuance_checkpoint(
+            &purposes, period, ordinal, known_at, capability,
+        )))
+    }
+
+    pub(crate) fn statement_issuance_basis_at(
+        &mut self,
+        period: &str,
+        ordinal: u32,
+        at: CommitSeq,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::StatementIssuanceCheckpoint> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.statement_issuance_basis_at(&purposes, period, ordinal, at, capability)))
+    }
+
     /// Verify a statement's current or historical reconciliation for a close
     /// period under current whole-book Read and Reconcile authority. This
     /// exposes the immutable basis without recording a task or attestation.

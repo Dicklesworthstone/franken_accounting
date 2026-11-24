@@ -351,10 +351,33 @@ pub(crate) async fn read_artifact<V: Vfs + Clone, W: Vfs + Clone>(
     blobs: &BlobStore<W>,
     digest: &[u8; 32],
 ) -> Outcome<ReportArtifact> {
-    cx.checkpoint().map_err(BookError::Context)?;
     let at = db.frontier().map_err(KernelError::from)?;
+    read_artifact_at(db, cx, book, blobs, digest, at).await
+}
+
+/// Read complete retained storage at its selected historical prefix. Current
+/// authorization remains the caller's responsibility; later retirement does
+/// not remove evidence that was intact at this earlier native coordinate.
+pub(crate) async fn read_artifact_at<V: Vfs + Clone, W: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    blobs: &BlobStore<W>,
+    digest: &[u8; 32],
+    at: CommitSeq,
+) -> Outcome<ReportArtifact> {
+    cx.checkpoint().map_err(BookError::Context)?;
+    if at > db.frontier().map_err(KernelError::from)? {
+        return Ok(Err(invalid(
+            "the selected certificate prefix has not been committed",
+        )));
+    }
     let vid = certificate_vid(book.book_id, digest);
-    let Some(row) = db.vertex_at(vid, at).map_err(KernelError::from)? else {
+    let Some(row) = db
+        .vertex_at(vid, at)
+        .map_err(KernelError::from)?
+        .map(|row| row.seen_at(at))
+    else {
         return Ok(Err(invalid(format!(
             "report certificate {:032x} is not retained in this book or its record was retired",
             vid.0

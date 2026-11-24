@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "close_run/issued_statement.rs"]
+mod issued_statement;
+
 fn closer() -> Capability {
     Capability::embedded(APPROVER, &["read", "close", "approve"]).unwrap()
 }

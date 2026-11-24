@@ -1014,10 +1014,21 @@ pub fn verify_control_recorded<V: Vfs + Clone>(
     row: &VertexRow,
     entry: &Entry,
 ) -> Result<bool, KernelError> {
+    verify_control_recorded_at(db, row, entry, db.frontier()?)
+}
+
+/// Authenticate a normal-key control and its atomic claim at one historical
+/// prefix. Later claim changes cannot rewrite the original recorded fact.
+pub(crate) fn verify_control_recorded_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+    at: CommitSeq,
+) -> Result<bool, KernelError> {
     if !normal_key_control(entry, row.vid) {
         return Ok(false);
     }
-    verify_control_claim(db, row, entry)
+    verify_control_claim_at(db, row, entry, at)
 }
 
 /// A hold placement uses its normal key identity; a release uses the held
@@ -1189,11 +1200,23 @@ fn verify_control_claim<V: Vfs + Clone>(
     row: &VertexRow,
     entry: &Entry,
 ) -> Result<bool, KernelError> {
-    if !original(db, row)? {
+    verify_control_claim_at(db, row, entry, db.frontier()?)
+}
+
+fn verify_control_claim_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    entry: &Entry,
+    at: CommitSeq,
+) -> Result<bool, KernelError> {
+    if row.created_at > at
+        || row.retired_at.is_some_and(|retired| retired <= at)
+        || !original(db, row)?
+    {
         return Ok(false);
     }
     let outcome = entry_outcome_vid(&entry.proposal);
-    let Some(claim_row) = db.vertex(outcome)? else {
+    let Some(claim_row) = db.vertex_at(outcome, at)? else {
         // A deleted modern claim is not a legacy control. The authentic
         // publication must itself predate the common-key claim protocol.
         return Ok(db.vertex_at(outcome, row.created_at)?.is_none());

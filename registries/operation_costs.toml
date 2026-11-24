@@ -436,8 +436,8 @@ today_barrier_count = 4
 derived_objects = "per task"
 hot_object_exceptions = ["LimitCell"]
 external_authorities = "none"
-complexity_witness = "O(tasks) batch posts + 1 PeriodControl transition"
-notes = "rehearsal is reads over a draft/scratch book"
+complexity_witness = "O(tasks) batch posts + 1 PeriodControl transition; each RequireCurrentStatementIssuance checks one ordinal's immutable issuance and retained certificate bytes/fragments, then scans the native delta suffix since its certified prefix. Terminal transition repeats source and retention checks for completed prerequisites."
+notes = "Rehearsal reads a draft/scratch book. Issued-statement prerequisites add no separate publication: their source digest and immutable issuance control are retained in the task's atomic receipt. Retained certificate fragments and control storage are transaction witnesses. The facade separately replays statement arithmetic before rehearsal/execution; native identity and freshness checks do not claim arithmetic proof. Suffix history, certificate bytes and repeated terminal rechecks are explicit variable costs, not constant-time lookups."
 
 [[operation_class]]
 id = "restatement_case_post"

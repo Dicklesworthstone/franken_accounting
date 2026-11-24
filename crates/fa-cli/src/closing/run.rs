@@ -73,6 +73,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     | "verify_year_end_close"
                     | "verify_bank_reconciliation"
                     | "verify_bank_instrument_coverage"
+                    | "require_current_statement_issuance"
             )
         }) {
             return Err(usage(
@@ -112,13 +113,14 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
             row.get("verify_year_end_close"),
             row.get("verify_bank_reconciliation"),
             row.get("verify_bank_instrument_coverage"),
+            row.get("require_current_statement_issuance"),
         ) {
-            (Some(_), None, None, None, None) => {
+            (Some(_), None, None, None, None, None) => {
                 let certificate = string("certificate")?;
                 let digest = certificate.strip_prefix("C:").unwrap_or(certificate);
                 ReviewedCloseAction::DraftCertificate(parse_digest(digest, "certificate")?)
             }
-            (None, Some(_), None, None, None) => {
+            (None, Some(_), None, None, None, None) => {
                 ReviewedCloseAction::PeriodTransition(match string("transition")? {
                     "soft-close" => PeriodTransition::SoftClose,
                     "close" => PeriodTransition::Close,
@@ -131,7 +133,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     }
                 })
             }
-            (None, None, Some(Json::Int(year)), None, None) => {
+            (None, None, Some(Json::Int(year)), None, None, None) => {
                 ReviewedCloseAction::VerifyYearEndClose {
                     fiscal_year: i32::try_from(*year).map_err(|_| {
                         usage(
@@ -141,13 +143,13 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     })?,
                 }
             }
-            (None, None, Some(_), None, None) => {
+            (None, None, Some(_), None, None, None) => {
                 return Err(usage(
                     "verify_year_end_close must be an integer fiscal year",
                     EXAMPLE,
                 ));
             }
-            (None, None, None, Some(_), None) => {
+            (None, None, None, Some(_), None, None) => {
                 let manifest = string("verify_bank_reconciliation")?;
                 let digest = manifest.strip_prefix("D:").unwrap_or(manifest);
                 ReviewedCloseAction::VerifyBankReconciliation {
@@ -157,7 +159,7 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                     )?),
                 }
             }
-            (None, None, None, None, Some(Json::Arr(values))) => {
+            (None, None, None, None, Some(Json::Arr(values)), None) => {
                 if values.len() > fa_model::close_run::MAX_BANK_INSTRUMENT_COVERAGE {
                     return Err(usage(
                         "bank instrument coverage exceeds the bounded manifest count",
@@ -189,15 +191,29 @@ fn task_definition(text: &str) -> Result<Vec<ReviewedCloseTask>, Fail> {
                 }
                 ReviewedCloseAction::VerifyBankInstrumentCoverage { manifest_oids }
             }
-            (None, None, None, None, Some(_)) => {
+            (None, None, None, None, Some(_), None) => {
                 return Err(usage(
                     "verify_bank_instrument_coverage must be an array of document OIDs",
                     EXAMPLE,
                 ));
             }
+            (None, None, None, None, None, Some(Json::Int(value))) => {
+                let ordinal = u32::try_from(*value).ok().filter(|ordinal| *ordinal > 0)
+                    .ok_or_else(|| usage(
+                        "require_current_statement_issuance needs a positive u32 issuance ordinal",
+                        EXAMPLE,
+                    ))?;
+                ReviewedCloseAction::RequireCurrentStatementIssuance { ordinal }
+            }
+            (None, None, None, None, None, Some(_)) => {
+                return Err(usage(
+                    "require_current_statement_issuance must be an integer issuance ordinal",
+                    EXAMPLE,
+                ));
+            }
             _ => {
                 return Err(usage(
-                    "each close task names exactly one certificate, transition, verify_year_end_close, verify_bank_reconciliation or verify_bank_instrument_coverage",
+                    "each close task names exactly one certificate, transition, verify_year_end_close, verify_bank_reconciliation, verify_bank_instrument_coverage or require_current_statement_issuance",
                     EXAMPLE,
                 ));
             }
@@ -281,6 +297,14 @@ fn view_json(view: &CloseRunView) -> Json {
                         Json::Null,
                         Json::Null,
                     ),
+                    Some(CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }) => (
+                        "require-current-statement-issuance",
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
                     None => (
                         "invalid",
                         Json::Null,
@@ -299,6 +323,15 @@ fn view_json(view: &CloseRunView) -> Json {
                 ("transition", transition),
                 ("fiscal_year", fiscal_year),
                 ("bank_manifest_oid", bank_manifest_oid),
+                (
+                    "issuance_ordinal",
+                    match definition.map(|definition| &definition.action) {
+                        Some(CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal }) => {
+                            Json::Int(i128::from(*ordinal))
+                        }
+                        _ => Json::Null,
+                    },
+                ),
                 (
                     "bank_manifest_oids",
                     match definition.map(|definition| &definition.action) {
@@ -943,6 +976,37 @@ mod tests {
         for locator in [format!("C:{digest}"), "ab".repeat(31), "ab".repeat(33)] {
             let input = format!(r#"[{{"id":"cash","verify_bank_reconciliation":"{locator}"}}]"#);
             assert!(task_definition(&input).is_err(), "{locator}");
+        }
+    }
+
+    #[test]
+    fn issued_statement_task_requires_one_positive_bounded_ordinal() {
+        for value in ["0", "-1", "4294967296", "null", "true", "\"1\"", "[]"] {
+            let input =
+                format!(r#"[{{"id":"issued","require_current_statement_issuance":{value}}}]"#);
+            assert!(task_definition(&input).is_err(), "{input}");
+        }
+        for other in [
+            r#""transition":"close""#,
+            r#""verify_year_end_close":2026"#,
+            r#""verify_bank_instrument_coverage":[]"#,
+            r#""certificate":"C:00""#,
+        ] {
+            let input =
+                format!(r#"[{{"id":"issued","require_current_statement_issuance":1,{other}}}]"#);
+            assert!(task_definition(&input).is_err(), "{input}");
+        }
+        for ordinal in [1, u32::MAX] {
+            let input = format!(
+                r#"[{{"id":"issued","depends_on":["adjustments"],"require_current_statement_issuance":{ordinal}}}]"#
+            );
+            let tasks =
+                task_definition(&input).unwrap_or_else(|_| panic!("valid issuance ordinal"));
+            assert_eq!(tasks[0].depends_on, ["adjustments"]);
+            assert_eq!(
+                tasks[0].action,
+                ReviewedCloseAction::RequireCurrentStatementIssuance { ordinal }
+            );
         }
     }
 

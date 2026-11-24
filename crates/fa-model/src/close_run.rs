@@ -62,6 +62,9 @@ pub enum CloseTaskBodyAction {
     /// prefix. Manifests are explicit and strictly ascending; an empty list
     /// can prove only that the authenticated bank-instrument inventory is empty.
     VerifyBankInstrumentCoverage { manifest_oids: Vec<Oid> },
+    /// Authenticate this period's issued statement and require its accounting
+    /// source to remain unchanged through the terminal transition.
+    RequireCurrentStatementIssuance { ordinal: u32 },
 }
 
 fn invalid(what: &'static str) -> DecodeError {
@@ -122,6 +125,11 @@ impl CloseTaskBody {
             CloseTaskBodyAction::PeriodTransition { .. } => {}
             CloseTaskBodyAction::VerifyYearEndClose { .. } => {}
             CloseTaskBodyAction::VerifyBankReconciliation { .. } => {}
+            CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } => {
+                if *ordinal == 0 {
+                    return Err(invalid("close_task.issuance_ordinal"));
+                }
+            }
             CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids } => {
                 if manifest_oids.len() > MAX_BANK_INSTRUMENT_COVERAGE
                     || !manifest_oids.windows(2).all(|pair| pair[0].0 < pair[1].0)
@@ -173,6 +181,9 @@ impl CloseTaskBody {
                 w.u8(4).list(manifest_oids, |w, oid| {
                     w.fixed(&oid.0);
                 });
+            }
+            CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } => {
+                w.u8(5).u32(*ordinal);
             }
         }
     }
@@ -230,6 +241,9 @@ impl CloseTaskBody {
                     "close_task.bank_manifest_oids",
                     |r| Ok(Oid(r.fixed("close_task.bank_manifest_oid")?)),
                 )?,
+            },
+            5 => CloseTaskBodyAction::RequireCurrentStatementIssuance {
+                ordinal: r.u32("close_task.issuance_ordinal")?,
             },
             _ => return Err(r.invalid("close_task.action")),
         };
@@ -326,7 +340,13 @@ impl CloseRunBody {
             return Err(invalid("close_run.duplicate_bank_instrument_coverage"));
         }
         let mut bank_manifests = std::collections::BTreeSet::new();
+        let mut issuances = std::collections::BTreeSet::new();
         for task in &self.tasks {
+            if let CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } = task.action
+                && !issuances.insert(ordinal)
+            {
+                return Err(invalid("close_run.duplicate_statement_issuance"));
+            }
             if let CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } = task.action
                 && !bank_manifests.insert(manifest_oid.0)
             {
@@ -339,6 +359,7 @@ impl CloseRunBody {
                 CloseTaskBodyAction::VerifyYearEndClose { .. }
                     | CloseTaskBodyAction::VerifyBankReconciliation { .. }
                     | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                    | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }
             )
         }) {
             let ancestors = ancestors_of(checkpoint)?;
@@ -562,6 +583,67 @@ mod tests {
         transitive.validate().unwrap();
         transitive.tasks[2].depends_on.clear();
         assert!(transitive.validate().is_err());
+    }
+
+    #[test]
+    fn issued_statement_prerequisite_binds_ordinal_and_follows_all_monetary_work() {
+        let mut graph = body();
+        graph.tasks.push(CloseTaskBody {
+            id: "statement".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal: 1 },
+        });
+        graph.tasks[1].depends_on = vec!["statement".into()];
+        graph.validate().unwrap();
+        assert_eq!(
+            CloseRunBody::decode(&graph.canonical_bytes().unwrap()).unwrap(),
+            graph
+        );
+        let task = &graph.tasks[2];
+        let bytes = task.canonical_bytes().unwrap();
+        assert_eq!(&bytes[bytes.len() - 5..], &[5, 1, 0, 0, 0]);
+        for end in 0..bytes.len() {
+            assert!(CloseTaskBody::decode(&bytes[..end]).is_err());
+        }
+
+        let mut other = graph.clone();
+        other.tasks[2].action = CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal: 2 };
+        assert_ne!(graph.digest().unwrap(), other.digest().unwrap());
+        let mut absent = graph.clone();
+        absent.tasks[2].action =
+            CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal: 0 };
+        assert_eq!(
+            absent.validate().unwrap_err().what,
+            "close_task.issuance_ordinal"
+        );
+        assert!(CloseRunBody::decode(&absent.canonical_bytes().unwrap()).is_err());
+
+        let mut premature = graph.clone();
+        premature.tasks[2].depends_on.clear();
+        assert_eq!(
+            premature.validate().unwrap_err().what,
+            "close_run.verification_precedes_monetary_tasks"
+        );
+        let mut bypassed = graph.clone();
+        bypassed.tasks[1].depends_on = vec!["accrue".into()];
+        assert_eq!(
+            bypassed.validate().unwrap_err().what,
+            "close_run.final_transition_must_follow_all_tasks"
+        );
+
+        graph.tasks.push(CloseTaskBody {
+            id: "statement-next".into(),
+            depends_on: vec!["accrue".into()],
+            action: CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal: 2 },
+        });
+        graph.tasks[1].depends_on.push("statement-next".into());
+        graph.validate().unwrap();
+        graph.tasks[3].action = graph.tasks[2].action.clone();
+        assert_eq!(
+            graph.validate().unwrap_err().what,
+            "close_run.duplicate_statement_issuance"
+        );
+        assert!(CloseRunBody::decode(&graph.canonical_bytes().unwrap()).is_err());
     }
 
     #[test]

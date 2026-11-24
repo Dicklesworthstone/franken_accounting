@@ -21,6 +21,8 @@ use fgdb_types::VId;
 mod bank_checkpoint;
 #[path = "close_execution/closing_checkpoint.rs"]
 mod closing_checkpoint;
+#[path = "close_execution/issued_statement.rs"]
+mod issued_statement;
 
 const ADMIN: VId = VId(201);
 const PLANNER: VId = VId(202);

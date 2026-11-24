@@ -925,7 +925,16 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     vid: VId,
 ) -> Result<Option<IssuanceRecord>, KernelError> {
-    let seq = db.frontier()?;
+    record_of_at(db, book, vid, db.frontier()?)
+}
+
+/// Authenticate the original issuance at a retained historical prefix.
+pub(crate) fn record_of_at<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    vid: VId,
+    seq: CommitSeq,
+) -> Result<Option<IssuanceRecord>, KernelError> {
     let Some(row) = db.vertex_at(vid, seq)? else {
         return Ok(None);
     };
@@ -958,11 +967,34 @@ fn record_of<V: asupersync::fs::Vfs + Clone>(
         let entry = crate::entry_storage::decode_at(db, &src, seq)?;
         let recorded_at = src.created_at;
         if issuance_of(&entry)?.as_ref() == Some(&issuance) {
+            let eid = edge_id(relation::IN_CASE, evid, vid);
+            let membership = db.edge_at(eid, seq)?.map(|mut edge| {
+                edge.entry = edge.entry.seen_at(seq);
+                edge
+            });
+            let original_membership = if let Some(edge) = &membership {
+                edge.entry.src == evid
+                    && edge.entry.dst == vid
+                    && edge.entry.relation == relation::IN_CASE
+                    && edge.entry.created_at == recorded_at
+                    && edge.entry.retired_at.is_none()
+                    && edge.props.is_empty()
+                    && db
+                        .edge_at(eid, CommitSeq(recorded_at.0.saturating_sub(1)))?
+                        .is_none()
+                    && db.edge_at(eid, recorded_at)?.map(|mut edge| {
+                        edge.entry = edge.entry.seen_at(seq);
+                        edge
+                    }) == membership
+            } else {
+                false
+            };
             if recorded_at != row.created_at
                 || src.labels.as_slice() != [label::ENTRY]
                 || !crate::entry_storage::mirrors_match(&src, &entry)?
                 || !is_issuance_control(&entry, evid)
-                || !crate::outcome::verify_control_recorded(db, &src, &entry)?
+                || !crate::outcome::verify_control_recorded_at(db, &src, &entry, seq)?
+                || !original_membership
             {
                 return Err(KernelError::Corrupt(format!(
                     "statement issuance {:032x} has no authentic atomic control record",

@@ -39,6 +39,10 @@ pub enum ReviewedCloseAction {
     /// The selected native manifests must cover their distinct account/unit
     /// scopes one-to-one; an empty list proves an authenticated empty inventory.
     VerifyBankInstrumentCoverage { manifest_oids: Vec<fa_model::Oid> },
+    /// Require a real retained issuance for this period whose accounting
+    /// source has not changed. The facade also replays its complete report;
+    /// the native prerequisite authenticates issuance and source currentness.
+    RequireCurrentStatementIssuance { ordinal: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +149,18 @@ pub(crate) fn same_reviewed_rehearsal(
     current.seq_map_digest = reviewed.seq_map_digest;
     current.rehearsal_known_at = reviewed.rehearsal_known_at;
     for (current, reviewed) in current.tasks.iter_mut().zip(&reviewed.tasks) {
+        if let (
+            CloseTaskRehearsalOutcome::CurrentStatementIssuance { checked_at, .. },
+            CloseTaskRehearsalOutcome::CurrentStatementIssuance {
+                checked_at: reviewed_at,
+                ..
+            },
+        ) = (&mut current.outcome, &reviewed.outcome)
+        {
+            // The immutable issuance, certificate and exact source remain
+            // equal. Harmless retained reviews/approvals may advance the head.
+            *checked_at = *reviewed_at;
+        }
         if let (
             CloseTaskRehearsalOutcome::Rehearsed { recorded_at, .. },
             CloseTaskRehearsalOutcome::Rehearsed {
@@ -664,7 +680,8 @@ impl Book {
                 CloseTaskBodyAction::PromoteDraft { .. }
                 | CloseTaskBodyAction::VerifyYearEndClose { .. }
                 | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => (None, Vec::new()),
+                | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. } => (None, Vec::new()),
                 CloseTaskBodyAction::PeriodTransition { to } => match transition_input.as_ref() {
                     None => {
                         return Ok(Ok(CloseRunExecution {

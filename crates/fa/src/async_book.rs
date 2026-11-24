@@ -1859,6 +1859,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         for task in tasks {
             let action = match task.action {
+                crate::ReviewedCloseAction::RequireCurrentStatementIssuance { ordinal } => {
+                    if let Err(refusal) = self
+                        .verify_statement_issuance_checkpoint(
+                            cx,
+                            period,
+                            ordinal,
+                            None,
+                            &capability,
+                        )
+                        .await?
+                    {
+                        return Ok(Err(refusal));
+                    }
+                    fa_journal::CloseTaskAction::RequireCurrentStatementIssuance { ordinal }
+                }
                 crate::ReviewedCloseAction::VerifyYearEndClose { fiscal_year } => {
                     fa_journal::CloseTaskAction::VerifyYearEndClose { fiscal_year }
                 }
@@ -1937,6 +1952,20 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             )));
         }
         for task in &definition.tasks {
+            if let fa_journal::CloseTaskAction::RequireCurrentStatementIssuance { ordinal } =
+                task.action
+                && let Err(refusal) = self
+                    .verify_statement_issuance_checkpoint(
+                        cx,
+                        &definition.period,
+                        ordinal,
+                        None,
+                        capability,
+                    )
+                    .await?
+            {
+                return Ok(Err(refusal));
+            }
             if let fa_journal::CloseTaskAction::PromoteDraft {
                 source,
                 certificate_digest,
@@ -2003,6 +2032,94 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         self.query(cx, |db, book| {
             Ok(fa_journal::close_run::verify_close_run_checkpoints(
                 db, cx, book, name, capability, at,
+            )?)
+        })
+    }
+
+    /// Authenticate a current native issuance and fully replay its retained
+    /// statement. Certificate identity alone never supplies the facade's
+    /// accounting verdict. This method publishes nothing.
+    pub async fn verify_statement_issuance_checkpoint(
+        &mut self,
+        cx: &PurposeContexts,
+        period: &str,
+        ordinal: u32,
+        known_at: Option<CommitSeq>,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::StatementIssuanceCheckpoint> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        let checkpoint = match self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::verify_statement_issuance_checkpoint(
+                db, cx, book, capability, period, ordinal, known_at,
+            )?)
+        })? {
+            Ok(checkpoint) => checkpoint,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let issuance = &checkpoint.issuance().issuance;
+        let artifact = match crate::certificate_store::read_artifact_at(
+            &self.db,
+            &cx.query(),
+            &self.context,
+            &self.blobs,
+            &issuance.certificate,
+            checkpoint.known_at(),
+        )
+        .await?
+        {
+            Ok(artifact) => artifact,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let source = artifact.source_certificate();
+        if artifact.family() != crate::ReportArtifactFamily::Native
+            || source.book_id != self.context.book_id
+            || source.branch_id != fa_model::Id128::TRUNK
+        {
+            return Ok(Err(fa_journal::issuance::not_issuable(
+                "the close prerequisite is not this book's retained trunk statement",
+            )));
+        }
+        let Some(metadata) = source
+            .selection
+            .statement_metadata()
+            .map_err(KernelError::from)?
+        else {
+            return Ok(Err(fa_journal::issuance::not_issuable(
+                "the close prerequisite is not a statement",
+            )));
+        };
+        if !metadata.periods.iter().any(|selected| selected == period)
+            || metadata.definition_digest != issuance.definition_digest
+            || metadata.definition_name != issuance.definition_name
+            || metadata.definition_version != issuance.definition_version
+            || source.known_at != issuance.certified_at
+        {
+            return Ok(Err(fa_journal::issuance::not_issuable(
+                "the retained statement differs from its native issuance",
+            )));
+        }
+        if let Err(refusal) = self.replay_report(cx, source)? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(checkpoint))
+    }
+
+    pub(crate) async fn statement_issuance_basis_at(
+        &mut self,
+        cx: &PurposeContexts,
+        period: &str,
+        ordinal: u32,
+        at: CommitSeq,
+        capability: &fa_journal::Capability,
+    ) -> Outcome<fa_journal::close_run::StatementIssuanceCheckpoint> {
+        if let Err(refusal) = self.prepare_close_history(cx, capability, false).await? {
+            return Ok(Err(refusal));
+        }
+        self.query(cx, |db, book| {
+            Ok(fa_journal::close_run::statement_issuance_source_checkpoint(
+                db, cx, book, capability, period, ordinal, at,
             )?)
         })
     }
@@ -2162,6 +2279,48 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let Err(refusal) = self.prepare_close_history(cx, &capability, true).await? {
             return Ok(Err(refusal));
+        }
+        let view = match self.close_run_status(cx, name, &capability).await? {
+            Ok(view) => view,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Some(view) = view {
+            let pending = view
+                .tasks
+                .iter()
+                .find(|state| state.id == task)
+                .is_some_and(|state| state.completion.is_none());
+            let terminal = view
+                .body
+                .tasks
+                .iter()
+                .find(|body| body.id == task)
+                .is_some_and(|body| {
+                    matches!(
+                        body.action,
+                        fa_model::CloseTaskBodyAction::PeriodTransition { .. }
+                    )
+                });
+            if pending {
+                for body in &view.body.tasks {
+                    if let fa_model::CloseTaskBodyAction::RequireCurrentStatementIssuance {
+                        ordinal,
+                    } = body.action
+                        && (body.id == task || terminal)
+                        && let Err(refusal) = self
+                            .verify_statement_issuance_checkpoint(
+                                cx,
+                                &view.body.period,
+                                ordinal,
+                                None,
+                                &capability,
+                            )
+                            .await?
+                    {
+                        return Ok(Err(refusal));
+                    }
+                }
+            }
         }
         let description = self.seal_text(cx, description)?;
         Ok(fa_journal::close_run::execute_close_task(

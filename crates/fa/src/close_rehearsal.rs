@@ -11,7 +11,7 @@
 //! independent approvals. This certificate proves the combined monetary review;
 //! it is neither a promotion permission nor a claim that the close completed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use fa_journal::close_run::BankInstrumentCoverageItem;
 use fa_journal::close_run::{CloseRunView, CloseTaskReceipt};
@@ -81,6 +81,17 @@ pub enum CloseTaskRehearsalOutcome {
         inventory_digest: [u8; 32],
         source_digest: [u8; 32],
         instruments: Vec<BankInstrumentCoverageItem>,
+    },
+    /// A retained native issuance whose complete report replays and whose
+    /// accounting source still matches the combined result. This is a read,
+    /// not a new issuance or a durable task completion.
+    CurrentStatementIssuance {
+        ordinal: u32,
+        checked_at: CommitSeq,
+        issuance: VId,
+        certificate_digest: [u8; 32],
+        certified_at: CommitSeq,
+        source_digest: [u8; 32],
     },
 }
 
@@ -321,6 +332,23 @@ impl CloseRunRehearsal {
                     }
                     all_completed = false;
                 }
+                CloseTaskRehearsalOutcome::CurrentStatementIssuance {
+                    ordinal,
+                    checked_at,
+                    certified_at,
+                    ..
+                } => {
+                    if *ordinal == 0
+                        || *checked_at != next
+                        || certified_at.0 == 0
+                        || *certified_at >= self.source_known_at
+                    {
+                        return Err(invalid(
+                            "an issued statement must precede and still match the combined source prefix",
+                        ));
+                    }
+                    all_completed = false;
+                }
                 CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
                     verified_at,
                     instruments,
@@ -446,6 +474,22 @@ impl CloseRunRehearsal {
                                     .i32(item.statement_date.0)
                                     .fixed(&item.checkpoint_digest);
                             });
+                    }
+                    CloseTaskRehearsalOutcome::CurrentStatementIssuance {
+                        ordinal,
+                        checked_at,
+                        issuance,
+                        certificate_digest,
+                        certified_at,
+                        source_digest,
+                    } => {
+                        w.u8(6)
+                            .u32(*ordinal)
+                            .u64(checked_at.0)
+                            .u128(issuance.0)
+                            .fixed(certificate_digest)
+                            .u64(certified_at.0)
+                            .fixed(source_digest);
                     }
                 }
             })
@@ -807,6 +851,43 @@ impl Book {
         {
             return Ok(Err(refusal));
         }
+        // Scratch deliberately omits retained Certificate vertices. Complete
+        // report replay therefore runs against the original book first; a
+        // later scratch basis check can only compare this authenticated source.
+        let mut issuance_checks = BTreeMap::new();
+        let pending_terminal = view.body.tasks.iter().any(|body| {
+            matches!(body.action, CloseTaskBodyAction::PeriodTransition { .. })
+                && view
+                    .tasks
+                    .iter()
+                    .find(|state| state.id == body.id)
+                    .and_then(|state| state.completion.as_ref())
+                    .is_none_or(|receipt| receipt.recorded_at > source_at)
+        });
+        for task in &view.body.tasks {
+            if let CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } = task.action {
+                // A completed run preserves its original checks even after
+                // later accounting activity. A pending terminal transition
+                // still requires every completed prerequisite to be current.
+                let checked_at = view
+                    .tasks
+                    .iter()
+                    .find(|state| state.id == task.id)
+                    .and_then(|state| state.completion.as_ref())
+                    .filter(|receipt| !pending_terminal && receipt.recorded_at <= source_at)
+                    .map_or(source_at, |receipt| CommitSeq(receipt.recorded_at.0 - 1));
+                let checkpoint = match self.verify_statement_issuance_checkpoint(
+                    &view.body.period,
+                    ordinal,
+                    Some(checked_at),
+                    capability,
+                )? {
+                    Ok(checkpoint) => checkpoint,
+                    Err(refusal) => return Ok(Err(in_task(&task.id, refusal))),
+                };
+                issuance_checks.insert(task.id.clone(), checkpoint);
+            }
+        }
         let mut visited = BTreeSet::new();
         let mut tasks = Vec::with_capacity(view.body.tasks.len());
         // All previously committed prerequisites are satisfied from the start.
@@ -900,6 +981,43 @@ impl Book {
         let mut rehearsal_at = source_at;
         for task in ordered {
             let outcome = match &task.action {
+                CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } => {
+                    let Some(original) = issuance_checks.get(&task.id) else {
+                        return Ok(Err(invalid(
+                            "the issued statement was not replayed in its original book",
+                        )));
+                    };
+                    let checked = match scratch.as_mut() {
+                        Some(scratch) => match scratch.statement_issuance_basis_at(
+                            &view.body.period,
+                            *ordinal,
+                            rehearsal_at,
+                            capability,
+                        )? {
+                            Ok(checked) => checked,
+                            Err(refusal) => return Ok(Err(in_task(&task.id, refusal))),
+                        },
+                        None => original.clone(),
+                    };
+                    if checked.issuance() != original.issuance()
+                        || checked.source_digest() != original.source_digest()
+                    {
+                        return Ok(Err(in_task(
+                            &task.id,
+                            invalid(
+                                "the combined close changed the issued statement's accounting source",
+                            ),
+                        )));
+                    }
+                    CloseTaskRehearsalOutcome::CurrentStatementIssuance {
+                        ordinal: *ordinal,
+                        checked_at: checked.known_at(),
+                        issuance: original.issuance().vid,
+                        certificate_digest: original.issuance().issuance.certificate,
+                        certified_at: original.issuance().issuance.certified_at,
+                        source_digest: *checked.source_digest(),
+                    }
+                }
                 CloseTaskBodyAction::VerifyBankReconciliation { manifest_oid } => {
                     // Like the year-end checkpoint, every monetary task must
                     // precede this check. The owned scratch therefore includes

@@ -40,6 +40,12 @@ pub use bank_coverage::{
     BankInstrumentCoverageCheckpoint, BankInstrumentCoverageItem,
     verify_bank_instrument_coverage_checkpoint,
 };
+mod statement_checkpoint;
+use statement_checkpoint::statement_issuance_checkpoint_at;
+pub use statement_checkpoint::{
+    StatementIssuanceCheckpoint, statement_issuance_source_checkpoint,
+    verify_statement_issuance_checkpoint,
+};
 
 pub const MAX_TASKS: usize = fa_model::limits::MAX_CLOSE_RUN_TASKS;
 
@@ -66,6 +72,9 @@ pub enum CloseTaskAction {
     },
     VerifyBankInstrumentCoverage {
         manifest_oids: Vec<Oid>,
+    },
+    RequireCurrentStatementIssuance {
+        ordinal: u32,
     },
     /// Future task kinds are explicitly refused, never marked complete.
     Unsupported(String),
@@ -488,6 +497,9 @@ fn definition_body(
                 let mut manifest_oids = manifest_oids.clone();
                 manifest_oids.sort_by_key(|oid| oid.0);
                 CloseTaskBodyAction::VerifyBankInstrumentCoverage { manifest_oids }
+            }
+            CloseTaskAction::RequireCurrentStatementIssuance { ordinal } => {
+                CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal: *ordinal }
             }
             CloseTaskAction::PromoteDraft {
                 source,
@@ -1282,13 +1294,15 @@ fn read_view<V: Vfs + Clone>(
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
                     | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                    | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. },
                     [TypedRef::Vertex(effect), TypedRef::Object(basis)],
                 ) => (*effect, Some(basis.0), None),
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
                     | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                    | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. },
                     [
                         TypedRef::Vertex(effect),
                         TypedRef::Object(basis),
@@ -1298,7 +1312,8 @@ fn read_view<V: Vfs + Clone>(
                 (
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
                     | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. },
+                    | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                    | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. },
                     _,
                 ) => {
                     return Err(corrupt(
@@ -1596,6 +1611,28 @@ fn verify_effect<V: Vfs + Clone>(
     principal: VId,
     checkpoint: Option<[u8; 32]>,
 ) -> Result<(), KernelError> {
+    if let CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } = task.action {
+        let at = CommitSeq(
+            seq.0
+                .checked_sub(1)
+                .ok_or_else(|| corrupt("statement receipt has no source prefix"))?,
+        );
+        let verified = statement_issuance_checkpoint_at(db, cx, book, period, ordinal, at)?
+            .map_err(|refusal| {
+                corrupt(format!(
+                    "retained statement verification: {}",
+                    refusal.message
+                ))
+            })?;
+        if Some(*verified.source_digest()) != checkpoint
+            || verified.issuance().control_entry != effect
+        {
+            return Err(corrupt(
+                "statement receipt does not reproduce its original issuance and source basis",
+            ));
+        }
+        return Ok(());
+    }
     if let CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } = task.action {
         let at = CommitSeq(
             seq.0
@@ -1751,7 +1788,8 @@ fn verify_effect<V: Vfs + Clone>(
         }
         CloseTaskBodyAction::VerifyYearEndClose { .. }
         | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => {
+        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+        | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. } => {
             return Err(corrupt(
                 "accounting verification escaped its native source check",
             ));
@@ -1766,7 +1804,7 @@ fn stale_checkpoint(task: &str) -> Refusal {
         exit::CONFLICT,
         format!("close task `{task}` verified an earlier accounting source; the terminal transition cannot use that stale completion"),
         "plan §7.5 (verify the exact current close before the terminal transition)",
-        "inspect the task's native year-end close or bank reconciliation, resolve drift, then start a new close run with a fresh verification before its terminal transition",
+        "inspect the task's native year-end close, bank reconciliation or issued statement, resolve drift, then start a new close run with a fresh verification before its terminal transition",
     )
     .at("task", task)
 }
@@ -1784,6 +1822,7 @@ fn check_accounting_checkpoints<V: Vfs + Clone>(
             CloseTaskBodyAction::VerifyYearEndClose { .. }
                 | CloseTaskBodyAction::VerifyBankReconciliation { .. }
                 | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }
         ) {
             continue;
         }
@@ -1809,6 +1848,10 @@ fn check_accounting_checkpoints<V: Vfs + Clone>(
             return Err(corrupt("verified close receipt has no source digest"));
         };
         let current = match &body.action {
+            CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } => {
+                statement_issuance_checkpoint_at(db, cx, book, &view.body.period, *ordinal, at)?
+                    .map(TaskVerification::Statement)
+            }
             CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
                 crate::closing::year_end_close_checkpoint_at(db, cx, book, *fiscal_year, at)?
                     .map(TaskVerification::YearEnd)
@@ -1923,13 +1966,23 @@ fn validate_task_review<V: Vfs + Clone>(
     review: Option<&CloseTaskReview>,
 ) -> Outcome<()> {
     let Some(review) = review else {
-        return Ok(if task.completion.is_none() && !view.reviews.is_empty() {
-            Err(review_invalidated(
-                "this close run has a durable combined review; execution cannot omit it",
-            ))
-        } else {
-            Ok(())
-        });
+        return Ok(
+            if task.completion.is_none()
+                && (!view.reviews.is_empty()
+                    || view.body.tasks.iter().any(|task| {
+                        matches!(
+                            task.action,
+                            CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }
+                        )
+                    }))
+            {
+                Err(review_invalidated(
+                    "this close run requires its retained combined review; execution cannot omit it",
+                ))
+            } else {
+                Ok(())
+            },
+        );
     };
     if review.book != book.book_id
         || review.run != view.vid
@@ -2034,6 +2087,7 @@ enum TaskVerification {
     YearEnd(crate::closing::YearEndCloseCheckpoint),
     Bank(BankReconciliationCheckpoint),
     BankCoverage(BankInstrumentCoverageCheckpoint),
+    Statement(StatementIssuanceCheckpoint),
 }
 
 impl TaskVerification {
@@ -2042,6 +2096,7 @@ impl TaskVerification {
             Self::YearEnd(checkpoint) => checkpoint.source_digest(),
             Self::Bank(checkpoint) => checkpoint.source_digest(),
             Self::BankCoverage(checkpoint) => checkpoint.source_digest(),
+            Self::Statement(checkpoint) => checkpoint.source_digest(),
         }
     }
 
@@ -2050,6 +2105,7 @@ impl TaskVerification {
             Self::YearEnd(checkpoint) => checkpoint.known_at(),
             Self::Bank(checkpoint) => checkpoint.known_at(),
             Self::BankCoverage(checkpoint) => checkpoint.known_at(),
+            Self::Statement(checkpoint) => checkpoint.known_at(),
         }
     }
 
@@ -2058,6 +2114,7 @@ impl TaskVerification {
             Self::YearEnd(checkpoint) => checkpoint.latest_close().entry_ref.vid,
             Self::Bank(checkpoint) => checkpoint.attestation().vid,
             Self::BankCoverage(_) => crate::rows::book_root(),
+            Self::Statement(checkpoint) => checkpoint.issuance().control_entry,
         }
     }
 }
@@ -2119,6 +2176,7 @@ impl TaskCompletion {
                     CloseTaskBodyAction::VerifyYearEndClose { .. }
                         | CloseTaskBodyAction::VerifyBankReconciliation { .. }
                         | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+                        | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }
                 ) && let Some(receipt) = self
                     .view
                     .tasks
@@ -2128,6 +2186,22 @@ impl TaskCompletion {
                 {
                     txn.vertex(db, receipt.record)?;
                     txn.vertex(db, receipt.effect)?;
+                    if let CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } =
+                        task.action
+                    {
+                        let verified = match statement_issuance_checkpoint_at(
+                            db,
+                            cx,
+                            book,
+                            &self.view.body.period,
+                            ordinal,
+                            db.frontier()?,
+                        )? {
+                            Ok(verified) => verified,
+                            Err(refusal) => return Ok(Err(refusal)),
+                        };
+                        verified.witness(txn, db)?;
+                    }
                 }
             }
             if let Err(refusal) =
@@ -2142,6 +2216,19 @@ impl TaskCompletion {
             }
         }
         match (&body.action, &self.verification) {
+            (
+                CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal },
+                Some(TaskVerification::Statement(verified)),
+            ) => {
+                if verified.issuance().issuance.ordinal != *ordinal
+                    || verified.issuance().issuance.period != self.view.body.period
+                    || verified.known_at() != db.frontier()?
+                    || verified.issuance().control_entry != effect
+                {
+                    return Ok(Err(stale_checkpoint(&body.id)));
+                }
+                verified.witness(txn, db)?;
+            }
             (
                 CloseTaskBodyAction::VerifyYearEndClose { fiscal_year },
                 Some(TaskVerification::YearEnd(verification)),
@@ -2422,6 +2509,7 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         CloseTaskBodyAction::VerifyYearEndClose { .. }
             | CloseTaskBodyAction::VerifyBankReconciliation { .. }
             | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+            | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. }
     ) && (request.transition_plan.is_some() || !request.approvals.is_empty())
     {
         return Ok(Err(invalid(
@@ -2484,6 +2572,19 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         return Ok(Err(refusal));
     }
     let verification = match &body.action {
+        CloseTaskBodyAction::RequireCurrentStatementIssuance { ordinal } => {
+            match statement_issuance_checkpoint_at(
+                db,
+                cx,
+                book,
+                &view.body.period,
+                *ordinal,
+                db.frontier()?,
+            )? {
+                Ok(verified) => Some(TaskVerification::Statement(verified)),
+                Err(refusal) => return Ok(Err(refusal.at("task", task_id))),
+            }
+        }
         CloseTaskBodyAction::VerifyYearEndClose { fiscal_year } => {
             match crate::closing::year_end_close_checkpoint_at(
                 db,
@@ -2585,7 +2686,8 @@ pub async fn execute_close_task<V: Vfs + Clone>(
         }
         CloseTaskBodyAction::VerifyYearEndClose { .. }
         | CloseTaskBodyAction::VerifyBankReconciliation { .. }
-        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. } => {
+        | CloseTaskBodyAction::VerifyBankInstrumentCoverage { .. }
+        | CloseTaskBodyAction::RequireCurrentStatementIssuance { .. } => {
             let verification = completion
                 .verification
                 .as_ref()

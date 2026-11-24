@@ -621,6 +621,255 @@ fn combined_certificate(f: &Fixture, name: &str) -> String {
     format!("C:{}", text(certificate, "oid"))
 }
 
+fn issue_close_statement(f: &Fixture) -> String {
+    let events = close_events(
+        f,
+        &[
+            "statement",
+            "income-statement",
+            "--for",
+            PERIOD,
+            "--certify",
+        ],
+    );
+    let certificate = events
+        .iter()
+        .find(|event| text(event, "event") == "report_certificate")
+        .unwrap();
+    let digest = text(certificate, "oid").to_string();
+    let plan = ok(
+        &f.book,
+        &[
+            "statement",
+            "issue",
+            "--certificate",
+            &digest,
+            "--issued-to",
+            "board",
+            "--dry-run",
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let path = write(&f.dir, "issued-statement.plan", text(&plan, "bytes"));
+    let approval = ok(
+        &f.book,
+        &[
+            "approve",
+            "--proposal",
+            text(&plan, "proposal_digest"),
+            "--as",
+            "issued-statement-auditor",
+        ],
+    );
+    ok(
+        &f.book,
+        &[
+            "statement",
+            "issue",
+            "--plan",
+            &path,
+            "--approval",
+            text(&approval, "approval_vid"),
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    digest
+}
+
+fn start_issued_close(f: &Fixture) {
+    let started = ok(
+        &f.book,
+        &[
+            "close",
+            "start",
+            "--run",
+            "issued-close",
+            "--period",
+            PERIOD,
+            "--tasks",
+            r#"[{"id":"issued","require_current_statement_issuance":1},{"id":"finish","depends_on":["issued"],"transition":"close"}]"#,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let issued = task(get(&started, "run"), "issued");
+    assert_eq!(text(issued, "kind"), "require-current-statement-issuance");
+    assert_eq!(integer(issued, "issuance_ordinal"), 1);
+}
+
+#[test]
+fn issued_statement_close_requires_retained_review_and_finishes_across_restarts() {
+    let f = Fixture::new(false);
+    f.post("issued-source", "1000", "4000", "100.00");
+    let certificate = issue_close_statement(&f);
+    start_issued_close(&f);
+    let before = head(&f.book);
+    let report = ok(&f.book, &["close", "dry-run", "--run", "issued-close"]);
+    let checked = task(&report, "issued");
+    assert_eq!(text(checked, "state"), "statement-issuance-current");
+    let issuance = get(checked, "statement_issuance");
+    assert_eq!(text(issuance, "certificate"), certificate);
+    assert_eq!(integer(issuance, "ordinal"), 1);
+    assert_eq!(integer(issuance, "checked_at"), before);
+    assert!(integer(issuance, "certified_at") < before);
+    assert_eq!(head(&f.book), before, "rehearsal is a read");
+    let review = combined_certificate(&f, "issued-close");
+    let before = head(&f.book);
+    let step = [
+        "close",
+        "step",
+        "--run",
+        "issued-close",
+        "--task",
+        "issued",
+        "--as",
+        CONTROLLER,
+        "--yes",
+    ];
+    assert_ne!(
+        run(&f.book, &step).0,
+        0,
+        "native execution requires the retained combined review"
+    );
+    assert_eq!(head(&f.book), before);
+    let mut reviewed_step = step.to_vec();
+    reviewed_step.extend(["--rehearsal", &review]);
+    let done = ok(&f.book, &reviewed_step);
+    assert_eq!(
+        head(&f.book),
+        before + 1,
+        "check and receipt commit atomically"
+    );
+    assert_eq!(
+        get(task(&status(&f, "issued-close"), "issued"), "completion"),
+        get(&done, "receipt"),
+    );
+    let retried = ok(&f.book, &reviewed_step);
+    assert_eq!(get(&retried, "already_recorded"), &Json::Bool(true));
+    assert_eq!(get(&retried, "receipt"), get(&done, "receipt"));
+    assert_eq!(head(&f.book), before + 1);
+    let path = f.dir.join("issued-close.plan").display().to_string();
+    ok(
+        &f.book,
+        &[
+            "close",
+            "step",
+            "--run",
+            "issued-close",
+            "--task",
+            "finish",
+            "--key",
+            "issued-close-finish",
+            "--reason",
+            "AuditComplete",
+            "--dry-run",
+            "--plan-out",
+            &path,
+            "--as",
+            CONTROLLER,
+        ],
+    );
+    let remaining = combined_certificate(&f, "issued-close");
+    let finished = ok(
+        &f.book,
+        &[
+            "close",
+            "step",
+            "--run",
+            "issued-close",
+            "--task",
+            "finish",
+            "--plan",
+            &path,
+            "--rehearsal",
+            &remaining,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    assert_eq!(get(get(&finished, "run"), "complete"), &Json::Bool(true));
+    let after = head(&f.book);
+    let replay = close_events(&f, &["replay", &review]);
+    let original = replay
+        .iter()
+        .find(|event| text(event, "event") == "close_run_rehearsal")
+        .unwrap();
+    assert_eq!(get(original, "tasks"), get(&report, "tasks"));
+    assert_eq!(get(original, "complete_on_trunk"), &Json::Bool(false));
+    assert_eq!(
+        head(&f.book),
+        after,
+        "historical replay never repeats close effects"
+    );
+}
+
+#[test]
+fn issued_statement_close_rejects_offsetting_entries_even_after_checkpoint_completion() {
+    let f = Fixture::new(false);
+    f.post("issued-initial", "1000", "4000", "100.00");
+    issue_close_statement(&f);
+    start_issued_close(&f);
+    let original = combined_certificate(&f, "issued-close");
+    ok(
+        &f.book,
+        &[
+            "close",
+            "step",
+            "--run",
+            "issued-close",
+            "--task",
+            "issued",
+            "--rehearsal",
+            &original,
+            "--as",
+            CONTROLLER,
+            "--yes",
+        ],
+    );
+    let completion = get(task(&status(&f, "issued-close"), "issued"), "completion").clone();
+    f.post("issued-later", "1000", "4000", "2.00");
+    f.post("issued-offset", "4000", "1000", "2.00");
+    let before = head(&f.book);
+    for args in [
+        vec!["close", "dry-run", "--run", "issued-close"],
+        vec![
+            "close",
+            "step",
+            "--run",
+            "issued-close",
+            "--task",
+            "finish",
+            "--key",
+            "stale-issued-close",
+            "--reason",
+            "AuditComplete",
+            "--dry-run",
+            "--as",
+            CONTROLLER,
+        ],
+    ] {
+        let (code, refusal) = run(&f.book, &args);
+        assert_ne!(
+            code, 0,
+            "offsetting source activity must invalidate the issuance: {refusal:?}"
+        );
+        assert_eq!(head(&f.book), before);
+    }
+    let view = status(&f, "issued-close");
+    assert_eq!(get(task(&view, "issued"), "completion"), &completion);
+    assert_eq!(get(task(&view, "finish"), "completion"), &Json::Null);
+    let replay = close_events(&f, &["replay", &original]);
+    assert!(
+        replay
+            .iter()
+            .any(|event| text(event, "event") == "close_run_rehearsal")
+    );
+    assert_eq!(head(&f.book), before);
+}
+
 #[test]
 fn combined_close_rehearsal_retains_and_replays_after_real_execution() {
     let f = Fixture::new(false);

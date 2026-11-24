@@ -56,7 +56,7 @@ fn corrupt(root: VId, message: &str) -> KernelError {
     KernelError::Corrupt(format!("object {:032x}: {message}", root.0))
 }
 
-fn identity(kind: ObjectKind, bytes: &[u8]) -> ObjectRef {
+pub(crate) fn identity(kind: ObjectKind, bytes: &[u8]) -> ObjectRef {
     ObjectRef {
         digest: domain_digest(
             b"fa:object-content:v1",
@@ -83,7 +83,7 @@ pub fn payload(kind: ObjectKind, bytes: &[u8]) -> Result<Vec<u8>, KernelError> {
     Ok(w.finish()?)
 }
 
-fn fragment_vid(book: Id128, root: VId, object: ObjectRef, index: usize) -> VId {
+pub(crate) fn fragment_vid(book: Id128, root: VId, object: ObjectRef, index: usize) -> VId {
     let hash = domain_digest(
         b"fa:object-fragment:v1",
         &[

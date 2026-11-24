@@ -186,6 +186,16 @@ pub(crate) fn render(
                         ]),
                         Json::Null,
                     ),
+                    CloseTaskRehearsalOutcome::CurrentStatementIssuance { checked_at, .. } => (
+                        "statement-issuance-current",
+                        Json::Null,
+                        Json::Null,
+                        Json::Int(i128::from(checked_at.0)),
+                        Vec::new(),
+                        Json::Null,
+                        Json::Null,
+                        Json::Null,
+                    ),
                     CloseTaskRehearsalOutcome::VerifiedBankInstrumentCoverage {
                         verified_at,
                         ..
@@ -243,6 +253,27 @@ pub(crate) fn render(
                 ("transition", transition),
                 ("verification", verification),
                 ("bank_verification", bank_verification),
+                (
+                    "statement_issuance",
+                    match &task.outcome {
+                        CloseTaskRehearsalOutcome::CurrentStatementIssuance {
+                            ordinal,
+                            checked_at,
+                            issuance,
+                            certificate_digest,
+                            certified_at,
+                            source_digest,
+                        } => obj(vec![
+                            ("ordinal", Json::Int(i128::from(*ordinal))),
+                            ("checked_at", Json::Int(i128::from(checked_at.0))),
+                            ("issuance", s(format!("{:032x}", issuance.0))),
+                            ("certificate", s(hex(certificate_digest))),
+                            ("certified_at", Json::Int(i128::from(certified_at.0))),
+                            ("source_digest", s(hex(source_digest))),
+                        ]),
+                        _ => Json::Null,
+                    },
+                ),
                 (
                     "bank_instrument_coverage",
                     match &task.outcome {

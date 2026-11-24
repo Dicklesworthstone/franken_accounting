@@ -18,9 +18,15 @@ max_text_bytes = 128
 max_body_bytes = 12288
 run_fields = ["version:u16=1", "book_id:bytes16", "name:string", "period:string", "owner:u128", "tasks:list<CloseTask>"]
 task_fields = ["version:u16=1", "id:string", "depends_on:list<string>", "action:u8", "action_fields"]
-action_tags = ["0:PromoteDraft", "1:PeriodTransition"]
+action_tags = ["0:PromoteDraft", "1:PeriodTransition", "2:VerifyYearEndClose", "3:VerifyBankReconciliation", "4:VerifyBankInstrumentCoverage", "5:RequireCurrentStatementIssuance"]
 draft_fields = ["draft:u128", "name:string", "owner:u128", "source_known_at:u64", "source_digest:bytes32", "certificate_digest:bytes32", "entries_digest:bytes32", "entry_count:u32"]
 period_fields = ["to:u8=2|3|4"]
+year_end_fields = ["fiscal_year:i32"]
+bank_reconciliation_fields = ["manifest_oid:bytes32"]
+bank_instrument_coverage_fields = ["manifest_oids:list<bytes32>"]
+statement_issuance_fields = ["ordinal:u32>0"]
+rehearsal_outcome_tags = ["0:AlreadyCompleted", "1:Rehearsed", "2:AwaitingNativeTransitionReview", "3:VerifiedYearEndClose", "4:VerifiedBankReconciliation", "5:VerifiedBankInstrumentCoverage", "6:CurrentStatementIssuance"]
+statement_issuance_rehearsal_fields = ["ordinal:u32", "checked_at:u64", "issuance:u128", "certificate_digest:bytes32", "certified_at:u64", "source_digest:bytes32"]
 
 # Integers use fixed little-endian widths. Strings and lists use u32 lengths;
 # tasks are encoded inline. Tasks and dependency ids are strictly ascending.
@@ -55,6 +61,17 @@ period_fields = ["to:u8=2|3|4"]
 # the kernel checks its bounded family/book/run/body identity and exact native
 # frontier, witnesses retention, and atomically binds the review to the effect.
 # The identity token alone does not establish the review's accounting result.
+# An issued-statement prerequisite selects an existing native issuance in the
+# run's period and depends transitively on every monetary task. Its retained
+# statement bytes and native issuance must agree on book, trunk, primary period,
+# definition and certified prefix. The facade fully replays the statement;
+# the kernel authenticates retention and rejects later accounting input changes,
+# including offsetting entries. Its receipt binds Vertex(issuance control entry)
+# and Object(source digest), followed by the selected combined review digest.
+# The first execution of an issuance-gated run requires a retained combined
+# review. Terminal planning and publication recheck the current source. Original
+# receipts authenticate their historical prefix even after later activity.
+# This prerequisite neither generates nor issues a replacement statement.
 # This schema does not attest that arbitrary Canon/procedure tasks executed,
 # that a draft certificate is a signature, or that portable monetary reports
 # independently establish the close workflow's admission predicates.
