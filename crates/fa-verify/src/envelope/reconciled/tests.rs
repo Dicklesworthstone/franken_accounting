@@ -306,7 +306,8 @@ fn reconciled_records_refuse_broken_predecessor_closure_and_bounded_manifest_enc
 
     // Re-sign and rebind malformed manifest bytes: the failure is its exact
     // decoding contract, not a stale outer attestation or document digest.
-    for (offset, byte) in [(0, b'X'), (14, 3), (16, 1), (50, 7), (51, 2)] {
+    // Parser tag 7 is PlaidSync. Tag 8 is the first unregistered parser.
+    for (offset, byte) in [(0, b'X'), (14, 3), (16, 1), (50, 8), (51, 2)] {
         let mut malformed = Fixture::new(false);
         malformed.manifest[offset] = byte;
         malformed.rebind_manifest();
