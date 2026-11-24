@@ -50,6 +50,10 @@ pub(super) struct EntryInfo<'a> {
     /// extensions, independently decoded by the equity report verifier.
     pub case_member: Option<&'a [u8]>,
     pub prior_period_adjustment: Option<&'a [u8]>,
+    /// Immutable external detail (30), with its literal source-shape check.
+    /// The external-feed verifier separately validates every retained row,
+    /// summary leg, evidence commitment and original review citation.
+    pub external_subledger: Option<(&'a [u8], bool)>,
     pub evidence: Vec<([u8; 32], [u8; 32], u8)>,
     pub principal: u128,
     /// Literal registered origin tag; observational procedures distinguish
@@ -216,7 +220,8 @@ fn entry_info_with_shape<'a>(
     for _ in 0..n {
         r.fixed::<36>("unit_total")?;
     }
-    if r.present("entry.base_totals")? {
+    let has_base_totals = r.present("entry.base_totals")?;
+    if has_base_totals {
         r.fixed::<68>("base_totals")?;
         let n = r.count(MAX_ENVELOPE_LIST, 32, "base_totals.rates")?;
         for _ in 0..n {
@@ -364,6 +369,7 @@ fn entry_info_with_shape<'a>(
     let mut obligation_maturity = None;
     let mut case_member = None;
     let mut prior_period_adjustment = None;
+    let mut external_subledger = None;
     let mut cash_policy_body = false;
     let mut aggregate_basis = false;
     let mut extension_free = true;
@@ -448,6 +454,18 @@ fn entry_info_with_shape<'a>(
             }
             if tag == 36 {
                 prior_period_adjustment = Some(bytes);
+            }
+            if tag == 30 {
+                external_subledger = Some((
+                    bytes,
+                    envelope.class == 1
+                        && origin == 0
+                        && n == 1
+                        && !has_control
+                        && !has_base_totals
+                        && !has_pending
+                        && supersession.is_empty(),
+                ));
             }
             if tag == 39 {
                 asset_cost::charge(bytes, minor, envelope.class)?;
@@ -574,6 +592,7 @@ fn entry_info_with_shape<'a>(
         obligation_maturity,
         case_member,
         prior_period_adjustment,
+        external_subledger,
         evidence,
         principal,
         origin,

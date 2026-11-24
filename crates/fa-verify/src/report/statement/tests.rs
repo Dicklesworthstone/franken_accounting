@@ -36,6 +36,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         obligation_maturity: None,
         case_member: None,
         prior_period_adjustment: None,
+        external_subledger: None,
         evidence: Vec::new(),
     }
 }

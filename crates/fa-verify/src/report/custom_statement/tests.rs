@@ -117,6 +117,7 @@ fn exact(selection: &statement::Selection) -> statement::VerifiedStatement {
         obligation_maturity: None,
         case_member: None,
         prior_period_adjustment: None,
+        external_subledger: None,
         evidence: vec![],
         principal: 1,
         origin: 0,

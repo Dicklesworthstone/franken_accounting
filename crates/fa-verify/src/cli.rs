@@ -55,6 +55,7 @@
 //! store them.
 
 mod access_log;
+mod external_feed;
 mod native_subledger;
 mod scenario;
 
@@ -126,6 +127,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
                [--subledger CODE --control-account A --through D --known-at N]
+               [--external-feed FEED --control-account A --through D --known-at N]
                                                 independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 statement comparisons and complete native publication traces,
@@ -253,7 +255,7 @@ const COMMANDS: [&str; 14] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 31] = [
+const VALUE_FLAGS: [&str; 32] = [
     "--state",
     "--book",
     "--branch",
@@ -282,6 +284,7 @@ const VALUE_FLAGS: [&str; 31] = [
     "--scenario-request",
     "--view",
     "--subledger",
+    "--external-feed",
     "--control-account",
     "--through",
     "--known-at",
@@ -349,6 +352,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--equity-diff-request",
             "--view",
             "--subledger",
+            "--external-feed",
             "--control-account",
             "--through",
             "--known-at",
@@ -1594,7 +1598,12 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     "use --base-unit for lots, or --units for a native financial statement",
                 ));
             }
-            let native_subledger_request = native_subledger::request(args)?;
+            let external_feed_request = external_feed::request(args)?;
+            let native_subledger_request = if external_feed_request.is_some() {
+                None
+            } else {
+                native_subledger::request(args)?
+            };
             let equity_request = if let Some(path) = args.one("--equity-diff-request") {
                 if units.is_some() || base_unit.is_some() || detail_view {
                     return Err(usage(
@@ -1627,7 +1636,16 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .one("--receipt")
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
-            let verified = if let Some(expected) = &native_subledger_request {
+            let verified = if let Some(expected) = &external_feed_request {
+                crate::report::verify_report_external_feed_expected(
+                    &bytes,
+                    &keys,
+                    expected_checkpoint.as_ref(),
+                    receipt.as_deref(),
+                    expected,
+                    expected_digest.as_ref(),
+                )
+            } else if let Some(expected) = &native_subledger_request {
                 crate::report::verify_report_native_subledger_expected(
                     &bytes,
                     &keys,
@@ -1716,7 +1734,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("effective_through", day(report.effective_through)),
                             (
                                 "report_mode",
-                                s(if report.native_subledger.is_some() {
+                                s(if report.external_feed.is_some() {
+                                    "external_feed_reconciliation"
+                                } else if report.native_subledger.is_some() {
                                     "native_subledger_reconciliation"
                                 } else if report.procedure.is_some() {
                                     "procedure"
@@ -1793,7 +1813,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                             ("records", n(report.checked_records as u64)),
                             (
                                 "rows",
-                                n(if let Some(subledger) = &report.native_subledger {
+                                n(if let Some(external) = &report.external_feed {
+                                    external.rows.len()
+                                } else if let Some(subledger) = &report.native_subledger {
                                     subledger.rows.len()
                                 } else if let Some(procedure) = &report.procedure {
                                     procedure.findings.len()
@@ -1958,6 +1980,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(subledger) = &report.native_subledger {
                         checks.extend(native_subledger::checks(subledger));
+                    }
+                    if let Some(external) = &report.external_feed {
+                        checks.extend(external_feed::checks(external));
                     }
                     if let Some(procedure) = &report.procedure {
                         checks.extend(procedure_checks(procedure));

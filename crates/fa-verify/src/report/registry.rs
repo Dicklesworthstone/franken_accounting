@@ -6,6 +6,7 @@
 //! only the accounting tags interpreted by this version. It does not attest
 //! journaled RegistryEpoch activation or reinterpret unknown future semantics.
 
+pub(super) mod external_feed;
 pub(super) mod native_subledger;
 
 use std::collections::{BTreeMap, BTreeSet};

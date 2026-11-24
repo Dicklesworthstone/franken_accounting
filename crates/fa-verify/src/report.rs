@@ -143,6 +143,7 @@ mod due_date_reconciliation;
 mod equity;
 mod equity_diff;
 mod explain;
+mod external_feed;
 mod functional;
 mod general_ledger;
 mod indirect_cash_flow;
@@ -198,6 +199,11 @@ pub use equity_diff::{
 pub use explain::{
     ExplanationCell, ExplanationCellChange, ExplanationColumn, ExplanationContribution,
     ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
+};
+pub use external_feed::{
+    ExternalFeedRequest, VerifiedExternalFeed, VerifiedExternalFeedBatch,
+    VerifiedExternalFeedContribution, VerifiedExternalFeedLeg, VerifiedExternalFeedRow,
+    VerifiedExternalFeedSummaryLeg, VerifiedExternalFeedTotal,
 };
 pub use functional::{
     VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
@@ -328,6 +334,9 @@ pub struct VerifiedReport {
     /// Journaled native AR/AP designation and exact gross party/control columns.
     /// `rows` retains the complete native trial-balance source.
     pub native_subledger: Option<VerifiedNativeSubledger>,
+    /// Retained external source batches and every selected control-account leg,
+    /// with independently reconstructed gross detail and review citations.
+    pub external_feed: Option<VerifiedExternalFeed>,
     /// Exact statistical procedure replay over the complete native population.
     /// No fraud finding, approval admission or policy activation is asserted.
     pub procedure: Option<VerifiedProcedure>,
@@ -914,12 +923,43 @@ pub fn verify_report_native_subledger_expected(
     expected: &NativeSubledgerRequest,
     expected_certificate: Option<&[u8; 32]>,
 ) -> Result<VerifiedReport, ReportError> {
-    verify_report_with_native_subledger_input(
+    verify_report_with_subledger_inputs(
         bundle,
         trusted_keys,
         expected_checkpoint,
         receipt,
         expected_certificate,
+        None,
+        None,
+        None,
+        Some(expected),
+        None,
+        verify_checkpoint,
+    )
+}
+
+/// Recompute a complete external-feed reconciliation for the recipient's
+/// fixed feed, control account, effective cutoff and known-at. This proves
+/// retained detail, original source/review record citations and exact gross
+/// accounting effects, including uncovered and pending control legs. A signed
+/// receipt or independently selected outer certificate digest must authenticate
+/// the registry closure. External source completeness, native graph mirrors,
+/// historical security admission and actual human independence are unjudged.
+pub fn verify_report_external_feed_expected(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected: &ExternalFeedRequest,
+    expected_certificate: Option<&[u8; 32]>,
+) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_subledger_inputs(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        None,
         None,
         None,
         None,
@@ -1077,7 +1117,7 @@ fn verify_report_with_recipient_inputs(
     recipient_equity_diff: Option<&EquityRollForwardDiffRequest>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
-    verify_report_with_native_subledger_input(
+    verify_report_with_subledger_inputs(
         bundle,
         trusted_keys,
         expected_checkpoint,
@@ -1087,12 +1127,13 @@ fn verify_report_with_recipient_inputs(
         recipient_base_unit,
         recipient_equity_diff,
         None,
+        None,
         authenticate,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_report_with_native_subledger_input(
+fn verify_report_with_subledger_inputs(
     bundle: &[u8],
     trusted_keys: &[[u8; 32]],
     expected_checkpoint: Option<&Checkpoint>,
@@ -1102,6 +1143,7 @@ fn verify_report_with_native_subledger_input(
     recipient_base_unit: Option<u32>,
     recipient_equity_diff: Option<&EquityRollForwardDiffRequest>,
     recipient_native_subledger: Option<&NativeSubledgerRequest>,
+    recipient_external_feed: Option<&ExternalFeedRequest>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
     if let Some(units) = recipient_units {
@@ -1126,6 +1168,21 @@ fn verify_report_with_native_subledger_input(
         ));
     }
     let certificate_bytes = r.bytes(MAX_REPORT_BUNDLE_BYTES, "report_bundle.certificate")?;
+    let external_feed = if external_feed::recognizes(certificate_bytes) {
+        Some(external_feed::decode(certificate_bytes)?)
+    } else {
+        None
+    };
+    match (&external_feed, recipient_external_feed) {
+        (Some(certificate), Some(expected)) => external_feed::bind_request(certificate, expected)?,
+        (None, None) => {}
+        _ => {
+            return Err(failed(
+                "external_feed_request",
+                "external-feed reports require an independent fixed recipient request; that request is not applicable to another report family",
+            ));
+        }
+    }
     let native_subledger = if native_subledger::recognizes(certificate_bytes) {
         Some(native_subledger::decode(certificate_bytes)?)
     } else {
@@ -1288,10 +1345,14 @@ fn verify_report_with_native_subledger_input(
         .or_else(|| lots.as_ref().map(|value| value.source))
         .or_else(|| procedure.as_ref().map(|value| value.source))
         .or_else(|| native_subledger.as_ref().map(|value| value.source))
+        .or_else(|| external_feed.as_ref().map(|value| value.source))
         .unwrap_or(certificate_bytes);
     let cert = certificate(source)?;
     if let Some(request) = &native_subledger {
         native_subledger::bind_source(request, &cert)?;
+    }
+    if let Some(request) = &external_feed {
+        external_feed::bind_source(request, &cert)?;
     }
     if procedure.is_some()
         && (!matches!(cert.selection, Selection::OpenItems(None))
@@ -1404,6 +1465,7 @@ fn verify_report_with_native_subledger_input(
         .or_else(|| lots.as_ref().map(|value| value.digest))
         .or_else(|| procedure.as_ref().map(|value| value.digest))
         .or_else(|| native_subledger.as_ref().map(|value| value.digest))
+        .or_else(|| external_feed.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
     let is_consolidation = matches!(cert.selection, Selection::Consolidation(_));
     if (cert.functional || is_consolidation) != (major == 3) {
@@ -1433,11 +1495,12 @@ fn verify_report_with_native_subledger_input(
             && roll_forward.is_none()
             && summary.is_none()
             && native_subledger.is_none()
+            && external_feed.is_none()
             && major == 2)
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, custom statement, regulatory schedule, dimension-filtered trial balance, OpenItems, ExplainBalance, summary, native subledger, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, custom statement, regulatory schedule, dimension-filtered trial balance, OpenItems, ExplainBalance, summary, native subledger, external feed, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
     if (is_open_items
@@ -1448,12 +1511,13 @@ fn verify_report_with_native_subledger_input(
         || is_custom_statement && !cert.functional
         || is_regulatory_schedule
         || summary.is_some()
-        || native_subledger.is_some())
+        || native_subledger.is_some()
+        || external_feed.is_some())
         && major != 2
     {
         return Err(failed(
             "registry_closure",
-            "native v3/v9/v11 reports, summaries, native subledgers, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
+            "native v3/v9/v11 reports, summaries, native subledgers, external feeds, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -1554,7 +1618,9 @@ fn verify_report_with_native_subledger_input(
     let mut procedure_registry = None;
     let (units, supersession_reasons) = if major >= 2 {
         let n = r.count(
-            if is_consolidation && cert.functional {
+            if external_feed.is_some() {
+                8
+            } else if is_consolidation && cert.functional {
                 7
             } else if major == 3 || procedure.is_some() || native_subledger.is_some() {
                 6
@@ -1573,7 +1639,16 @@ fn verify_report_with_native_subledger_input(
                 r.bytes(1024 * 1024, "registry.canonical")?,
             ));
         }
-        let (units, reasons) = if let Some(request) = &native_subledger {
+        let (units, reasons) = if let Some(request) = &external_feed {
+            (
+                registry::external_feed::verify(
+                    &inputs,
+                    &cert.registry_digest,
+                    &request.registry_digest,
+                )?,
+                BTreeMap::new(),
+            )
+        } else if let Some(request) = &native_subledger {
             (
                 registry::native_subledger::verify(
                     &inputs,
@@ -1747,6 +1822,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
@@ -1818,6 +1894,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
@@ -2052,6 +2129,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest,
@@ -2247,6 +2325,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest,
@@ -2664,6 +2743,7 @@ fn verify_report_with_native_subledger_input(
                 scope: "recomputation",
                 summary: None,
                 native_subledger: None,
+                external_feed: None,
                 procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
@@ -2761,6 +2841,7 @@ fn verify_report_with_native_subledger_input(
                     scope: "recomputation",
                     summary: None,
                     native_subledger: None,
+                    external_feed: None,
                     procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
@@ -2805,6 +2886,7 @@ fn verify_report_with_native_subledger_input(
                 scope: "recomputation",
                 summary: None,
                 native_subledger: None,
+                external_feed: None,
                 procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
@@ -2893,6 +2975,7 @@ fn verify_report_with_native_subledger_input(
                     scope: "recomputation",
                     summary: None,
                     native_subledger: None,
+                    external_feed: None,
                     procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
@@ -2967,6 +3050,7 @@ fn verify_report_with_native_subledger_input(
                     scope: "recomputation",
                     summary: None,
                     native_subledger: None,
+                    external_feed: None,
                     procedure: None,
                     bundle_digest: digest,
                     certificate_digest,
@@ -3011,6 +3095,7 @@ fn verify_report_with_native_subledger_input(
                 scope: "recomputation",
                 summary: None,
                 native_subledger: None,
+                external_feed: None,
                 procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
@@ -3055,6 +3140,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             bundle_digest: digest,
             certificate_digest,
             output_digest: hash_parts(b"fa:report-output:v1", &[&output]),
@@ -3126,6 +3212,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest: cert.digest,
@@ -3259,6 +3346,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest,
@@ -3374,6 +3462,7 @@ fn verify_report_with_native_subledger_input(
                 scope: "recomputation",
                 summary: None,
                 native_subledger: None,
+                external_feed: None,
                 procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
@@ -3473,6 +3562,7 @@ fn verify_report_with_native_subledger_input(
                 scope: "recomputation",
                 summary: None,
                 native_subledger: None,
+                external_feed: None,
                 procedure: None,
                 bundle_digest: digest,
                 certificate_digest,
@@ -3517,6 +3607,7 @@ fn verify_report_with_native_subledger_input(
             scope: "recomputation",
             summary: None,
             native_subledger: None,
+            external_feed: None,
             procedure: None,
             bundle_digest: digest,
             certificate_digest,
@@ -3590,16 +3681,38 @@ fn verify_report_with_native_subledger_input(
     } else {
         (None, output)
     };
-    let unit_universe_source =
-        if summary.is_some() || native_subledger.is_some() || dimension.is_some() && major == 2 {
-            "authenticated-registry"
-        } else {
-            "not-applicable"
-        };
+    let (external_feed, output) = if let Some(certificate) = &external_feed {
+        let (report, output) = external_feed::replay(
+            certificate,
+            &cert,
+            &units,
+            &schema,
+            envelopes,
+            &records,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &resolved,
+            &rows,
+        )?;
+        (Some(report), output)
+    } else {
+        (None, output)
+    };
+    let unit_universe_source = if summary.is_some()
+        || native_subledger.is_some()
+        || external_feed.is_some()
+        || dimension.is_some() && major == 2
+    {
+        "authenticated-registry"
+    } else {
+        "not-applicable"
+    };
     Ok(VerifiedReport {
         scope: "recomputation",
         summary,
         native_subledger,
+        external_feed,
         procedure: None,
         bundle_digest: digest,
         certificate_digest,

@@ -1106,6 +1106,7 @@ mod tests {
             obligation_maturity: None,
             case_member: Some(case),
             prior_period_adjustment: Some(prior),
+            external_subledger: None,
             evidence: Vec::new(),
             principal: 0,
             origin: 0,
