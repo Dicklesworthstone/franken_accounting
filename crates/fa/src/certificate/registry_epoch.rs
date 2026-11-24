@@ -1,6 +1,6 @@
 //! Immutable source registries for retained native trial balances (including
-//! dimension slices), open items, statements, custom layouts, functional reports
-//! and balance explanations.
+//! dimension slices), open items, statements, regulatory schedules, custom
+//! layouts, functional reports and balance explanations.
 //!
 //! The epoch archives source text, not executable code or an authorization grant.
 //! Its semantic closure is the digest the original certificate already binds.
@@ -17,7 +17,9 @@
 //! must match this interpreter exactly; archiving never activates old policy.
 //! Custom statements preserve their presentation-rounding law; their functional
 //! profile shares the exact FX and rounding closure of functional statements
-//! and trial balances. Other selectors keep their existing stricter contract.
+//! and trial balances. Regulatory schedules carry their instruction version
+//! and complete code-mapped definition in the certificate selector; their native
+//! folds need the same four-source epoch as ordinary statements.
 
 use super::*;
 use fa_journal::object::{self, ObjectKind};
@@ -99,6 +101,7 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
             | ReportSelection::DimensionTrialBalance { .. }
             | ReportSelection::OpenItems { .. }
             | ReportSelection::Statement(_)
+            | ReportSelection::RegulatorySchedule(_)
             | ReportSelection::CustomStatement(_)
             | ReportSelection::FunctionalStatement(_)
             | ReportSelection::FunctionalTrialBalance(_)
@@ -697,6 +700,44 @@ mod tests {
             .unwrap()
             .unwrap()
             .certificate
+    }
+
+    fn regulatory_schedules() -> [fa_statements::regulatory::RegulatoryScheduleDefinition; 3] {
+        use fa_statements::regulatory::RegulatoryScheduleDefinition;
+        [
+            RegulatoryScheduleDefinition::ffiec_041_schedule_rc_2026q1(),
+            RegulatoryScheduleDefinition::ffiec_041_schedule_ri_2026q1(),
+            RegulatoryScheduleDefinition::fr_y9c_schedule_hc_2026q1(),
+        ]
+    }
+
+    fn regulatory_certificate(
+        h: &Harness,
+        schedule: fa_statements::regulatory::RegulatoryScheduleDefinition,
+    ) -> ReportCertificate {
+        let report = h
+            .book
+            .certify_report(
+                &h.cx(),
+                ReportSelection::RegulatorySchedule(Box::new(
+                    crate::statements::RegulatorySelection {
+                        schedule,
+                        periods: vec!["FY2026-P01".into()],
+                        comparative: Vec::new(),
+                    },
+                )),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let ReportOutput::RegulatorySchedule(statement) = &report.report else {
+            panic!("expected the native regulatory schedule");
+        };
+        assert!(
+            statement.lines.iter().any(|line| line.amounts == [100]),
+            "the fixture must exercise an actual stock or income amount"
+        );
+        report.certificate
     }
 
     fn declare_epoch_dimension(h: &mut Harness, code: &str, parent: Option<&str>) {
@@ -1451,6 +1492,202 @@ mod tests {
             );
             let replay = h.book.replay_report(&h.cx(), &saved).unwrap().unwrap();
             assert_eq!(replay.canonical_bytes().unwrap(), expected.output);
+        }
+    }
+
+    #[test]
+    fn regulatory_epochs_publish_on_first_retention_and_replay_after_reopen() {
+        for schedule in regulatory_schedules() {
+            let (mut h, _) = Harness::with_posts(1);
+            let original = regulatory_certificate(&h, schedule);
+            let before = h.head();
+            let root = vid(h.book.context().book_id, &original.registry_digest);
+            assert!(h.book.db.vertex_at(root, before).unwrap().is_none());
+            let ack = h.retain(&original).unwrap();
+            assert_eq!(ack.recorded_at.0, before.0 + 1);
+            assert_eq!(
+                h.book
+                    .db
+                    .vertex_at(root, ack.recorded_at)
+                    .unwrap()
+                    .expect("the first regulatory retention archives its source epoch")
+                    .created_at,
+                ack.recorded_at,
+                "the source epoch publishes atomically with its certificate"
+            );
+            let epoch = resolve(&h.book.db, &h.cx().query(), h.book.context(), &original)
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(epoch, Epoch::current(h.book.context().book_id).unwrap());
+            assert_eq!(h.retain(&original).unwrap(), ack);
+            assert_eq!(h.head(), ack.recorded_at, "an exact retry writes nothing");
+
+            let h = h.reopen();
+            let stored = h.read(&original.digest).unwrap();
+            assert_eq!(stored, original, "the complete schedule remains pinned");
+            let before = h.head();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &stored)
+                    .unwrap()
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap(),
+                original.output
+            );
+            assert_eq!(
+                h.book
+                    .certificate_status(&h.cx(), &stored)
+                    .unwrap()
+                    .unwrap(),
+                CertificateStatus::Current { checked_at: before }
+            );
+            assert_eq!(h.head(), before, "replay and status are read-only");
+        }
+    }
+
+    #[test]
+    fn regulatory_epochs_replay_archived_sources_without_relaxing_input_or_output_checks() {
+        for schedule in regulatory_schedules() {
+            let (mut h, _) = Harness::with_posts(1);
+            let original = regulatory_certificate(&h, schedule);
+            let epoch = historical_epoch(h.book.context().book_id);
+            let historical = original.resealed_under(epoch.closure);
+            assert_ne!(historical.registry_digest, original.registry_digest);
+            let before = h.head();
+            assert_eq!(
+                h.retain(&historical).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE,
+                "the current executable cannot invent historical source texts"
+            );
+            assert_eq!(h.head(), before);
+            publish_epoch(&mut h, &epoch);
+            h.retain(&historical).unwrap();
+            let h = h.reopen();
+            let stored = h.read(&historical.digest).unwrap();
+            assert_eq!(stored.selection, original.selection);
+            let before = h.head();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &stored)
+                    .unwrap()
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap(),
+                original.output
+            );
+            assert_eq!(
+                h.book
+                    .certificate_status(&h.cx(), &stored)
+                    .unwrap()
+                    .unwrap(),
+                CertificateStatus::Current { checked_at: before }
+            );
+            let documents = offline_report_registries_at(
+                &h.book.db,
+                &h.cx().query(),
+                h.book.context(),
+                &stored,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                documents,
+                epoch.offline_documents(&h.book.context().units).unwrap()
+            );
+            assert_ne!(
+                documents[3].1,
+                document("foundations", REPORT_REGISTRIES[3].1)
+                    .unwrap()
+                    .canonical_bytes(),
+                "source export must not substitute the running binary's foundation pin"
+            );
+
+            let mut wrong_native = stored.clone();
+            wrong_native.inputs[0].result_digest.0[0] ^= 1;
+            wrong_native = wrong_native.resealed_under(epoch.closure);
+            let refusal = h
+                .book
+                .replay_report(&h.cx(), &wrong_native)
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(refusal.code, code::CERTIFICATE_INVALID);
+            assert!(refusal.message.contains("native input"));
+
+            let mut wrong_output = stored.clone();
+            wrong_output.output[0] ^= 1;
+            wrong_output.output_digest = digest(b"fa:report-output:v1", &wrong_output.output);
+            wrong_output = wrong_output.resealed_under(epoch.closure);
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &wrong_output)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_INVALID
+            );
+
+            let mut wrong_definition = stored;
+            let ReportSelection::RegulatorySchedule(selection) = &mut wrong_definition.selection
+            else {
+                panic!("expected a regulatory selector");
+            };
+            selection
+                .schedule
+                .statement_definition
+                .title
+                .push_str(" changed");
+            wrong_definition = wrong_definition.resealed_under(epoch.closure);
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &wrong_definition)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_INVALID,
+                "an archived epoch cannot authenticate another report definition"
+            );
+            assert_eq!(h.head(), before, "historical verification writes nothing");
+        }
+    }
+
+    #[test]
+    fn regulatory_epochs_refuse_changed_accounting_meanings_and_unrelated_profiles() {
+        let (mut h, _) = Harness::with_posts(1);
+        let original = regulatory_certificate(&h, regulatory_schedules()[0].clone());
+        for variant in 0..3 {
+            let mut sources = historical_epoch(h.book.context().book_id).sources;
+            match variant {
+                0 => {
+                    assert!(sources[1].1.contains("supersession = \"reverses\""));
+                    sources[1].1 = sources[1]
+                        .1
+                        .replace("supersession = \"reverses\"", "supersession = \"none\"");
+                }
+                1 => {
+                    assert!(sources[2].1.contains("scale = 2"));
+                    sources[2].1 = sources[2].1.replacen("scale = 2", "scale = 3", 1);
+                }
+                _ => sources.push((REASON_CODES.0.into(), REASON_CODES.1.into())),
+            }
+            let incompatible = Epoch::new(h.book.context().book_id, sources).unwrap();
+            publish_epoch(&mut h, &incompatible);
+            let changed = original.resealed_under(incompatible.closure);
+            let before = h.head();
+            assert_eq!(
+                h.book
+                    .replay_report(&h.cx(), &changed)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            assert_eq!(
+                h.retain(&changed).unwrap_err().code,
+                code::CERTIFICATE_REGISTRY_UNAVAILABLE
+            );
+            assert_eq!(h.head(), before, "refused source meanings publish nothing");
         }
     }
 
