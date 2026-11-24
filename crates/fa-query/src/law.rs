@@ -28,6 +28,7 @@
 //! analysis cannot prove is refused, never admitted.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use crate::lex::{Kind, Lexed};
 use crate::{Law, Refusal, clause_word};
@@ -601,6 +602,182 @@ fn compared_with_literal(lexed: &Lexed<'_>, start: usize, end: usize) -> bool {
     saw && k > 0 && literal(lexed, k - 1)
 }
 
+/// A direct COUNT(amount) observes presence, not the amount's value. DISTINCT
+/// compares values and is not exempt. A COUNT of an expression still evaluates
+/// that expression: its comparisons and arithmetic must pass the amount law.
+fn counted(lexed: &Lexed<'_>, i: usize) -> bool {
+    let mut end = i + 1;
+    while lexed.punct(end, '.') && lexed.kind(end + 1) == Some(Kind::Word) {
+        end += 2;
+    }
+    let (start, end) = grouped_reference(lexed, i, end);
+    let Some(parent) = lexed.tokens[start].parent else {
+        return false;
+    };
+    parent > 0
+        && lexed.punct(parent, '(')
+        && lexed.word(parent - 1, "COUNT")
+        && start == parent + 1
+        && lexed.punct(end, ')')
+        && lexed.tokens[end].depth == lexed.tokens[parent].depth
+        && lexed.tokens[end].parent == lexed.tokens[parent].parent
+}
+
+/// COUNT(DISTINCT amount) compares amount values while removing duplicates.
+/// It needs exact distinct aggregation, even though its output is an integer.
+fn distinctly_counted(lexed: &Lexed<'_>, i: usize) -> bool {
+    let mut parent = lexed.tokens[i].parent;
+    while let Some(p) = parent {
+        if p > 0
+            && lexed.punct(p, '(')
+            && lexed.word(p - 1, "COUNT")
+            && lexed.word(p + 1, "DISTINCT")
+        {
+            return true;
+        }
+        parent = lexed.tokens[p].parent;
+    }
+    false
+}
+
+/// The bounds of one value beside IN or BETWEEN. Grouping, list literals and
+/// function calls are complete operands; a property chain keeps its root.
+/// More elaborate operands are refused below instead of guessed at.
+fn operand_end(lexed: &Lexed<'_>, start: usize) -> usize {
+    let mut at = start;
+    while lexed.punct(at, '-') || lexed.punct(at, '+') {
+        at += 1;
+    }
+    if at >= lexed.tokens.len() {
+        return at;
+    }
+    if lexed.kind(at) == Some(Kind::Word) && lexed.punct(at + 1, '(') {
+        at += 1;
+    }
+    let close = if lexed.punct(at, '(') {
+        Some(')')
+    } else if lexed.punct(at, '[') {
+        Some(']')
+    } else if lexed.punct(at, '{') {
+        Some('}')
+    } else {
+        None
+    };
+    if let Some(close) = close {
+        let depth = lexed.tokens[at].depth;
+        at = (at + 1..lexed.tokens.len())
+            .find(|&k| lexed.tokens[k].depth == depth && lexed.punct(k, close))
+            .map_or(lexed.tokens.len(), |k| k + 1);
+    } else {
+        at += 1;
+    }
+    while lexed.punct(at, '.') && lexed.kind(at + 1) == Some(Kind::Word) {
+        at += 2;
+    }
+    at
+}
+
+fn operand_start(lexed: &Lexed<'_>, end: usize) -> usize {
+    let Some(mut at) = end.checked_sub(1) else {
+        return 0;
+    };
+    let open = if lexed.punct(at, ')') {
+        Some('(')
+    } else if lexed.punct(at, ']') {
+        Some('[')
+    } else if lexed.punct(at, '}') {
+        Some('{')
+    } else {
+        None
+    };
+    if let Some(open) = open {
+        let depth = lexed.tokens[at].depth;
+        at = (0..at)
+            .rev()
+            .find(|&k| lexed.tokens[k].depth == depth && lexed.punct(k, open))
+            .unwrap_or(at);
+        if open == '(' && !grouping_parenthesis(lexed, at) {
+            at = at.saturating_sub(1);
+        }
+    }
+    while at >= 2 && lexed.punct(at - 1, '.') && lexed.kind(at - 2) == Some(Kind::Word) {
+        at -= 2;
+    }
+    if at > 0 && (lexed.punct(at - 1, '-') || lexed.punct(at - 1, '+')) {
+        at -= 1;
+    }
+    at
+}
+
+fn compares_container(lexed: &Lexed<'_>, expression: Range<usize>) -> bool {
+    let mut at = expression.start;
+    while at < expression.end {
+        if !operator(lexed, at) {
+            at += 1;
+            continue;
+        }
+        let start = operand_start(lexed, at).max(expression.start);
+        let mut right = at + 1;
+        while operator(lexed, right) {
+            right += 1;
+        }
+        let end = operand_end(lexed, right).min(expression.end);
+        if (start..end).any(|k| lexed.punct(k, '{') || lexed.punct(k, '[')) {
+            return true;
+        }
+        at = right;
+    }
+    false
+}
+
+struct WordComparison {
+    span: Range<usize>,
+    has_literal: bool,
+    complete: bool,
+}
+
+fn word_comparison_keyword(lexed: &Lexed<'_>, i: usize) -> bool {
+    (lexed.word(i, "IN") || lexed.word(i, "BETWEEN"))
+        && !(i > 0
+            && (lexed.punct(i - 1, '.') || lexed.punct(i - 1, ':') || lexed.word(i - 1, "AS")))
+        && !lexed.punct(i + 1, ':')
+}
+
+/// Membership and range predicates compare their operands just as = and <
+/// do. Inspect both the subject and every list/range operand, so putting the
+/// amount on the right cannot turn a literal into an exact decimal.
+fn word_comparisons(lexed: &Lexed<'_>, item: Range<usize>) -> Vec<WordComparison> {
+    let mut found = Vec::new();
+    for k in item.clone() {
+        if !word_comparison_keyword(lexed, k) {
+            continue;
+        }
+        let left_end = if k > 0 && lexed.word(k - 1, "NOT") {
+            k - 1
+        } else {
+            k
+        };
+        let start = operand_start(lexed, left_end).max(item.start);
+        let mut end = operand_end(lexed, k + 1).min(item.end);
+        let mut complete = start < left_end && k + 1 < end;
+        if lexed.word(k, "BETWEEN") {
+            if lexed.word(end, "AND") && end < item.end {
+                let upper = end + 1;
+                end = operand_end(lexed, upper).min(item.end);
+                complete &= upper < end;
+            } else {
+                complete = false;
+            }
+        }
+        found.push(WordComparison {
+            span: start..end,
+            has_literal: (start..end).any(|at| literal(lexed, at)),
+            complete,
+        });
+    }
+    found
+}
+
 /// A complete COUNT or an explicit top-level predicate produces a scalar.
 /// Do not carry the units of its inputs onto its output alias. CASE and
 /// other functions remain conservative: an inner predicate does not establish
@@ -631,6 +808,7 @@ fn scalar_projection(lexed: &Lexed<'_>, mut start: usize, mut end: usize) -> boo
     (start..end).any(|k| {
         lexed.tokens[k].depth == depth
             && (operator(lexed, k)
+                || word_comparison_keyword(lexed, k)
                 || (lexed.word(k, "IS")
                     && (lexed.word(k + 1, "NULL")
                         || (lexed.word(k + 1, "NOT") && lexed.word(k + 2, "NULL")))))
@@ -777,24 +955,95 @@ pub(crate) fn check_with_amount_aliases(
         }
         let mut clause_pins: Vec<(usize, Option<Pin>)> = Vec::new();
         for item in &items {
+            let expression_end = if item.len() >= 3
+                && lexed.word(item.end - 2, "AS")
+                && lexed.kind(item.end - 1) == Some(Kind::Word)
+            {
+                item.end - 2
+            } else {
+                item.end
+            };
+            if item.clone().any(|k| {
+                lexed.punct(k, '.')
+                    && lexed.punct(k + 1, '*')
+                    && lexed.tokens[k].parent.is_some_and(|p| lexed.punct(p, '{'))
+            }) {
+                // A complete raw RETURN n{.*} only renders properties. Keep
+                // a named result conservative so a later ORDER BY row.field
+                // cannot use it as an untyped amount carrier.
+                if lexed.word(start, "RETURN")
+                    && expression_end == item.start + 5
+                    && lexed.kind(item.start) == Some(Kind::Word)
+                    && lexed.punct(item.start + 1, '{')
+                    && lexed.punct(item.start + 2, '.')
+                    && lexed.punct(item.start + 3, '*')
+                    && lexed.punct(item.start + 4, '}')
+                {
+                    if expression_end < item.end {
+                        aliases.insert(lexed.str(item.end - 1).to_string(), None);
+                    }
+                    continue;
+                }
+                return Err(refused(
+                    lexed,
+                    item.start,
+                    "a wildcard map projection does not establish amount provenance".to_string(),
+                    "name the required scalar properties explicitly; keep amounts and their unit keys as separate columns",
+                ));
+            }
             let mut references = Vec::new();
             for k in item.clone() {
-                if lexed.kind(k) != Some(Kind::Word) || (k > 0 && lexed.punct(k - 1, '.')) {
+                if lexed.kind(k) != Some(Kind::Word) || counted(lexed, k) {
                     continue;
                 }
                 let name = lexed.str(k);
-                if lexed.punct(k + 1, '.') && AMOUNTS.contains(&lexed.str(k + 2)) {
-                    if null_test(lexed, k, k + 3) {
+                if k > 0 && lexed.punct(k - 1, '.') {
+                    // `l{.amount}` is the same value as an explicit map field,
+                    // though no binding immediately precedes its dot.
+                    if AMOUNTS.contains(&name)
+                        && lexed.tokens[k].parent.is_some_and(|p| {
+                            lexed.punct(p, '{')
+                                && (k == p + 2 || (k >= 2 && lexed.punct(k - 2, ',')))
+                        })
+                    {
+                        sums_amounts |= aggregated(lexed, k);
+                        references.push(Reference {
+                            var: None,
+                            pin: None,
+                            start: k - 1,
+                            end: k + 1,
+                        });
+                    }
+                    continue;
+                }
+                let mut end = k + 1;
+                while lexed.punct(end, '.') && lexed.kind(end + 1) == Some(Kind::Word) {
+                    end += 2;
+                }
+                if aliases.contains_key(name) && (end > k + 1 || lexed.punct(end, '[')) {
+                    return Err(refused(
+                        lexed,
+                        k,
+                        format!(
+                            "extracting from amount alias `{name}` loses its scalar unit provenance"
+                        ),
+                        "project the amount directly as a scalar WITH alias, retain its unit pin, then aggregate that scalar",
+                    ));
+                }
+                if end > k + 1 && AMOUNTS.contains(&lexed.str(end - 1)) {
+                    if null_test(lexed, k, end) {
                         continue;
                     }
                     if aggregated(lexed, k) {
                         sums_amounts = true;
                     }
                     references.push(Reference {
-                        var: Some(name.to_string()),
-                        pin: facts.pinned(name).cloned(),
+                        var: (end == k + 3).then(|| name.to_string()),
+                        pin: (end == k + 3)
+                            .then(|| facts.pinned(name).cloned())
+                            .flatten(),
                         start: k,
-                        end: k + 3,
+                        end,
                     });
                 } else if let Some((_, source)) = amounts.iter().find(|(alias, _)| *alias == name)
                     && !lexed.punct(k + 1, '.')
@@ -831,7 +1080,49 @@ pub(crate) fn check_with_amount_aliases(
                 }
             }
             if references.is_empty() {
+                // Rebinding an amount alias to a count or another scalar
+                // ends the old provenance; do not retain a stale unit pin.
+                if projection
+                    && item.len() >= 3
+                    && lexed.word(item.end - 2, "AS")
+                    && lexed.kind(item.end - 1) == Some(Kind::Word)
+                {
+                    aliases.remove(lexed.str(item.end - 1));
+                }
                 continue;
+            }
+            let word_predicates = word_comparisons(lexed, item.clone());
+            let has_map = (item.start..expression_end).any(|k| lexed.punct(k, '{'));
+            let has_list = (item.start..expression_end).any(|k| lexed.punct(k, '['));
+            if (has_map || has_list)
+                && (compares_container(lexed, item.start..expression_end)
+                    || (has_map && !word_predicates.is_empty()))
+            {
+                return Err(refused(
+                    lexed,
+                    references[0].start,
+                    "a container comparison does not establish scalar amount operands or exact literals".to_string(),
+                    "compare the scalar amounts directly after pinning their units; construct output maps and lists after the comparisons",
+                ));
+            }
+            // A list in a complete IN predicate produces a Boolean. An
+            // arbitrary container, map comparison or alias named IN does not.
+            let scalar_membership = !has_map
+                && !word_predicates.is_empty()
+                && scalar_projection(lexed, item.start, expression_end)
+                && references.iter().all(|r| {
+                    word_predicates
+                        .iter()
+                        .any(|p| p.complete && p.span.start <= r.start && r.end <= p.span.end)
+                });
+            if lexed.word(start, "WITH") && (has_map || has_list) && !scalar_membership {
+                return Err(refused(
+                    lexed,
+                    references[0].start,
+                    "an intermediate amount container does not preserve scalar unit provenance"
+                        .to_string(),
+                    "project the amount directly: WITH l.amount AS value after pinning l's unit; render containers only in the final RETURN",
+                ));
             }
             let mut distinct: Vec<&Reference> = Vec::new();
             for r in &references {
@@ -864,7 +1155,22 @@ pub(crate) fn check_with_amount_aliases(
             }
             for r in &references {
                 let shown = &lexed.text[lexed.tokens[r.start].start..lexed.tokens[r.end - 1].end];
-                if compared_with_literal(lexed, r.start, r.end) {
+                if distinctly_counted(lexed, r.start) {
+                    return Err(refused(
+                        lexed,
+                        r.start,
+                        format!(
+                            "COUNT(DISTINCT `{shown}`) requires exact amount comparison and cannot skip an unmirrored amount"
+                        ),
+                        "project each amount and its unit, then deduplicate exact values in the caller; ordinary COUNT(amount) counts mirror presence only",
+                    ));
+                }
+                let word_predicate = word_predicates
+                    .iter()
+                    .find(|p| p.span.start <= r.start && r.end <= p.span.end);
+                if compared_with_literal(lexed, r.start, r.end)
+                    || word_predicate.is_some_and(|p| p.has_literal)
+                {
                     return Err(refused(
                         lexed,
                         r.start,
@@ -874,7 +1180,23 @@ pub(crate) fn check_with_amount_aliases(
                         PIN_FIX,
                     ));
                 }
-                if projection && compared(lexed, r.start, r.end) && r.pin.is_none() {
+                if !word_predicates.is_empty()
+                    && (word_predicate.is_some_and(|p| !p.complete)
+                        || (word_predicate.is_none() && !compared(lexed, r.start, r.end)))
+                {
+                    return Err(refused(
+                        lexed,
+                        r.start,
+                        format!(
+                            "the IN/BETWEEN expression does not establish `{shown}`'s comparison operands"
+                        ),
+                        "compare scalar amounts with explicit =, < or > predicates after pinning their units; literals are not exact decimal amounts",
+                    ));
+                }
+                if projection
+                    && (compared(lexed, r.start, r.end) || word_predicate.is_some())
+                    && r.pin.is_none()
+                {
                     return Err(refused(
                         lexed,
                         r.start,

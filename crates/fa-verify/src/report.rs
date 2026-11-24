@@ -2395,6 +2395,7 @@ fn verify_report_with_native_subledger_input(
                 || request.parameters.is_number_analytics()
                 || request.parameters.is_override_jet()
                 || request.parameters.is_account_screen()
+                || request.parameters.is_temporal_graph()
                 || request.parameters.is_investor()
                 || matches!(
                     request.parameters,
