@@ -706,6 +706,12 @@ pub enum Books<'a> {
 pub(crate) enum BookRef<'a> {
     Owned(Box<Book>),
     Held(&'a mut Book),
+    /// Keep the current trunk available for every authorization check while
+    /// reports observe only the factory's fully resident scenario replay.
+    Scenario {
+        source: Box<BookRef<'a>>,
+        replay: Box<Book>,
+    },
 }
 
 impl core::ops::Deref for BookRef<'_> {
@@ -714,6 +720,7 @@ impl core::ops::Deref for BookRef<'_> {
         match self {
             Self::Owned(b) => b,
             Self::Held(b) => b,
+            Self::Scenario { replay, .. } => replay,
         }
     }
 }
@@ -723,7 +730,158 @@ impl core::ops::DerefMut for BookRef<'_> {
         match self {
             Self::Owned(b) => b,
             Self::Held(b) => b,
+            Self::Scenario { replay, .. } => replay,
         }
+    }
+}
+
+impl BookRef<'_> {
+    /// The original token is checked against current trunk policy. It is
+    /// never reissued, unbound or installed in the historical scratch book.
+    pub(crate) fn read_scope(
+        &self,
+        principal: VId,
+        capability: &Capability,
+    ) -> fa::Outcome<fa::ReadScope<'_>> {
+        match self {
+            Self::Scenario { source, replay } => {
+                source.read_scope_for_replay(replay, principal, capability)
+            }
+            _ => Book::read_scope(self, principal, capability),
+        }
+    }
+
+    /// Ordinary disk books may need history hydration. A scenario created by
+    /// select_branch has already published its complete source into memory;
+    /// only its current authority and selected frontier need admission here.
+    pub(crate) fn prepare_report_history(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+    ) -> fa::Outcome<()> {
+        if matches!(self, Self::Scenario { .. }) {
+            return match self.read_scope(principal, capability)? {
+                Ok(scope) => Ok(scope.admit_whole_book(known_at)?.map(|_| ())),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        Book::prepare_report_history(self, principal, capability, known_at)
+    }
+
+    fn prepare_head_reads(&mut self, principal: VId, capability: &Capability) -> fa::Outcome<()> {
+        if matches!(self, Self::Scenario { .. }) {
+            return self.prepare_report_history(principal, capability, None);
+        }
+        Book::prepare_head_reads(self, principal, capability)
+    }
+
+    fn prepare_as_of_head_read(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        day: DateDay,
+    ) -> fa::Outcome<()> {
+        if matches!(self, Self::Scenario { .. }) {
+            return match self.read_scope(principal, capability)? {
+                Ok(scope) => Ok(scope.admit_as_of(day, None)?.map(|_| ())),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        Book::prepare_as_of_head_read(self, principal, capability, day)
+    }
+
+    pub(crate) fn prepare_native_certificate_history(
+        &mut self,
+        capability: &Capability,
+        known_at: Option<CommitSeq>,
+    ) -> Result<(), Fail> {
+        if matches!(self, Self::Scenario { .. }) {
+            self.prepare_report_history(capability.holder(), capability, known_at)??;
+            return Ok(());
+        }
+        prepare_native_certificate_history(self, capability, known_at)
+    }
+
+    fn summary_trial_balance(
+        &self,
+        principal: VId,
+        capability: &Capability,
+        request: &SummaryRequest,
+    ) -> fa::Outcome<fa::SummaryTrialBalance> {
+        if matches!(self, Self::Scenario { .. }) {
+            return match self.read_scope(principal, capability)? {
+                Ok(scope) => scope.summary_trial_balance(request),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        Book::summary_trial_balance(self, principal, capability, request)
+    }
+
+    fn roll_forward(
+        &self,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+    ) -> fa::Outcome<fa::RollForward> {
+        if matches!(self, Self::Scenario { .. }) {
+            return match self.read_scope(principal, capability)? {
+                Ok(scope) => scope.roll_forward(request),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        Book::roll_forward(self, principal, capability, request)
+    }
+
+    fn general_ledger(
+        &self,
+        principal: VId,
+        capability: &Capability,
+        request: &RollForwardRequest,
+    ) -> fa::Outcome<fa::GeneralLedger> {
+        if matches!(self, Self::Scenario { .. }) {
+            return match self.read_scope(principal, capability)? {
+                Ok(scope) => scope.general_ledger(request),
+                Err(refusal) => Ok(Err(refusal)),
+            };
+        }
+        Book::general_ledger(self, principal, capability, request)
+    }
+}
+
+/// Helpers that resolve a report's defaults must keep the authorization
+/// source attached instead of coercing a scenario handle to its scratch Book.
+pub(crate) trait ReadSource {
+    fn book(&self) -> &Book;
+    fn read_scope(&self, principal: VId, capability: &Capability)
+    -> fa::Outcome<fa::ReadScope<'_>>;
+}
+
+impl ReadSource for Book {
+    fn book(&self) -> &Book {
+        self
+    }
+
+    fn read_scope(
+        &self,
+        principal: VId,
+        capability: &Capability,
+    ) -> fa::Outcome<fa::ReadScope<'_>> {
+        Book::read_scope(self, principal, capability)
+    }
+}
+
+impl ReadSource for BookRef<'_> {
+    fn book(&self) -> &Book {
+        self
+    }
+
+    fn read_scope(
+        &self,
+        principal: VId,
+        capability: &Capability,
+    ) -> fa::Outcome<fa::ReadScope<'_>> {
+        BookRef::read_scope(self, principal, capability)
     }
 }
 
@@ -940,18 +1098,24 @@ fn select_branch<'b>(
             })?
         }
     };
-    let replay = if let Some(name) = draft {
+    let selected = if let Some(name) = draft {
         let head = book.head()?;
-        book.rehearse_draft_at(reader.holder(), &reader, name, head)??
-            .0
+        let replay = book
+            .rehearse_draft_at(reader.holder(), &reader, name, head)??
+            .0;
+        BookRef::Owned(Box::new(replay))
     } else if let Some(name) = scenario {
         admit_whole_book_read(&book, &reader, &[], "materializing a scenario for reading")?;
-        book.materialize_scenario(name)??.book
+        let replay = book.materialize_scenario(name)??.book;
+        BookRef::Scenario {
+            source: Box::new(book),
+            replay: Box::new(replay),
+        }
     } else {
         return Err(unknown());
     };
     said.borrow_mut().branch = Some(selector.to_string());
-    Ok(BookRef::Owned(Box::new(replay)))
+    Ok(selected)
 }
 
 pub(crate) struct BookSource<'a> {
@@ -13703,7 +13867,7 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .read_scope(who, &read_cap)??
         .admit_report(&selection.clone().into(), known_at)??;
     let (tb, certificate, served) = if let Some(capability) = certify_cap.as_ref() {
-        prepare_native_certificate_history(&mut book, capability, known_at)?;
+        book.prepare_native_certificate_history(capability, known_at)?;
         let certified = match requested_utc_ns {
             Some(instant) => {
                 book.certify_trial_balance_at_instant(selection.clone(), instant)??
@@ -14501,7 +14665,7 @@ pub(crate) fn statement_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
     if !functional {
-        prepare_native_certificate_history(&mut book, &capability, known_at)?;
+        book.prepare_native_certificate_history(&capability, known_at)?;
     }
     let render_definition = render.as_ref().map(|_| selection.definition.clone());
     let (statement, certificate) = if let Some(source) = reported_source {
@@ -17396,7 +17560,7 @@ pub(crate) fn open_items_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail>
             None,
         )
     } else if let Some(capability) = certify_cap.as_ref() {
-        prepare_native_certificate_history(&mut book, capability, known_at)?;
+        book.prepare_native_certificate_history(capability, known_at)?;
         let selection = ReportSelection::OpenItems { account };
         book.read_scope(who, &read_cap)??
             .admit_report(&selection, known_at)??;
@@ -17683,13 +17847,13 @@ fn gl_known_at(args: &Args, book: &Book, out: &Out) -> Result<Option<CommitSeq>,
 
 pub(crate) fn parse_gl_scope(
     args: &Args,
-    book: &Book,
+    book: &impl ReadSource,
     capability: &Capability,
     out: &Out,
     default_label: &str,
     example: &str,
 ) -> Result<RollForwardRequest, Fail> {
-    let known_at = gl_known_at(args, book, out)?;
+    let known_at = gl_known_at(args, book.book(), out)?;
     if let Some(seq) = known_at {
         out.known_at(seq);
     }
@@ -17699,7 +17863,7 @@ pub(crate) fn parse_gl_scope(
         .flat_map(|s| s.split(','))
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|code| account_vid(book.context().book_id, code))
+        .map(|code| account_vid(book.book().context().book_id, code))
         .collect();
     if accounts.is_empty() {
         return Err(usage("--account is required", example));
@@ -17727,7 +17891,7 @@ struct GlWindow {
 
 fn parse_gl_window(
     args: &Args,
-    book: &Book,
+    book: &impl ReadSource,
     capability: &Capability,
     out: &Out,
     known_at: Option<CommitSeq>,
@@ -17758,7 +17922,7 @@ fn parse_gl_window(
 
 pub(crate) fn parse_gl_units(
     args: &Args,
-    book: &Book,
+    book: &impl ReadSource,
     capability: &Capability,
     known_at: Option<CommitSeq>,
 ) -> Result<Vec<u32>, Fail> {
@@ -17781,7 +17945,8 @@ pub(crate) fn parse_gl_units(
         unit_codes
             .into_iter()
             .map(|code| {
-                book.context()
+                book.book()
+                    .context()
                     .units
                     .lookup(code)
                     .map(|u| u.0)
@@ -23506,7 +23671,7 @@ fn explain_balance_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         )?);
     }
     if let Some(capability) = certify_cap.as_ref() {
-        prepare_native_certificate_history(&mut book, capability, known_at)?;
+        book.prepare_native_certificate_history(capability, known_at)?;
     }
     // Judged against the scope caveats before the query is constructed
     // (doctrine 8, fa-0x0): the explanation reaches its one period.

@@ -200,6 +200,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             {
                 return Ok(Err(refusal));
             }
+            self.roll_forward_admitted(cx, request)
+        })
+    }
+
+    /// Evaluate a complete prefix after its read scope has admitted the
+    /// current caller. A scenario uses its trunk for that admission and this
+    /// replay for every accounting input; the original capability stays bound
+    /// to its holder and never becomes authority recorded in the replay.
+    pub(crate) fn roll_forward_admitted(
+        &self,
+        cx: &PurposeContexts,
+        request: &RollForwardRequest,
+    ) -> Outcome<RollForward> {
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            let head = self.db.frontier().map_err(KernelError::from)?;
             let (account_ids, units) = match scope(request) {
                 Ok(scope) => scope,
                 Err(refusal) => return Ok(Err(refusal)),

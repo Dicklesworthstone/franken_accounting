@@ -8999,7 +8999,56 @@ impl Book {
         }))?;
         Ok(admitted.map(|authority| ReadScope {
             book: self,
+            authority_source: self,
             authority,
+        }))
+    }
+
+    /// Read a replay of this logical book under CURRENT whole-book authority
+    /// from this source, rather than the replay's historical authority rows.
+    /// A holder-bound token issued after a scenario fork can therefore read
+    /// that scenario without adding its issuance to the replay or changing
+    /// the token's holder, commitment, operations or caveats.
+    ///
+    /// Admission on this source precedes any replay observation. Replaying a
+    /// complete history requires whole-book HEAD reach: account, period,
+    /// effective-date, class, branch and known-at restrictions cannot be
+    /// narrowed by a later report selection. The replay must retain this
+    /// source's logical book identity. This grants read operations only; it
+    /// does not change either book's write admission or certify the replay.
+    ///
+    /// The returned scope immutably borrows BOTH books. The source cannot be
+    /// advanced or revoked through its single-writer handle while that scope
+    /// is retained; a new scope after a mutation must admit current authority
+    /// again. Neither a capability nor an authorization record is installed
+    /// into the replay.
+    pub fn read_scope_for_replay<'b>(
+        &'b self,
+        replay: &'b Book,
+        principal: VId,
+        capability: &fa_policy::Capability,
+    ) -> Outcome<ReadScope<'b>> {
+        let admitted = match self.read_scope(principal, capability)? {
+            Ok(admitted) => admitted,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(denial) = fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None)
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        let source_book = self.context().book_id;
+        if replay.context().book_id != source_book || replay.spec()?.book_id != source_book {
+            return Ok(Err(fa_journal::policy::refusal(
+                &fa_policy::Denial::OutOfScope {
+                    caveat: "books",
+                    value: "a replay of a different logical book".into(),
+                },
+            )));
+        }
+        Ok(Ok(ReadScope {
+            book: replay,
+            authority_source: self,
+            authority: admitted.authority,
         }))
     }
 
@@ -9435,6 +9484,9 @@ impl Book {
 /// admit what it reaches; it never returns a filtered result.
 pub struct ReadScope<'b> {
     book: &'b Book,
+    /// Current issuance, expiry and revocation belong to this immutable
+    /// source handle, including when the query target is a historical replay.
+    authority_source: &'b Book,
     authority: fa_journal::policy::ReadAuthority,
 }
 
@@ -9445,6 +9497,16 @@ impl ReadScope<'_> {
         self.authority.capability()
     }
 
+    /// Re-admit the original capability on its current source. A historical
+    /// replay's issuance and revocation rows never substitute for this check.
+    fn admit_current_source(&self) -> Outcome<()> {
+        let capability = self.authority.capability();
+        Ok(self
+            .authority_source
+            .read_scope(capability.holder(), capability)?
+            .map(|_| ()))
+    }
+
     /// The recorded frontier a read selects: `known_at`, or the head.
     fn frontier(&self, known_at: Option<CommitSeq>) -> Result<CommitSeq, BookError> {
         match known_at {
@@ -9453,21 +9515,111 @@ impl ReadScope<'_> {
         }
     }
 
-    /// [`Book::read_entry`] at a recorded frontier, through the kernel's
-    /// [`fa_journal::policy::ReadAuthority::read_entry`]: a `periods` or
+    /// [`Book::read_entry`] at a recorded frontier: a `periods` or
     /// `effective` caveat refuses it (the entry's period is known only once
     /// read), and the read goes through the snapshot at the frontier, so an
-    /// entry recorded later is never loaded or decoded.
+    /// entry recorded later is never loaded or decoded. Current issuance,
+    /// expiry and revocation are rechecked against the authority source before
+    /// observing the target, which may be its historical scenario replay.
     pub fn read_entry(
         &self,
         vid: VId,
         known_at: Option<CommitSeq>,
     ) -> Outcome<Option<(Entry, CommitSeq)>> {
+        if std::ptr::eq(self.book, self.authority_source) {
+            let seq = self.frontier(known_at)?;
+            let purposes = self.book.purposes();
+            return with_store!(&self.book.store, core => core.query(&purposes, |db, _| {
+                Ok(self.authority.read_entry(db, vid, seq)?)
+            }));
+        }
+        if let Err(refusal) = self.admit_current_source()? {
+            return Ok(Err(refusal));
+        }
         let seq = self.frontier(known_at)?;
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Err(refusal));
+        }
         let purposes = self.book.purposes();
         with_store!(&self.book.store, core => core.query(&purposes, |db, _| {
-            Ok(self.authority.read_entry(db, vid, seq)?)
+            Ok(Ok(fa_journal::post::read_entry_at(db, vid, seq)?))
         }))
+    }
+
+    /// A complete summary trial balance under this scope's current source
+    /// authority. The fold uses only the query target's historical chart and
+    /// entries, at the admitted target sequence.
+    pub fn summary_trial_balance(
+        &self,
+        request: &crate::SummaryRequest,
+    ) -> Outcome<crate::SummaryTrialBalance> {
+        if std::ptr::eq(self.book, self.authority_source) {
+            return self.book.summary_trial_balance(
+                self.capability().holder(),
+                self.capability(),
+                request,
+            );
+        }
+        if let Err(refusal) = self.admit_current_source()? {
+            return Ok(Err(refusal));
+        }
+        let at = match self.admit_whole_book(request.known_at)? {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut selected = request.clone();
+        selected.known_at = Some(at);
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.summary_trial_balance_admitted(
+            &purposes, &selected,
+        ))
+    }
+
+    /// A native roll-forward at the admitted target sequence, using the
+    /// unchanged capability's current authority on its source book.
+    pub fn roll_forward(&self, request: &crate::RollForwardRequest) -> Outcome<crate::RollForward> {
+        if std::ptr::eq(self.book, self.authority_source) {
+            return self
+                .book
+                .roll_forward(self.capability().holder(), self.capability(), request);
+        }
+        if let Err(refusal) = self.admit_current_source()? {
+            return Ok(Err(refusal));
+        }
+        let at = match self.admit_whole_book(request.known_at)? {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut selected = request.clone();
+        selected.known_at = Some(at);
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.roll_forward_admitted(&purposes, &selected))
+    }
+
+    /// Detailed native movements from the target replay under this scope's
+    /// current source authority. No scratch issuance is imported or trusted.
+    pub fn general_ledger(
+        &self,
+        request: &crate::RollForwardRequest,
+    ) -> Outcome<crate::GeneralLedger> {
+        if std::ptr::eq(self.book, self.authority_source) {
+            return self.book.general_ledger(
+                self.capability().holder(),
+                self.capability(),
+                request,
+            );
+        }
+        if let Err(refusal) = self.admit_current_source()? {
+            return Ok(Err(refusal));
+        }
+        let at = match self.admit_whole_book(request.known_at)? {
+            Ok(at) => at,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut selected = request.clone();
+        selected.known_at = Some(at);
+        let purposes = self.book.purposes();
+        with_store!(&self.book.store, core => core.general_ledger_admitted(&purposes, &selected))
     }
 
     /// Admit a native report at its recorded frontier under the scope

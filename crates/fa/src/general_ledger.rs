@@ -456,6 +456,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         project(source, &cx.query())
     }
 
+    /// The same ledger projection for a source whose current whole-book
+    /// authority was admitted by the facade's sealed read scope. This keeps
+    /// scenario data separate from the trunk that authorizes its reader.
+    pub(crate) fn general_ledger_admitted(
+        &self,
+        cx: &PurposeContexts,
+        request: &RollForwardRequest,
+    ) -> Outcome<GeneralLedger> {
+        let source = match self.roll_forward_admitted(cx, request)? {
+            Ok(source) => source,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        project(source, &cx.query())
+    }
+
     /// Read and classify native cash movements under CURRENT read authority.
     /// The general-ledger reader pins one known-at prefix and supplies the
     /// independent opening/closing stocks. All selected accounts must be

@@ -134,7 +134,7 @@ pub(crate) fn statement_regulatory(ctx: &mut Ctx<'_>, args: &Args) -> Result<(),
     let reach = ReportSelection::RegulatorySchedule(Box::new(selection.clone()));
     book.read_scope(who, &capability)??
         .admit_report(&reach, known_at)??;
-    prepare_native_certificate_history(&mut book, &capability, known_at)?;
+    book.prepare_native_certificate_history(&capability, known_at)?;
     let (statement, certificate) = if certify {
         let certified = match requested_utc_ns {
             Some(instant) => book.certify_report_at_instant(reach, instant)??,

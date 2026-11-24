@@ -355,13 +355,49 @@ fn scoped_tokens_read_inside_their_caveats_and_are_refused_outside_them() {
 fn scenario_branch_reads_admit_the_complete_replay_before_looking_up_the_name() {
     let f = Fixture::new();
     let pin = number(data(&f.march), "recorded_at").to_string();
+    // Reuse the fixture's receipt, so the hypothetical posting's evidence is
+    // part of the fork rather than a later trunk-only document.
+    let receipt = f.ok(&[
+        "document",
+        "add",
+        "receipt.txt",
+        "--kind",
+        "Receipt",
+        "--grade",
+        "HumanUpload",
+    ]);
+    let evidence = text(data(&receipt), "oid").to_string();
+    let fork = f.ok(&["scenario", "fork", "read-scope", "--date", "2026-03-15"]);
+    let fork_at = number(data(&fork), "fork_at");
+
+    // Current authority can be issued after the immutable data fork. The
+    // retained token is holder-bound; its absence from that old prefix does
+    // not make it unissued on the authorizing trunk.
     let (reader, reader_commitment) = f.issue("scenario-reader", &[]);
+    assert!(number(&f.scope_of(&reader_commitment), "issued_at") > fork_at);
+    let token =
+        fa_policy::CapabilityToken::decode(&std::fs::read(f.dir.join(&reader)).unwrap()).unwrap();
+    assert!(token.capability().possession().is_some());
     let (period, _) = f.issue("scenario-period", &["--period", "FY2026-P03"]);
     let (effective, _) = f.issue("scenario-effective", &["--effective-through", "2026-03-31"]);
     let (known_at, _) = f.issue("scenario-known-at", &["--known-at-most", &pin]);
     let (account, _) = f.issue("scenario-account", &["--account", "1000"]);
     let (writer, _) = f.issue_ops("scenario-writer", &["post"], &[]);
-    f.ok(&["scenario", "fork", "read-scope", "--date", "2026-03-15"]);
+    std::fs::write(
+        f.dir.join("scenario-sale.json"),
+        format!(
+            r#"{{"idempotency_key":"scenario-sale","effective_date":"2026-03-15","evidence":["{evidence}"],"legs":[{{"side":"debit","account":"1000","amount":"2.00 USD"}},{{"side":"credit","account":"4000","amount":"2.00 USD"}}]}}"#
+        ),
+    )
+    .unwrap();
+    f.ok(&[
+        "scenario",
+        "run",
+        "read-scope",
+        "--intent",
+        "scenario-sale.json",
+    ]);
+    f.post(&evidence, "later-trunk", "2026-03-20", "11.00");
 
     // Selecting only March's activity does not confine materialization: it
     // replays April and the rest of the fork prefix too. A missing name must
@@ -412,17 +448,90 @@ fn scenario_branch_reads_admit_the_complete_replay_before_looking_up_the_name() 
     scoped.extend(selected);
     assert_eq!(f.rows(&scoped), f.rows(&selected));
 
-    // A full reader whose issuance belongs to the fork can read the replay.
-    // Its later revocation is judged on trunk, not resurrected by that fork.
+    // The bound reader sees the same historical-plus-hypothetical content as
+    // the owner. Later trunk activity and current issuance controls do not
+    // become part of that materialization.
+    let mut owner_branch = selected.to_vec();
+    owner_branch.extend(["--branch", "scenario:read-scope"]);
+    let expected = f.ok(&owner_branch);
+    let expected_rows = data(&expected).get("rows").unwrap();
+    let trunk_rows = f.rows(&selected);
+    assert_ne!(expected_rows, &trunk_rows);
+    for (rows, debits) in [(expected_rows, "7.00 USD"), (&trunk_rows, "16.00 USD")] {
+        let Json::Arr(rows) = rows else {
+            panic!("expected trial-balance rows: {rows:?}");
+        };
+        let cash = rows.iter().find(|row| text(row, "code") == "1000").unwrap();
+        assert_eq!(text(cash, "debits"), debits);
+    }
     let mut branch_read = vec!["--token", reader.as_str()];
-    branch_read.extend(selected);
-    branch_read.extend(["--branch", "scenario:read-scope"]);
+    branch_read.extend(owner_branch);
     let read = f.ok(&branch_read);
     assert_eq!(
         text(read.get("coordinate").unwrap(), "branch"),
         "scenario:read-scope"
     );
-    assert_eq!(data(&read).get("rows"), Some(&f.rows(&selected)));
+    assert_eq!(read.get("coordinate"), expected.get("coordinate"));
+    assert_eq!(data(&read), data(&expected));
+
+    // These report paths perform their own scope admission on the selected
+    // book. Each must retain the current token's authority while reading the
+    // same historical data, including an empty open-item result for cash.
+    // GL omits --unit so its default is resolved through the admitted source.
+    for command in [
+        vec!["tb", "--period", "FY2026-P03", "--summary"],
+        vec!["statement", "balance-sheet", "--for", "FY2026-P03"],
+        vec!["explain", "balance", "1000", "--period", "FY2026-P03"],
+        vec!["open-items", "--account", "1000"],
+        vec![
+            "gl",
+            "detail",
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+        ],
+        vec![
+            "gl",
+            "roll-forward",
+            "--account",
+            "1000",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-31",
+        ],
+    ] {
+        let mut owner = command.clone();
+        owner.extend(["--branch", "scenario:read-scope"]);
+        let expected = f.ok(&owner);
+        let mut bound = vec!["--token", reader.as_str()];
+        bound.extend(owner);
+        let read = f.ok(&bound);
+        assert_eq!(data(&read), data(&expected), "{command:?}");
+        assert_eq!(
+            read.get("coordinate"),
+            expected.get("coordinate"),
+            "{command:?}"
+        );
+        assert_eq!(
+            text(read.get("coordinate").unwrap(), "branch"),
+            "scenario:read-scope",
+            "{command:?}"
+        );
+    }
+
+    // Query constructs its own admitted native read after branch selection;
+    // the same late-issued holder must work there as well as in the TB fold.
+    let revenue = "MATCH (l:Leg)-[:POSTS_TO]->(a:Account {code: '4000'}), (l)-[:IN_UNIT]->(u:Unit) RETURN u.code AS unit, l.side AS side, SUM(l.amount) AS total ORDER BY unit, side";
+    let owner_query = ["query", revenue, "--branch", "scenario:read-scope"];
+    let expected_query = f.rows(&owner_query);
+    assert_ne!(expected_query, f.rows(&["query", revenue]));
+    let mut reader_query = vec!["--token", reader.as_str()];
+    reader_query.extend(owner_query);
+    assert_eq!(f.rows(&reader_query), expected_query);
     let (exit, missing) = f.run(&[
         "--token",
         &reader,
@@ -443,11 +552,48 @@ fn scenario_branch_reads_admit_the_complete_replay_before_looking_up_the_name() 
         "issue_capability",
         "--yes",
     ]);
-    let (exit, revoked) = f.run(&branch_read);
-    assert_eq!(exit, 7, "{revoked:?}");
-    assert!(text(data(&revoked), "message").contains("revoked"));
-    assert_eq!(revoked.get("book"), Some(&Json::Null));
-    assert_eq!(revoked.get("coordinate"), Some(&Json::Null));
+    let head = || {
+        number(
+            f.ok(&["book", "info"]).get("coordinate").unwrap(),
+            "known_at",
+        )
+    };
+    // Issuance consumes the next marker. This bound is above the historical
+    // fork but already expired at the current trunk where admission occurs.
+    let expires_at = (head() + 1).to_string();
+    let (expired, expired_commitment) = f.issue("scenario-expired", &["--expires-at", &expires_at]);
+    assert!(number(&f.scope_of(&expired_commitment), "issued_at") > fork_at);
+    assert_eq!(head().to_string(), expires_at);
+    let before_refusals = head();
+    for (token, code, reason) in [
+        (&reader, "FA-REF-023", "revoked"),
+        (&expired, "FA-REF-014", "expired"),
+    ] {
+        for branch in ["scenario:read-scope", "scenario:does-not-exist"] {
+            let (exit, refused) = f.run(&[
+                "--token",
+                token,
+                "tb",
+                "--period",
+                "FY2026-P03",
+                "--branch",
+                branch,
+            ]);
+            assert_eq!(exit, 7, "{refused:?}");
+            assert_eq!(text(data(&refused), "refusal_id"), code, "{refused:?}");
+            assert!(
+                text(data(&refused), "message").contains(reason),
+                "{refused:?}"
+            );
+            assert_eq!(refused.get("book"), Some(&Json::Null), "{refused:?}");
+            assert_eq!(refused.get("coordinate"), Some(&Json::Null), "{refused:?}");
+        }
+    }
+    assert_eq!(
+        head(),
+        before_refusals,
+        "denied authority writes no access receipt"
+    );
 }
 
 #[test]

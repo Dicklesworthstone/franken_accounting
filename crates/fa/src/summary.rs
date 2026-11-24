@@ -158,6 +158,24 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             {
                 return Ok(Err(refusal));
             }
+            self.summary_trial_balance_admitted(cx, request)
+        })
+    }
+
+    /// Fold an already-admitted source, including a scenario replay whose
+    /// current authority belongs to its live trunk. Only the facade's sealed
+    /// read scope and this module's authenticated public entry point call this
+    /// helper; no capability is manufactured or changed for the source.
+    pub(crate) fn summary_trial_balance_admitted(
+        &self,
+        cx: &PurposeContexts,
+        request: &SummaryRequest,
+    ) -> Outcome<SummaryTrialBalance> {
+        let book = self.context();
+        let query = cx.query();
+        query.checkpoint().map_err(BookError::Context)?;
+        query.with_restriction(|| {
+            let head = self.db.frontier().map_err(KernelError::from)?;
             let at = request.known_at.unwrap_or(head);
             if at > head {
                 return Ok(Err(selection_refusal(format!(

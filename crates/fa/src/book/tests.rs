@@ -11,6 +11,7 @@ use fa_time::{FiscalCalendar, PeriodKind};
 use fgdb_sim::vfs::{FaultKind, FaultPlan, FaultVfs, Trigger};
 
 mod class_scoped_approval;
+mod replay_read_scope;
 mod report_history;
 mod rule_drafts;
 
