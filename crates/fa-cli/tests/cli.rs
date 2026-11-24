@@ -31704,3 +31704,200 @@ fn accrue_and_defer_derive_reviewed_adjustments_from_recorded_events() -> std::i
     }
     Ok(())
 }
+
+/// Large source and IR bodies must survive real book reopenings throughout
+/// the rule lifecycle, including the control Entry and derived plan storage.
+#[test]
+fn large_canon_rule_survives_reopen_activation_posting_and_certified_replay() -> std::io::Result<()>
+{
+    let dir = tmp("large-canon-rule")?;
+    let book = dir.join("book");
+    let ok = |args: &[&str]| -> String {
+        let (code, out, err) = fa(Some(&book), args);
+        assert_eq!(code, 0, "{args:?}\n{out}\n{err}");
+        out
+    };
+    ok(&[
+        "book",
+        "create",
+        "--name",
+        "Large Canon Rule",
+        "--time-zone",
+        "UTC",
+        "--json",
+    ]);
+    let chart = write(
+        &dir,
+        "chart.json",
+        r#"{"accounts":[{"code":"1000","name":"Cash","type":"Asset","unit":"USD"},{"code":"4000","name":"Revenue","type":"Revenue","unit":"USD"}]}"#,
+    );
+    ok(&["chart", "import", &chart, "--json"]);
+    ok(&["period", "create", "--fiscal-year", "2026", "--json"]);
+    ok(&["period", "open", "FY2026-P03", "--json"]);
+    let evidence = source_doc(&dir, &book);
+    ok(&[
+        "event",
+        "record",
+        "--code",
+        "EV-LARGE-RULE",
+        "--kind",
+        "sale",
+        "--occurred-on",
+        "2026-03-15",
+        "--evidence",
+        &evidence,
+        "--resource",
+        "net:40.00 USD",
+        "--json",
+    ]);
+    let open = || {
+        let keys = fa::BookKeys::load(&book.join("book.keys")).unwrap();
+        fa::Book::open_dir(&book, keys, fa::Entropy::deterministic(0xc340)).unwrap()
+    };
+    let head = || open().head().unwrap();
+    let mut source = String::from(
+        "rule volume_sale v1 for event Sale {\n\
+         authority { debit \"1000\" upto \"100000.00 USD\"\n\
+         credit \"4000\" upto \"100000.00 USD\" }\n",
+    );
+    for _ in 0..160 {
+        source.push_str(
+            "debit \"1000\" event.resource(\"net\", \"USD\") / 2 round HalfEven\n\
+             credit \"4000\" event.resource(\"net\", \"USD\") / 2 round HalfEven\n",
+        );
+    }
+    source.push('}');
+    let compiled = fa_canon::compile(&source, &open().context().units).unwrap();
+    assert!(source.len() > 16_384, "source alone exceeds a native row");
+    assert!(
+        compiled.ir().len() > 16_384,
+        "IR alone exceeds a native row"
+    );
+    let file = write(&dir, "large.rule", &source);
+    let before = head();
+    let proposed = doc(&ok(&[
+        "rule",
+        "propose",
+        &file,
+        "--key",
+        "large-rule-version",
+        "--json",
+    ]));
+    let digest = text(&proposed, "ir_digest").to_string();
+    assert_eq!(proposed.get("already_recorded"), Some(&Json::Bool(false)));
+    let retained = head();
+    assert_eq!(retained.0, before.0 + 1, "all fragments publish together");
+    let shown = doc(&ok(&["rule", "show", &digest, "--json"]));
+    assert_eq!(text(&shown, "source"), source);
+    assert_eq!(text(&shown, "ir_digest"), digest);
+    let listed = doc(&ok(&["rule", "list", "--json"]));
+    assert_eq!(arr(&listed, "versions").len(), 1);
+    for key in ["large-rule-version", "same-rule-another-key"] {
+        let retry = doc(&ok(&["rule", "propose", &file, "--key", key, "--json"]));
+        assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+        assert_eq!(text(&retry, "ir_digest"), digest);
+        assert_eq!(head(), retained);
+    }
+
+    let activation = doc(&ok(&[
+        "rule",
+        "activate",
+        &digest,
+        "--from",
+        "2026-03-01",
+        "--dry-run",
+        "--json",
+    ]));
+    let activation_file = write(&dir, "activation.plan", text(&activation, "bytes"));
+    let proposal = text(&activation, "proposal_digest");
+    let approval = |who: &str| {
+        text(
+            &doc(&ok(&[
+                "approve",
+                "--proposal",
+                proposal,
+                "--as",
+                who,
+                "--json",
+            ])),
+            "approval_vid",
+        )
+        .to_string()
+    };
+    let (a, b) = (approval("controller-a"), approval("controller-b"));
+    ok(&[
+        "rule",
+        "activate",
+        "--plan",
+        &activation_file,
+        "--approval",
+        &a,
+        "--approval",
+        &b,
+        "--json",
+    ]);
+    let before_post = head();
+    let plan_file = dir.join("derived.plan");
+    let plan_path = plan_file.to_str().unwrap();
+    ok(&[
+        "rule",
+        "derive",
+        "--rule",
+        &digest,
+        "--event",
+        "EV-LARGE-RULE",
+        "--key",
+        "large-rule-post",
+        "--dry-run",
+        "--plan-out",
+        plan_path,
+        "--json",
+    ]);
+    assert_eq!(head(), before_post, "dry-run never publishes");
+    let plan = fa::PostPlan::decode(&std::fs::read(&plan_file)?).unwrap();
+    assert_eq!(plan.proposal().legs.len(), 320);
+    let posted = doc(&ok(&["commit", "--plan", plan_path, "--json"]));
+    let vid = text(&posted, "vid").to_string();
+    let native_vid = fgdb_types::VId(u128::from_str_radix(&vid, 16).unwrap());
+    let (entry, _) = open().read_entry(native_vid).unwrap().unwrap();
+    assert_eq!(entry.proposal.legs.len(), 320);
+    assert!(
+        entry
+            .proposal
+            .legs
+            .iter()
+            .all(|leg| leg.amount.mantissa == 2_000)
+    );
+    let after_post = head();
+    let retry = doc(&ok(&["commit", "--plan", plan_path, "--json"]));
+    assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
+    assert_eq!(text(&retry, "vid"), vid);
+    assert_eq!(head(), after_post);
+    ok(&["verify", "projections", "--json"]);
+
+    let certificate_file = dir.join("large-rule.cert");
+    let certificate_path = certificate_file.to_str().unwrap();
+    let certified = ok(&[
+        "tb",
+        "--period",
+        "FY2026-P03",
+        "--certificate-out",
+        certificate_path,
+        "--json",
+    ]);
+    let report_line = certified.lines().next().unwrap();
+    let report = doc(report_line);
+    let rows = arr(&report, "rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(text(&rows[0], "code"), "1000");
+    assert_eq!(text(&rows[0], "debits"), "3200.00 USD");
+    assert_eq!(text(&rows[1], "code"), "4000");
+    assert_eq!(text(&rows[1], "credits"), "3200.00 USD");
+    assert_eq!(report.get("balanced"), Some(&Json::Bool(true)));
+    assert_eq!(
+        ok(&["replay", certificate_path, "--json"]),
+        format!("{report_line}\n"),
+        "certified output replays byte-for-byte after reopening",
+    );
+    Ok(())
+}

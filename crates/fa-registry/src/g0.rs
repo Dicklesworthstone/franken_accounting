@@ -833,7 +833,7 @@ impl ClaimsLintConfig {
 // The 19 Appendix G classes plus the registered native accounting extensions.
 // Require their identities, not merely a row count: an unrelated class cannot
 // replace an existing operation's cost contract.
-const REQUIRED_OPERATION_CLASS_IDS: [&str; 45] = [
+const REQUIRED_OPERATION_CLASS_IDS: [&str; 46] = [
     "balance_read_at_watermark",
     "certified_report",
     "single_entry_post",
@@ -851,6 +851,7 @@ const REQUIRED_OPERATION_CLASS_IDS: [&str; 45] = [
     "period_transition",
     "time_evidence_tick",
     "policy_activation",
+    "canon_rule_version_proposal",
     "capability_event",
     "legal_hold_lifecycle",
     "statement_issuance",

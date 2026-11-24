@@ -27,12 +27,15 @@ use fgdb_types::{CommitSeq, VId};
 
 use crate::chart::schema_control_proposal;
 use crate::genesis::BookContext;
+use crate::object::{self, ObjectKind};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
 use crate::rows::{book_root, bytes, edge_id, scalar_bytes, scalar_text, text};
 
 pub const SCHEMA_CHANGE_RULE_VERSION: u16 = 20;
 const FORMAT: &[u8] = b"fa:rule-version:v1";
 const MAX_IR_BYTES: usize = 4 * 1024 * 1024;
+// Every admitted version also appears in its immutable SchemaChange control.
+const MAX_RULE_VERSION_BYTES: usize = fa_model::limits::MAX_SCHEMA_CHANGE_BYTES;
 const MAX_TEXT_BYTES: usize = 1024;
 
 const CITE: &str = "plan §10.3 (Canon: a total, statically typed rule language whose units, laws and balance are checked before it runs)";
@@ -153,15 +156,28 @@ pub struct RuleVersionRow {
 }
 
 impl RuleVersionRow {
-    /// Decode a `RuleVersion` vertex; `None` for any other vertex. The IR is
+    /// Decode a self-contained inline `RuleVersion` row; `None` for any other
+    /// vertex. Native readers use `read_at` or `read_staged` to authenticate
+    /// its storage and resolve transaction-local fragments as well. The IR is
     /// decoded through Canon's validation and balance proof against the
     /// book's units, and must address this very vertex.
     pub fn decode(row: &VertexRow, book: &BookContext) -> Result<Option<Self>, KernelError> {
         if !row.labels.contains(&label::RULE_VERSION) {
             return Ok(None);
         }
-        let spec =
-            RuleVersionSpec::decode(&bytes(row, property::FA_PAYLOAD, "rule version payload")?)?;
+        Self::decode_payload(
+            row,
+            book,
+            &bytes(row, property::FA_PAYLOAD, "rule version payload")?,
+        )
+    }
+
+    fn decode_payload(
+        row: &VertexRow,
+        book: &BookContext,
+        encoded: &[u8],
+    ) -> Result<Option<Self>, KernelError> {
+        let spec = RuleVersionSpec::decode(encoded)?;
         let rule = CompiledRule::decode(&spec.ir, &book.units)
             .map_err(|e| corrupt(format!("{:032x}: {e}", row.vid.0)))?;
         rule.check_source(&spec.source, &book.units)
@@ -172,12 +188,96 @@ impl RuleVersionRow {
                 row.vid.0
             )));
         }
+        if text(row, property::NAME, "rule version name")? != rule.name() {
+            return Err(corrupt("the name mirror differs from the retained rule"));
+        }
         Ok(Some(Self {
             vid: row.vid,
             spec,
             rule,
             created_at: row.created_at,
         }))
+    }
+
+    fn original<V: Vfs + Clone>(
+        db: &Database<V>,
+        row: &VertexRow,
+        book: &BookContext,
+        at: CommitSeq,
+    ) -> Result<(), KernelError> {
+        if row.labels.as_slice() != [label::RULE_VERSION]
+            || row.props.len() != 3
+            || row.created_at > at
+            || row.retired_at.is_some_and(|retired| retired <= at)
+            || bytes(row, property::BOOK_ID, "rule version book")? != book.book_id.0
+        {
+            return Err(corrupt("root identity, book or selected birth differs"));
+        }
+        let before = row
+            .created_at
+            .0
+            .checked_sub(1)
+            .map(CommitSeq)
+            .ok_or_else(|| corrupt("root has no creating publication"))?;
+        if db.vertex_at(row.vid, before)?.is_some()
+            || db
+                .vertex_at(row.vid, row.created_at)?
+                .map(|birth| birth.seen_at(at))
+                != Some(row.clone().seen_at(at))
+        {
+            return Err(corrupt("root differs from its immutable birth"));
+        }
+        Ok(())
+    }
+
+    /// Read one rule at an already admitted historical coordinate. Original
+    /// inline bodies keep their bytes; chunked bodies authenticate every
+    /// fragment's content, book and birth before recompilation.
+    pub fn read_at<V: Vfs + Clone>(
+        db: &Database<V>,
+        row: &VertexRow,
+        book: &BookContext,
+        at: CommitSeq,
+    ) -> Result<Option<Self>, KernelError> {
+        if !row.labels.contains(&label::RULE_VERSION) {
+            return Ok(None);
+        }
+        Self::original(db, row, book, at)?;
+        let encoded = object::read_bounded(
+            db,
+            book.book_id,
+            row,
+            label::RULE_VERSION,
+            ObjectKind::RuleVersion,
+            at,
+            MAX_RULE_VERSION_BYTES,
+        )?;
+        Self::decode_payload(row, book, &encoded)
+    }
+
+    /// Activation, chart changes and derived posting witness every fragment
+    /// in the caller's transaction, so a concurrent mutation cannot change
+    /// the version between its admission and publication.
+    pub(crate) fn read_staged<V: Vfs + Clone>(
+        txn: &fgdb::WriteTxn,
+        db: &Database<V>,
+        row: &VertexRow,
+        book: &BookContext,
+    ) -> Result<Option<Self>, KernelError> {
+        if !row.labels.contains(&label::RULE_VERSION) {
+            return Ok(None);
+        }
+        Self::original(db, row, book, txn.basis())?;
+        let encoded = object::read_staged_bounded(
+            txn,
+            db,
+            book.book_id,
+            row,
+            label::RULE_VERSION,
+            ObjectKind::RuleVersion,
+            MAX_RULE_VERSION_BYTES,
+        )?;
+        Self::decode_payload(row, book, &encoded)
     }
 }
 
@@ -229,7 +329,7 @@ pub fn rule_versions_at<V: Vfs + Clone>(
         let Some(row) = db.vertex_at(vid, at)? else {
             continue;
         };
-        if let Some(version) = RuleVersionRow::decode(&row, book)? {
+        if let Some(version) = RuleVersionRow::read_at(db, &row, book, at)? {
             versions.push(version);
         }
     }
@@ -254,7 +354,7 @@ pub fn rule_version_at<V: Vfs + Clone>(
         return Err(corrupt("known-at is beyond the book head"));
     }
     match db.vertex_at(rule_version_vid(book.book_id, ir_digest), at)? {
-        Some(row) => RuleVersionRow::decode(&row, book),
+        Some(row) => RuleVersionRow::read_at(db, &row, book, at),
         None => Ok(None),
     }
 }
@@ -347,7 +447,7 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
                 "a recorded proposal's rule version vertex is missing",
             ));
         };
-        let Some(version) = RuleVersionRow::decode(&row, book)? else {
+        let Some(version) = RuleVersionRow::read_at(db, &row, book, db.frontier()?)? else {
             return Err(corrupt(
                 "a recorded proposal names a vertex that is not a rule version",
             ));
@@ -360,7 +460,7 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
     }
     if let Some(row) = txn.vertex(db, version_vid)? {
         txn.abort();
-        let Some(version) = RuleVersionRow::decode(&row, book)? else {
+        let Some(version) = RuleVersionRow::read_at(db, &row, book, db.frontier()?)? else {
             return Err(corrupt("a rule version address names another vertex"));
         };
         return Ok(Ok(RuleVersionRecorded {
@@ -370,6 +470,7 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
         }));
     }
     let root = book_root();
+    let encoded = spec.encode()?;
     let mut props = vec![
         (
             property::BOOK_ID,
@@ -378,13 +479,30 @@ pub async fn propose_rule_version<V: Vfs + Clone>(
         (property::NAME, scalar_text("name", rule.name())?),
         (
             property::FA_PAYLOAD,
-            scalar_bytes("rule_version._fa_payload", spec.encode()?)?,
+            scalar_bytes(
+                "rule_version._fa_payload",
+                object::payload(ObjectKind::RuleVersion, &encoded)?,
+            )?,
         ),
     ];
     props.sort_by_key(|(k, _)| k.0);
     let mut in_book = WriteBatch::new(relation::IN_BOOK);
-    in_book.create_vertex(evid, vec![label::ENTRY], entry_mirrors(&entry)?);
+    in_book.create_vertex(
+        evid,
+        vec![label::ENTRY],
+        crate::entry_storage::stored_mirrors(&entry)?,
+    );
+    crate::entry_storage::stage(&ctx.query(), &mut in_book, &entry, evid)?;
     in_book.create_vertex(version_vid, vec![label::RULE_VERSION], props);
+    object::stage(
+        &ctx.query(),
+        &mut in_book,
+        book.book_id,
+        version_vid,
+        label::RULE_VERSION,
+        ObjectKind::RuleVersion,
+        &encoded,
+    )?;
     in_book.add_edge(
         edge_id(relation::IN_BOOK, version_vid, root),
         version_vid,
@@ -1267,7 +1385,7 @@ pub async fn activate_rule_version<V: Vfs + Clone>(
     }
     let version_vid = rule_version_vid(book.book_id, &plan.ir_digest);
     let version = match txn.vertex(db, version_vid)? {
-        Some(row) => RuleVersionRow::decode(&row, book)?,
+        Some(row) => RuleVersionRow::read_staged(&txn, db, &row, book)?,
         None => None,
     };
     let Some(version) = version else {
@@ -1555,7 +1673,7 @@ pub(crate) fn verify_rule_origin<V: Vfs + Clone>(
     };
     let digest = rule_version_oid.0;
     let version = match txn.vertex(db, rule_version_vid(book.book_id, &digest))? {
-        Some(row) => RuleVersionRow::decode(&row, book)?,
+        Some(row) => RuleVersionRow::read_staged(txn, db, &row, book)?,
         None => None,
     };
     let Some(version) = version else {

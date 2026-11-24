@@ -1696,7 +1696,7 @@ pub async fn close_account<V: asupersync::fs::Vfs + Clone>(
             }
             let version_vid = fa_model::rule_version_vid(book.book_id, &binding.ir_digest);
             let version = match txn.vertex(db, version_vid)? {
-                Some(row) => crate::rule::RuleVersionRow::decode(&row, book)?,
+                Some(row) => crate::rule::RuleVersionRow::read_staged(&txn, db, &row, book)?,
                 None => None,
             };
             let Some(version) = version else {

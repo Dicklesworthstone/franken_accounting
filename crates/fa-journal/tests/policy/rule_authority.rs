@@ -9,9 +9,10 @@ use fa_journal::plan::{commit_plan, plan_post};
 use fa_journal::refusal::code;
 use fa_journal::rule::{
     RuleDerivation, activate_rule_version, automatic_rules_at, plan_rule_activation,
-    propose_rule_version, rule_derived_proposal,
+    propose_rule_version, rule_derived_proposal, rule_version_at, rule_versions_at,
 };
 use fa_model::{EventKind, EventResource, EventSpec};
+use fgdb_delta_types::DeltaRow;
 
 #[path = "rule_authority/automatic_drafts.rs"]
 mod automatic_drafts;
@@ -32,6 +33,316 @@ fn source(ceiling: &str) -> String {
   credit "6000" net
 }}"#
     )
+}
+
+fn large_rule_source() -> String {
+    let mut source = String::from(
+        "rule large_balanced_sale v1 for event Sale {\n\
+         authority {\n\
+         debit \"1000\" upto \"100000.00 USD\"\n\
+         credit \"6000\" upto \"100000.00 USD\"\n\
+         }\n",
+    );
+    // Real expressions grow both source and IR. These 320 legs stay inside
+    // Canon's 512-statement/leg bounds and allocate no let slots.
+    for _ in 0..160 {
+        source.push_str("debit \"1000\" event.resource(\"net\", \"USD\") / 2 round HalfEven\n");
+        source.push_str("credit \"6000\" event.resource(\"net\", \"USD\") / 2 round HalfEven\n");
+    }
+    source.push('}');
+    source
+}
+
+#[test]
+fn oversized_canon_rule_round_trips_activates_and_posts() {
+    let mut h = harness();
+    let source = large_rule_source();
+    let rule = fa_canon::compile(&source, &h.book.units).unwrap();
+    assert!(source.len() > 16_384);
+    assert!(source.len() <= fa_canon::MAX_SOURCE_BYTES);
+    assert!(rule.ir().len() > 16_384);
+    assert!(rule.slots().is_empty());
+    assert_eq!(rule.legs().len(), 320);
+    assert_eq!(
+        CompiledRule::decode(rule.ir(), &h.book.units).unwrap(),
+        rule
+    );
+
+    let before = h.db.frontier().unwrap();
+    let rows_before = h.db.vertices().unwrap();
+    let ctx = h.ctx();
+    let description = h.period_description();
+    let result = h.runtime.block_on(propose_rule_version(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &source,
+        PREPARER,
+        b"large-rule",
+        description,
+        &controller(),
+    ));
+    let recorded = match result {
+        Ok(Ok(recorded)) => recorded,
+        failure => {
+            assert_eq!(h.db.frontier().unwrap(), before);
+            assert_eq!(h.db.vertices().unwrap(), rows_before);
+            panic!("valid oversized rule proposal failed: {failure:?}");
+        }
+    };
+    assert!(!recorded.already_recorded);
+    assert_eq!(recorded.version.spec.source, source);
+    assert_eq!(recorded.version.spec.ir, rule.ir());
+    let control_vid = recorded.control_entry.unwrap();
+    let (control, recorded_at) = read_entry(&h.db, control_vid).unwrap().unwrap();
+    let entry_bytes = control.encode().unwrap();
+    assert!(entry_bytes.len() > 16_384);
+    assert_eq!(recorded_at, recorded.version.created_at);
+    assert_eq!(recorded_at.0, before.0 + 1);
+
+    // The complete rule and SchemaControl body publish atomically. Pin the
+    // registered cost to native effects, including the fragments and edge.
+    let rule_fragments = recorded.version.spec.encode().unwrap().len().div_ceil(4096);
+    let entry_fragments = entry_bytes.len().div_ceil(4096);
+    let publications: Vec<_> = h.db.delta_since(before).unwrap().collect();
+    assert_eq!(publications.len(), 1);
+    let (mut entries, mut versions, mut fragments, mut memberships) = (0, 0, 0, 0);
+    for coordinate in publications[0].coordinate_entries() {
+        for row in &coordinate.rows {
+            match row {
+                DeltaRow::CreateVertex { labels, .. } if labels == &[label::ENTRY] => entries += 1,
+                DeltaRow::CreateVertex { labels, .. } if labels == &[label::RULE_VERSION] => {
+                    versions += 1;
+                }
+                DeltaRow::CreateVertex { labels, .. } if labels == &[label::ENTRY_FRAGMENT] => {
+                    fragments += 1;
+                }
+                DeltaRow::CreateEdge {
+                    relation, src, dst, ..
+                } => {
+                    assert_eq!(*relation, relation::IN_BOOK);
+                    assert_eq!(*src, recorded.version.vid);
+                    assert_eq!(*dst, book_root());
+                    memberships += 1;
+                }
+                other => panic!("unexpected rule proposal effect: {other:?}"),
+            }
+        }
+    }
+    assert_eq!(
+        (entries, versions, fragments, memberships),
+        (1, 1 + rule_fragments, entry_fragments, 1)
+    );
+    assert_eq!(
+        rule_version_at(&h.db, &h.book, &rule.ir_digest(), recorded_at).unwrap(),
+        Some(recorded.version.clone()),
+    );
+    assert_eq!(
+        rule_versions_at(&h.db, &h.book, recorded_at).unwrap(),
+        vec![recorded.version.clone()],
+        "storage fragments are not additional logical rule versions",
+    );
+
+    let rows = h.db.vertices().unwrap();
+    for (key, expected_control) in [
+        (b"large-rule".as_slice(), Some(control_vid)),
+        (b"same-large-ir".as_slice(), None),
+    ] {
+        let description = h.period_description();
+        let retry = h
+            .runtime
+            .block_on(propose_rule_version(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &source,
+                PREPARER,
+                key,
+                description,
+                &controller(),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(retry.already_recorded);
+        assert_eq!(retry.version, recorded.version);
+        assert_eq!(retry.control_entry, expected_control);
+        assert_eq!(h.db.frontier().unwrap(), recorded_at);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(h.db.delta_since(recorded_at).unwrap().count(), 0);
+    }
+
+    activate(&mut h, &rule);
+    let event = event(&mut h, "LARGE-SALE", 4_000);
+    let candidate = proposal(&h, &rule, &event, b"large-rule-output");
+    assert_eq!(candidate.legs.len(), 320);
+    assert!(
+        candidate
+            .legs
+            .iter()
+            .all(|leg| leg.amount == Amount::new(h.usd, 2_000))
+    );
+    assert!(matches!(
+        h.post(candidate, controller(), Vec::new()).unwrap(),
+        Posted::Committed { .. }
+    ));
+}
+
+fn damage_rule_fragment(h: &mut Harness, version: VId, delete: bool) -> (VId, Vec<u8>) {
+    let fragment =
+        h.db.vertices()
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                row.vid != version
+                    && row.labels == [label::RULE_VERSION]
+                    && row.props.iter().any(|(key, _)| *key == property::FA_DIGEST)
+            })
+            .expect("a large rule has a native fragment");
+    let original =
+        fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "rule fragment").unwrap();
+    let mut mutation = WriteBatch::new(relation::CITES);
+    if delete {
+        mutation.delete_vertex(fragment.vid);
+    } else {
+        let mut damaged = original.clone();
+        damaged[0] ^= 1;
+        mutation.set_vertex_property(
+            fragment.vid,
+            property::FA_PAYLOAD,
+            Some(fa_journal::rows::scalar_bytes("damaged rule fragment", damaged).unwrap()),
+        );
+    }
+    let ctx = h.ctx();
+    h.runtime
+        .block_on(h.db.write(&ctx.commit(), mutation))
+        .unwrap();
+    (fragment.vid, original)
+}
+
+#[test]
+fn oversized_rule_fragments_are_required_for_activation() {
+    for delete in [false, true] {
+        let mut h = harness();
+        let rule = propose_source(&mut h, &large_rule_source(), b"fragment-activation-rule");
+        let born = h.db.frontier().unwrap();
+        let original = rule_version_at(&h.db, &h.book, &rule.ir_digest(), born)
+            .unwrap()
+            .unwrap();
+        let plan = plan_rule_activation(
+            &h.db,
+            &h.book,
+            &controller(),
+            &rule.ir_digest(),
+            DateDay::from_ymd(2026, 3, 1).unwrap(),
+            b"fragment-activation",
+            h.period_description(),
+        )
+        .unwrap()
+        .unwrap();
+        let digest = plan.proposal_digest(&h.book).unwrap();
+        let approvals = vec![
+            h.approve(ALICE, digest).unwrap().approval(),
+            h.approve(BOB, digest).unwrap().approval(),
+        ];
+        let (fragment, original_bytes) = damage_rule_fragment(&mut h, original.vid, delete);
+        let ctx = h.ctx();
+        for restored in [false, true] {
+            if restored {
+                if delete {
+                    break;
+                }
+                let mut restore = WriteBatch::new(relation::CITES);
+                restore.set_vertex_property(
+                    fragment,
+                    property::FA_PAYLOAD,
+                    Some(
+                        fa_journal::rows::scalar_bytes(
+                            "restored rule fragment",
+                            original_bytes.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                );
+                h.runtime
+                    .block_on(h.db.write(&ctx.commit(), restore))
+                    .unwrap();
+            }
+            let head = h.db.frontier().unwrap();
+            let rows = h.db.vertices().unwrap();
+            assert!(matches!(
+                rule_version_at(&h.db, &h.book, &rule.ir_digest(), head),
+                Err(KernelError::Corrupt(_))
+            ));
+            assert_eq!(
+                rule_version_at(&h.db, &h.book, &rule.ir_digest(), born).unwrap(),
+                Some(original.clone())
+            );
+            let result = h.runtime.block_on(activate_rule_version(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                &controller(),
+                plan.clone(),
+                approvals.clone(),
+            ));
+            assert!(
+                matches!(result, Err(KernelError::Corrupt(_))),
+                "delete={delete}, restored={restored}: {result:?}"
+            );
+            assert_eq!(h.db.frontier().unwrap(), head);
+            assert_eq!(h.db.vertices().unwrap(), rows);
+        }
+    }
+}
+
+#[test]
+fn rule_fragment_changes_conflict_with_prepared_posts_and_refuse_fresh_posts() {
+    for delete in [false, true] {
+        let mut h = harness();
+        let rule = propose_source(&mut h, &large_rule_source(), b"fragment-post-rule");
+        activate(&mut h, &rule);
+        let event = event(&mut h, "FRAGMENT-SALE", 4_000);
+        let candidate = proposal(&h, &rule, &event, b"fragment-post");
+        let ctx = h.ctx();
+        let request = PostRequest {
+            proposal: candidate,
+            capability: controller(),
+            approvals: Vec::new(),
+            plan_certificate: None,
+        };
+        let prepared = fa_journal::post::prepare_post(&mut h.db, &ctx, &h.book, request.clone())
+            .unwrap()
+            .unwrap();
+        let fa_journal::post::PostPreparation::Ready(prepared) = prepared else {
+            panic!("a valid large rule output must prepare before its storage changes");
+        };
+        let basis = h.db.frontier().unwrap();
+        let original = rule_version_at(&h.db, &h.book, &rule.ir_digest(), basis)
+            .unwrap()
+            .unwrap();
+        damage_rule_fragment(&mut h, original.vid, delete);
+        let head = h.db.frontier().unwrap();
+        let rows = h.db.vertices().unwrap();
+        let refused = h
+            .runtime
+            .block_on(prepared.commit(&mut h.db, &ctx))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, code::CONFLICT, "delete={delete}: {refused:?}");
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        let fresh = h.runtime.block_on(post(&mut h.db, &ctx, &h.book, request));
+        assert!(
+            matches!(fresh, Err(KernelError::Corrupt(_))),
+            "delete={delete}: {fresh:?}"
+        );
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert_eq!(h.db.vertices().unwrap(), rows);
+        assert_eq!(
+            rule_version_at(&h.db, &h.book, &rule.ir_digest(), basis).unwrap(),
+            Some(original)
+        );
+    }
 }
 
 fn propose(h: &mut Harness, ceiling: &str, key: &[u8]) -> CompiledRule {

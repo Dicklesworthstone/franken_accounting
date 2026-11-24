@@ -18,6 +18,7 @@ period_plan_kind = 8
 migration_run_kind = 9
 migration_source_kind = 10
 entry_kind = 11
+rule_version_kind = 12
 
 # At/below one document Merkle leaf, preserve raw canonical bytes.
 # Above it, the root payload is fixed(manifest_format) || u16 kind ||
@@ -81,3 +82,11 @@ entry_kind = 11
 # only exact original fragment births matching the root's publication.
 # Historical inline Entries remain valid even above the new 4096-byte threshold.
 # Scratch replay preserves root and fragments together as accounting objects.
+# RuleVersion kind 12 stores unchanged source-and-IR bodies under the original
+# IR-derived rule identity. Root and fragments use the authoritative RuleVersion
+# label; only the root has the original IN_BOOK membership edge. Source and IR
+# decode bounds apply to the reassembled body before compilation. The complete
+# SchemaControl Entry uses Entry kind 11, and both objects publish atomically.
+# Rule readers authenticate original root and fragment births; activation and
+# derived posting enlist the fragments as transaction witnesses. Legacy inline
+# RuleVersion payloads remain readable without changing their source or digest.

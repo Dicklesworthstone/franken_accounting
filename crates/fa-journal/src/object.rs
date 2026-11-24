@@ -41,6 +41,7 @@ pub enum ObjectKind {
     MigrationRun = 9,
     MigrationSource = 10,
     Entry = 11,
+    RuleVersion = 12,
 }
 
 /// Public content identity, separate from a caller's graph locator.
@@ -351,6 +352,7 @@ mod tests {
             ObjectKind::MigrationRun,
             ObjectKind::MigrationSource,
             ObjectKind::Entry,
+            ObjectKind::RuleVersion,
         ]
         .into_iter()
         .flat_map(|kind| {
@@ -431,7 +433,8 @@ mod tests {
                 | ObjectKind::PeriodPlan
                 | ObjectKind::MigrationRun
                 | ObjectKind::MigrationSource
-                | ObjectKind::Entry => ObjectKind::PostPlan,
+                | ObjectKind::Entry
+                | ObjectKind::RuleVersion => ObjectKind::PostPlan,
             };
             assert!(
                 read(
@@ -808,6 +811,7 @@ mod tests {
             ("period_plan_kind", ObjectKind::PeriodPlan as i128),
             ("migration_run_kind", ObjectKind::MigrationRun as i128),
             ("migration_source_kind", ObjectKind::MigrationSource as i128),
+            ("rule_version_kind", ObjectKind::RuleVersion as i128),
         ] {
             assert_eq!(schema.root.get(key).unwrap().as_int().unwrap(), expected);
         }
