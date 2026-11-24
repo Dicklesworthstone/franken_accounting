@@ -246,7 +246,10 @@ fn rows_problems(cx: &Context<'_>, s: &Sourced, rows_file: &str) -> Vec<String> 
     if s.rows_layout == Some(RowsLayout::CommingledFifoV1) {
         let digest = sha256::hex(&sha256::digest(text.as_bytes()));
         return if digest == s.quote_sha256 {
-            Vec::new()
+            match super::super::commingled::Transcript::parse(text) {
+                Ok(_) => Vec::new(),
+                Err(error) => vec![format!("movement transcription {rows_file}: {error}")],
+            }
         } else {
             vec![format!(
                 "movement transcription {rows_file} hashes to {digest}, not the fact's quote_sha256 {}",

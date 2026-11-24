@@ -630,6 +630,35 @@ fn commingled_exhibit_refuses_a_receipt_that_did_not_compare_the_worksheet() {
 }
 
 #[test]
+fn commingled_exhibits_refuse_a_rehashed_impossible_movement_date() {
+    let mut case = load(&embedded::MINC.case_files()).unwrap();
+    let table = case.rows.get_mut("fifo-movements.tsv").unwrap();
+    assert!(table.contains("04/18/23\tother\t433333"));
+    *table = table.replacen("04/18/23\tother\t433333", "04/31/23\tother\t433333", 1);
+    let digest = crate::sha256::hex(&crate::sha256::digest(table.as_bytes()));
+    for id in ["MINC-APPENDIX-1", "MINC-APPENDIX-2"] {
+        let fact = case.facts.iter_mut().find(|fact| fact.id == id).unwrap();
+        let fact::Provenance::Sourced(sourced) = &mut fact.provenance else {
+            panic!("{id} is sourced")
+        };
+        sourced.quote_sha256.clone_from(&digest);
+        let receipt = case
+            .receipts
+            .iter_mut()
+            .find(|receipt| receipt.fact == id)
+            .unwrap();
+        receipt.quote_sha256.clone_from(&digest);
+    }
+    let report = check::bind::check(&check::Context::new(&case));
+    assert_eq!(report.verdict, check::Verdict::Fail);
+    assert_eq!(report.failures.len(), 2, "{report}");
+    for id in ["MINC-APPENDIX-1", "MINC-APPENDIX-2"] {
+        assert!(report.failures.iter().any(|failure| failure.row == id
+            && failure.reason.contains("invalid printed date")), "{report}");
+    }
+}
+
+#[test]
 fn rows_file_on_a_journal_entry_fact_is_refused() {
     let files = with_ledger_fact("journal_entry");
     let line = row_line(text_of(&files, FACTS_FILE), "fact", 8);

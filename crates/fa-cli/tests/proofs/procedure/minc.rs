@@ -2,30 +2,10 @@
 //! The appendices omit individual dates for several aggregate movements.
 
 use super::*;
+use fa_oracles::cases::commingled::{Endpoint, Movement, MovementKind, Transcript};
+use fa_oracles::cases::date::Day;
 
 const PETITION: &str = "2024-09-19";
-
-struct Movement<'a> {
-    observed: &'a str,
-    printed: &'a str,
-    kind: &'a str,
-    cents: i128,
-}
-
-impl Movement<'_> {
-    fn debit(&self) -> bool {
-        self.kind.ends_with("debit")
-    }
-
-    fn posting_date(&self) -> String {
-        if let [month, day, year] = self.printed.split('/').collect::<Vec<_>>().as_slice()
-            && [month, day, year].iter().all(|part| part.len() == 2)
-        {
-            return format!("20{year}-{month}-{day}");
-        }
-        self.observed.to_owned()
-    }
-}
 
 fn trace_at(fixture: &Fixture, vid: &str, through: &str) -> i128 {
     let report = ok(
@@ -190,7 +170,8 @@ fn verify_sources(
         writeln!(
             &mut inventory,
             "{source}\t{}\t{}\t{pin}\t{known_at}\t{account}",
-            movement.kind, movement.printed
+            movement.kind.as_str(),
+            movement.printed
         )
         .unwrap();
     }
@@ -292,45 +273,30 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
     let source_file = movement_file("MINC-APPENDIX-1");
     assert_eq!(source_file, movement_file("MINC-APPENDIX-2"));
     let movement_table = case.rows[source_file].as_str();
-    for (endpoint, expected_balance) in
-        [("schedule-debit", 3_778_946), ("trustee-debit", 3_753_741)]
-    {
-        let movements: Vec<_> = movement_table
-            .lines()
-            .filter(|line| !line.starts_with('#'))
-            .map(|line| {
-                let [observed, printed, kind, cents] = line
-                    .split('\t')
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .expect("four movement columns");
-                assert!(matches!(
-                    kind,
-                    "opening" | "other" | "social" | "debit" | "schedule-debit" | "trustee-debit"
-                ));
-                Movement {
-                    observed,
-                    printed,
-                    kind,
-                    cents: cents.parse().unwrap(),
-                }
-            })
-            .filter(|m| m.kind == endpoint || !m.kind.contains('-'))
-            .collect();
+    let transcript = Transcript::parse(movement_table).unwrap();
+    for (selection, expected_balance) in [
+        (Endpoint::Schedule, 3_778_946),
+        (Endpoint::Trustee, 3_753_741),
+    ] {
+        let endpoint = selection.as_str();
+        let movements: Vec<_> = transcript.movements(selection).collect();
+        let funding = transcript.funding_bound(selection).unwrap();
+        assert_eq!(funding.ending_cents, expected_balance);
+        assert_eq!(funding.minimum_cents, 2_287_531);
         // Independent bound: even all withdrawals before all deposits in any
         // observation interval are funded by its prior balance. Thus every
         // admissible ordering consumes a prefix of the same deposit dollars.
         // The three oldest deposits have explicit, strictly increasing dates.
         let mut balance = 0;
         let mut debits = 0;
-        let mut prior_date = "";
+        let mut prior_date = None;
         for group in movements.chunk_by(|a, b| a.observed == b.observed) {
             let observed = group[0].observed;
-            assert!(observed > prior_date);
-            prior_date = observed;
+            assert!(prior_date.is_none_or(|day| observed > day));
+            prior_date = Some(observed);
             let withdrawals = group
                 .iter()
-                .filter(|m| m.debit())
+                .filter(|m| m.kind.is_debit())
                 .map(|m| m.cents)
                 .sum::<i128>();
             assert!(
@@ -340,17 +306,22 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             debits += withdrawals;
             balance += group
                 .iter()
-                .filter(|m| !m.debit())
+                .filter(|m| !m.kind.is_debit())
                 .map(|m| m.cents)
                 .sum::<i128>()
                 - withdrawals;
         }
         assert_eq!(balance, expected_balance);
-        let oldest: Vec<_> = movements.iter().filter(|m| !m.debit()).take(4).collect();
+        assert_eq!(debits, funding.withdrawals_cents);
+        let oldest: Vec<_> = movements
+            .iter()
+            .filter(|m| !m.kind.is_debit())
+            .take(4)
+            .collect();
         assert_eq!(
             oldest
                 .iter()
-                .map(|m| (m.printed, m.kind))
+                .map(|m| (m.printed, m.kind.as_str()))
                 .collect::<Vec<_>>(),
             [
                 ("03/24/23", "opening"),
@@ -363,14 +334,14 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             movements
                 .iter()
                 .filter(|m| m.printed.starts_with("unknown"))
-                .all(|m| m.observed >= "2023-06-26")
+                .all(|m| m.observed >= Day::parse("2023-06-26").unwrap())
         );
         assert!(
             movements
                 .iter()
-                .filter(|m| !m.debit())
+                .filter(|m| !m.kind.is_debit())
                 .skip(3)
-                .all(|m| m.posting_date().as_str() > "2023-04-12")
+                .all(|m| m.earliest > Day::parse("2023-04-12").unwrap())
         );
         let before_social = oldest[0].cents + oldest[1].cents;
         assert!(before_social < debits && debits < before_social + oldest[2].cents);
@@ -391,27 +362,27 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
         let doc = evidence(&fixture, &transcription);
         let mut sources = Vec::new();
         let mut open_periods = std::collections::BTreeSet::new();
-        for (i, m) in movements.iter().enumerate() {
-            // Preserve every exact printed date. For intervals, use only the
-            // dated observation boundary, posting same-day rows in table order.
-            let date = m.posting_date();
+        for (i, m) in movements.iter().copied().enumerate() {
+            // Use a representative day within the source bounds and post
+            // any same-day rows in table order.
+            let date = m.reconstruction_day().to_string();
             let period = format!("FY{}-P{}", &date[..4], &date[5..7]);
             if open_periods.insert(period.clone()) {
                 ok(&fixture.book, &["period", "open", &period]);
             }
             let key = format!("minc-{i}");
             let amount = dollars(m.cents);
-            if m.debit() {
+            if m.kind.is_debit() {
                 withdrawal(&fixture, &key, &date, &amount, &doc);
             } else {
                 let entry = fixture.post(&key, &date, &amount, &doc);
-                if matches!(m.kind, "opening" | "other") {
+                if matches!(m.kind, MovementKind::Opening | MovementKind::Other) {
                     sources.push((m, text(&entry, "vid").to_owned()));
                 }
             }
         }
         let (opening, others) = sources.split_first().unwrap();
-        assert_eq!(opening.0.kind, "opening");
+        assert_eq!(opening.0.kind, MovementKind::Opening);
         assert_eq!(others.len(), 20);
         let opening_remaining = trace_at(&fixture, &opening.1, PETITION);
         let other_remaining: i128 = others
@@ -450,7 +421,7 @@ fn minc_fifo_matches_both_opening_classifications_and_both_petition_debits() {
             // other-source balances in Appendices 1 and 2 (pp. 44 and 51).
             let april_other: i128 = others
                 .iter()
-                .filter(|(m, _)| m.observed == "2023-04-25")
+                .filter(|(m, _)| m.observed == Day::parse("2023-04-25").unwrap())
                 .map(|(_, vid)| trace_at(&fixture, vid, "2023-04-25"))
                 .sum();
             assert_eq!(april_other, 600_917);

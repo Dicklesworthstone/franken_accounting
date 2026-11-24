@@ -31767,7 +31767,7 @@ fn large_canon_rule_survives_reopen_activation_posting_and_certified_replay() ->
         );
     }
     source.push('}');
-    let compiled = fa_canon::compile(&source, &open().context().units).unwrap();
+    let compiled = fa::rule::compile_rule(open().context(), &source).unwrap();
     assert!(source.len() > 16_384, "source alone exceeds a native row");
     assert!(
         compiled.ir().len() > 16_384,
@@ -31856,7 +31856,9 @@ fn large_canon_rule_survives_reopen_activation_posting_and_certified_replay() ->
     assert_eq!(head(), before_post, "dry-run never publishes");
     let plan = fa::PostPlan::decode(&std::fs::read(&plan_file)?).unwrap();
     assert_eq!(plan.proposal().legs.len(), 320);
-    let posted = doc(&ok(&["commit", "--plan", plan_path, "--json"]));
+    // Rule derivation prepares the plan with read and post authority.
+    let commit = ["commit", "--plan", plan_path, "--grant", "read", "--json"];
+    let posted = doc(&ok(&commit));
     let vid = text(&posted, "vid").to_string();
     let native_vid = fgdb_types::VId(u128::from_str_radix(&vid, 16).unwrap());
     let (entry, _) = open().read_entry(native_vid).unwrap().unwrap();
@@ -31869,7 +31871,7 @@ fn large_canon_rule_survives_reopen_activation_posting_and_certified_replay() ->
             .all(|leg| leg.amount.mantissa == 2_000)
     );
     let after_post = head();
-    let retry = doc(&ok(&["commit", "--plan", plan_path, "--json"]));
+    let retry = doc(&ok(&commit));
     assert_eq!(retry.get("already_recorded"), Some(&Json::Bool(true)));
     assert_eq!(text(&retry, "vid"), vid);
     assert_eq!(head(), after_post);
