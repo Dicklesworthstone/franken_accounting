@@ -1644,6 +1644,30 @@ severity and work counts; JSON carries monetary mantissas as decimal strings.
 Payments and reversals effective after the selected date cannot change its
 earlier result.
 
+`ponzi.net_investment` v5 exports investor principal schedules for independent
+offline replay. The recipient reconstructs registered party identities,
+historical cash and investor-capital roles, exact cash attribution and declared
+principal transfers from the authenticated journal. Cash attribution and
+transfers respect each currency and legal-entity partition. Ambiguous cash
+attribution stays explicitly unresolved; vendor payments and unmarked fees cannot become investor principal
+by inference. The verifier reproduces every claim or net-winner amount,
+cohort observation, citation and work count, with monetary mantissas represented
+as decimal strings. The optional inclusive cutoff applies before reversal and
+replacement netting; later postings or role changes cannot reinterpret the
+retained result. This verifies the declared mechanical schedule, without a
+conclusion about fraud or legal entitlement.
+
+```bash
+fa procedure run ponzi.net_investment@5 --param cohort_window_days=90 \
+  --effective-through 2026-03-31 --certificate-out net-investment.cert \
+  --book acme.fabook --json
+fa checkpoint create --grant witness --book acme.fabook --json
+fa bundle produce --certificate net-investment.cert --book acme.fabook \
+  --out net-investment.fab --receipt-out net-investment.receipt --json
+fa-verify report net-investment.fab --key <trusted-checkpoint-public-key> \
+  --receipt net-investment.receipt --json
+```
+
 `graph.round_trips` v2 exports both two-account returns and cycles through
 up to eight asset accounts (`max_hops=2..=8`).
 The verifier reconstructs capacity-conserving credit-to-debit allocations from

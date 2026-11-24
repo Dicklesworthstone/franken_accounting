@@ -81,7 +81,7 @@ fn target_identity(domain: &[u8], target: u128) -> u128 {
     u128::from_le_bytes(low)
 }
 
-fn framed_identity(domain: &[u8], parts: &[&[u8]]) -> u128 {
+pub(super) fn framed_identity(domain: &[u8], parts: &[&[u8]]) -> u128 {
     let mut raw = Vec::new();
     for part in parts {
         raw.extend_from_slice(&(part.len() as u32).to_le_bytes());

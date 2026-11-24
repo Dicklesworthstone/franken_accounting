@@ -66,6 +66,7 @@ mod journal_metadata;
 mod libr;
 mod number_analytics;
 mod ordered;
+pub(super) mod ponzi;
 mod post_closing;
 mod pro_rata;
 mod round_density;
@@ -99,6 +100,10 @@ pub enum VerifiedProcedureParameters {
         max_age_days: u32,
     },
     ExpenseCapitalization,
+    /// Posted principal, with cash attribution and explicit v5 transfer law.
+    PonziNetInvestment {
+        cohort_window_days: u32,
+    },
     /// Document and effective dates resolved only from authenticated periods.
     PeriodBoundary,
     UnrecordedLiabilities {
@@ -222,6 +227,7 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "jet.weekend",
             Self::SuspenseAging { .. } => "jet.suspense_aging",
             Self::ExpenseCapitalization => "expense.capitalization",
+            Self::PonziNetInvestment { .. } => "ponzi.net_investment",
             Self::PeriodBoundary => "cutoff.period_boundary",
             Self::UnrecordedLiabilities { .. } => "completeness.unrecorded_liabilities",
             Self::UnusualAccounts { .. } => "jet.unusual_accounts",
@@ -256,6 +262,7 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "FA-EVID-L04",
             Self::SuspenseAging { .. } => "FA-EVID-L28",
             Self::ExpenseCapitalization => "FA-EVID-L48",
+            Self::PonziNetInvestment { .. } => "FA-EVID-L56",
             Self::PeriodBoundary => "FA-EVID-L11",
             Self::UnrecordedLiabilities { .. } => "FA-EVID-L44",
             Self::UnusualAccounts { .. } => "FA-EVID-L24",
@@ -286,6 +293,9 @@ impl VerifiedProcedureParameters {
     pub(crate) fn parameters(self) -> Vec<(&'static str, i128)> {
         let parameters = match self {
             Self::RoundAmounts { round_power } => vec![("round_power", round_power)],
+            Self::PonziNetInvestment { cohort_window_days } => {
+                vec![("cohort_window_days", cohort_window_days)]
+            }
             Self::PeriodEndTiming { window_days }
             | Self::SameSameDifferent { window_days }
             | Self::UnrecordedLiabilities { window_days } => {
@@ -472,6 +482,7 @@ impl VerifiedProcedureParameters {
     pub(super) fn parameter_defaults(self) -> &'static [(&'static str, u32)] {
         match self {
             Self::RoundAmounts { .. } => &[("round_power", 3)],
+            Self::PonziNetInvestment { .. } => &[("cohort_window_days", 90)],
             Self::PeriodEndTiming { .. } => &[("window_days", 3)],
             Self::SameSameDifferent { .. } => &[("window_days", 30)],
             Self::UnrecordedLiabilities { .. } => &[("window_days", 45)],
@@ -505,6 +516,7 @@ impl VerifiedProcedureParameters {
     pub(super) fn supports_cutoff(self, version: u16) -> bool {
         matches!(self, Self::OpenItemsAging { .. }) && version == 1
             || matches!(self, Self::SuspenseAging { .. }) && version == 3
+            || matches!(self, Self::PonziNetInvestment { .. }) && version == 5
             || version == 2
                 && (self.is_trace()
                     || matches!(
@@ -534,7 +546,9 @@ impl VerifiedProcedureParameters {
         self.is_trace()
             || matches!(
                 self,
-                Self::GraphStructuring { .. } | Self::GraphRoundTrips { .. }
+                Self::GraphStructuring { .. }
+                    | Self::GraphRoundTrips { .. }
+                    | Self::PonziNetInvestment { .. }
             )
     }
 
@@ -565,6 +579,10 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn is_investor(self) -> bool {
+        matches!(self, Self::PonziNetInvestment { .. })
+    }
+
     pub(crate) fn complexity(self) -> &'static str {
         match self {
             Self::RoundAmounts { .. } => "O(legs)",
@@ -580,6 +598,7 @@ impl VerifiedProcedureParameters {
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::ExpenseCapitalization
+            | Self::PonziNetInvestment { .. }
             | Self::UnrecordedLiabilities { .. }
             | Self::SameSameDifferent { .. }
             | Self::UnusualPreparers { .. }
@@ -624,6 +643,25 @@ pub(super) struct Certificate<'a> {
 /// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureStatistic {
+    /// Exact investor principal from actual cash and explicitly posted transfers.
+    /// This is a mechanical amount, not a legal entitlement or fraud conclusion.
+    InvestorPrincipal {
+        party: u128,
+        unit: u32,
+        net_winner: bool,
+        amount: i128,
+        scale: u8,
+        accounts: Vec<u128>,
+        entries: Vec<u128>,
+    },
+    /// Cash not attributable to any one party's original legs.
+    UnresolvedInvestorCash {
+        unit: u32,
+        amount: i128,
+        scale: u8,
+        accounts: Vec<u128>,
+        entries: Vec<u128>,
+    },
     /// Open residuals by inclusive effective-date age band. These amounts
     /// are neither due-date assertions nor nets across debit/credit sides.
     AgedOpenAmount {
@@ -816,6 +854,14 @@ pub enum VerifiedProcedureStatistic {
 impl VerifiedProcedureStatistic {
     pub(crate) fn name(&self) -> &str {
         match self {
+            Self::InvestorPrincipal { net_winner, .. } => {
+                if *net_winner {
+                    "fictitious_profit_clawback"
+                } else {
+                    "net_equity_claim"
+                }
+            }
+            Self::UnresolvedInvestorCash { .. } => "unresolved_attribution",
             Self::AgedOpenAmount { name, .. } => name,
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
@@ -845,6 +891,8 @@ impl VerifiedProcedureStatistic {
 
     pub(crate) fn value(&self) -> i128 {
         match self {
+            Self::InvestorPrincipal { amount, .. }
+            | Self::UnresolvedInvestorCash { amount, .. } => *amount,
             Self::AgedOpenAmount { totals, .. } => totals[3],
             Self::RoundLegs { ordinals } => ordinals.len() as i128,
             Self::AccountRoundLegs { count, .. } => i128::from(*count),
@@ -882,6 +930,8 @@ impl VerifiedProcedureStatistic {
         match self {
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => 9,
             Self::TracedAmount { scale, .. }
+            | Self::InvestorPrincipal { scale, .. }
+            | Self::UnresolvedInvestorCash { scale, .. }
             | Self::CapitalizedExpense { scale, .. }
             | Self::SubsequentEventAmount { scale, .. }
             | Self::UnrecordedLiabilityAmount { scale, .. }
@@ -926,6 +976,20 @@ impl VerifiedProcedureFinding {
             return cites;
         }
         let citations: Vec<(u8, [u8; 16])> = match &self.statistic {
+            VerifiedProcedureStatistic::InvestorPrincipal {
+                accounts, entries, ..
+            } => accounts
+                .iter()
+                .map(|account| (3, account.to_le_bytes()))
+                .chain(entries.iter().map(|entry| (1, entry.to_le_bytes())))
+                .collect(),
+            VerifiedProcedureStatistic::UnresolvedInvestorCash {
+                accounts, entries, ..
+            } => entries
+                .iter()
+                .map(|entry| (1, entry.to_le_bytes()))
+                .chain(accounts.iter().map(|account| (3, account.to_le_bytes())))
+                .collect(),
             VerifiedProcedureStatistic::SuspenseAge {
                 account, entries, ..
             } => {
@@ -1099,6 +1163,9 @@ pub(super) struct Entry {
 pub(super) struct TraceContext {
     pub account_normal_balances: BTreeMap<u128, u8>,
     pub entries: BTreeMap<u128, TraceEntryFacts>,
+    /// Complete Party declarations and original dimension lists, only for
+    /// the investor profile; no identity is taken from a producer finding.
+    pub investors: Option<ponzi::Context>,
 }
 
 #[derive(Clone, Default)]
@@ -1169,9 +1236,10 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let extended = format == EXTENDED_FORMAT;
     if extended {
         // These six native population witnesses remain opaque. The admitted
-        // numeric/account-pair profiles use only authenticated journal/chart/units,
+        // numeric/account-pair/investor profiles use authenticated journal/chart/units,
         // independently reconstructed from source; no REA or attestation fact
-        // is taken from these native-only replay witnesses.
+        // is taken from these native-only replay witnesses. Investor Party names
+        // and identities come from authenticated historical schema records.
         if r.count(6, 4, "procedure.extended_inputs")? != 6 {
             return Err(failed(
                 "procedure_profile",
@@ -1206,6 +1274,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.weekend" => ("FA-EVID-L04", None),
         "jet.suspense_aging" => ("FA-EVID-L28", Some(("max_age_days", u32::MAX))),
         "expense.capitalization" => ("FA-EVID-L48", None),
+        "ponzi.net_investment" => ("FA-EVID-L56", Some(("cohort_window_days", u32::MAX))),
         "cutoff.period_boundary" => ("FA-EVID-L11", None),
         "completeness.unrecorded_liabilities" => ("FA-EVID-L44", Some(("window_days", u32::MAX))),
         "jet.unusual_accounts" => ("FA-EVID-L24", None),
@@ -1232,7 +1301,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1252,6 +1321,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "numbers.relative_size_factor"
                 | "numbers.threshold_splitting"
                 | "completeness.unrecorded_liabilities"
+                | "ponzi.net_investment"
         )
     {
         return Err(failed(
@@ -1260,7 +1330,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         ));
     }
     let version = question.u16("procedure.version")?;
-    if !matches!(version, 1..=3)
+    if !(matches!(version, 1..=3) || (id == "ponzi.net_investment" && version == 5))
+        || (id == "ponzi.net_investment" && version != 5)
         || (matches!(id, "events.subsequent" | "jet.suspense_aging") && version != 3)
         || (!matches!(id, "events.subsequent" | "jet.suspense_aging") && version == 3)
         || (matches!(
@@ -1406,6 +1477,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 ));
             }
             VerifiedProcedureParameters::UnrecordedLiabilities { window_days: value }
+        } else if id == "ponzi.net_investment" {
+            if value == 0 {
+                return Err(failed(
+                    "procedure_profile",
+                    "cohort_window_days must be positive",
+                ));
+            }
+            VerifiedProcedureParameters::PonziNetInvestment {
+                cohort_window_days: value,
+            }
         } else {
             VerifiedProcedureParameters::PeriodEndTiming { window_days: value }
         }
@@ -1492,6 +1573,28 @@ fn finding(
         .u8(value.statistic.scale())
         .u64(value.population);
     match &value.statistic {
+        VerifiedProcedureStatistic::InvestorPrincipal {
+            accounts, entries, ..
+        } => {
+            w.count(accounts.len() + entries.len());
+            for account in accounts {
+                w.u8(3).u128(*account);
+            }
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
+        }
+        VerifiedProcedureStatistic::UnresolvedInvestorCash {
+            accounts, entries, ..
+        } => {
+            w.count(accounts.len() + entries.len());
+            for entry in entries {
+                w.u8(1).u128(*entry);
+            }
+            for account in accounts {
+                w.u8(3).u128(*account);
+            }
+        }
         VerifiedProcedureStatistic::RoundLegs { ordinals } => {
             let entry = value.entry.ok_or_else(|| {
                 failed(
@@ -2302,6 +2405,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::Weekend
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::PonziNetInvestment { .. }
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2433,6 +2537,7 @@ fn recompute_version(
             | VerifiedProcedureParameters::Weekend
             | VerifiedProcedureParameters::SuspenseAging { .. }
             | VerifiedProcedureParameters::ExpenseCapitalization
+            | VerifiedProcedureParameters::PonziNetInvestment { .. }
             | VerifiedProcedureParameters::PeriodBoundary
             | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
             | VerifiedProcedureParameters::OpenItemsAging { .. }
@@ -2481,6 +2586,9 @@ fn recompute_version(
             effective_through,
             registry,
         )?;
+    } else if let VerifiedProcedureParameters::PonziNetInvestment { cohort_window_days } = profile {
+        (findings, live_legs, comparisons) =
+            ponzi::replay(&grouped_population, cohort_window_days, registry)?;
     } else if profile == VerifiedProcedureParameters::PeriodBoundary {
         findings = cutoff::replay(&grouped_population)?;
     } else if let VerifiedProcedureParameters::UnrecordedLiabilities { window_days } = profile {
@@ -2568,6 +2676,7 @@ fn recompute_version(
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::PonziNetInvestment { .. }
         | VerifiedProcedureParameters::PeriodBoundary
         | VerifiedProcedureParameters::UnrecordedLiabilities { .. }
         | VerifiedProcedureParameters::SecondDigit { .. }

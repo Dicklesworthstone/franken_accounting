@@ -28,6 +28,7 @@ const PREPARERS: &[(&str, i128, i128)] = &[
     ("min_account_entries", 0, u32::MAX as i128),
 ];
 const SUSPENSE: &[(&str, i128, i128)] = &[("max_age_days", 0, u32::MAX as i128)];
+const INVESTOR_COHORT: &[(&str, i128, i128)] = &[("cohort_window_days", 1, u32::MAX as i128)];
 const MANUAL_RULE: &[(&str, i128, i128)] = &[
     ("min_account_entries", 0, u32::MAX as i128),
     ("min_rule_share_bps", 0, u32::MAX as i128),
@@ -76,8 +77,8 @@ const BENFORD: &[(&str, i128, i128)] = &[
 ///
 /// Both native facade admission and transport framing use this inventory.
 /// Parameters must be explicit, unique and lexically ordered. JET
-/// round-amount/period-end v2 and suspense-aging v3 accept an optional effective
-/// cutoff; expense-capitalization v2 uses its complete all-date population.
+/// round-amount/period-end v2, suspense-aging v3 and net-investment v5 accept an
+/// optional cutoff; expense-capitalization v2 uses its complete all-date population.
 /// Tracing v2 requires a claim date and canonical account/source handles. This
 /// is neither source verification nor a claim that the delivered result agrees
 /// with the selected algorithm.
@@ -96,6 +97,7 @@ pub fn profile(
         ("jet.weekend", 1) => ("FA-EVID-L04", &[][..]),
         ("jet.suspense_aging", 3) => ("FA-EVID-L28", SUSPENSE),
         ("expense.capitalization", 2) => ("FA-EVID-L48", &[][..]),
+        ("ponzi.net_investment", 5) => ("FA-EVID-L56", INVESTOR_COHORT),
         ("cutoff.period_boundary", 1) => ("FA-EVID-L11", &[][..]),
         ("completeness.unrecorded_liabilities", 2) => ("FA-EVID-L44", POST_PERIOD_WINDOW),
         ("jet.unusual_accounts", 2) => ("FA-EVID-L24", ACCOUNT_PAIRS),
@@ -131,6 +133,7 @@ pub fn profile(
             && !aging
             && effective_through.is_some()
             && !(id == "jet.suspense_aging" && version == 3)
+            && !(id == "ponzi.net_investment" && version == 5)
             && !(version == 2 && matches!(id, "jet.round_amounts" | "jet.period_end_timing")))
         || parameters.len() != bounds.len()
         || !parameters
@@ -177,6 +180,60 @@ mod tests {
     use super::*;
 
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
+
+    #[test]
+    fn ponzi_profile_requires_v5_and_exact_positive_cohort_window() {
+        for cutoff in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+            for days in [1, 90, i128::from(u32::MAX)] {
+                assert_eq!(
+                    profile(
+                        "ponzi.net_investment",
+                        5,
+                        cutoff,
+                        &[("cohort_window_days", days)],
+                        &[]
+                    ),
+                    Some("FA-EVID-L56")
+                );
+            }
+        }
+        for version in [0, 1, 2, 3, 4, 6] {
+            assert_eq!(
+                profile(
+                    "ponzi.net_investment",
+                    version,
+                    None,
+                    &[("cohort_window_days", 90)],
+                    &[]
+                ),
+                None
+            );
+        }
+        for parameters in [
+            vec![],
+            vec![("cohort_window_days", 0)],
+            vec![("cohort_window_days", -1)],
+            vec![("cohort_window_days", i128::from(u32::MAX) + 1)],
+            vec![("window_days", 90)],
+            vec![("cohort_window_days", 90), ("cohort_window_days", 90)],
+        ] {
+            assert_eq!(
+                profile("ponzi.net_investment", 5, None, &parameters, &[]),
+                None
+            );
+        }
+        assert_eq!(
+            profile(
+                "ponzi.net_investment",
+                5,
+                None,
+                &[("cohort_window_days", 90)],
+                &[("party", "INV-A")]
+            ),
+            None,
+            "a producer cannot narrow the authenticated whole-book population"
+        );
+    }
 
     #[test]
     fn suspense_profile_requires_v3_and_its_exact_unsigned_age_parameter() {

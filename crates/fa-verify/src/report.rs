@@ -2221,7 +2221,21 @@ fn verify_report_with_native_subledger_input(
                             .map(|(&identity, account)| (identity, account.normal_balance))
                             .collect(),
                         entries: BTreeMap::new(),
+                        investors: request
+                            .parameters
+                            .is_investor()
+                            .then(procedure::ponzi::Context::default),
                     });
+            if let Some(investors) = tracing
+                .as_mut()
+                .and_then(|context| context.investors.as_mut())
+            {
+                for info in infos.values() {
+                    if let Some((5, body)) = info.schema {
+                        investors.declare(&cert.book, body)?;
+                    }
+                }
+            }
             let mut leg_parties = BTreeMap::new();
             let mut entry_facts = BTreeMap::new();
             let entries = infos
@@ -2323,6 +2337,12 @@ fn verify_report_with_native_subledger_input(
                         );
                     }
                     if let Some(context) = &mut tracing {
+                        if let Some(investors) = &mut context.investors {
+                            investors.legs.insert(info.identity, details.iter().map(|leg| {
+                                leg.dimensions.iter().filter(|(kind, _)| *kind == 12)
+                                    .map(|(_, party)| *party).collect()
+                            }).collect());
+                        }
                         context.entries.insert(
                             info.identity,
                             procedure::TraceEntryFacts {
@@ -2375,6 +2395,7 @@ fn verify_report_with_native_subledger_input(
                 || request.parameters.is_number_analytics()
                 || request.parameters.is_override_jet()
                 || request.parameters.is_account_screen()
+                || request.parameters.is_investor()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2391,7 +2412,7 @@ fn verify_report_with_native_subledger_input(
             definitions.trace = tracing;
             definitions.leg_parties = leg_parties;
             definitions.entry_facts = entry_facts;
-            if request.parameters.is_account_screen() {
+            if request.parameters.is_account_screen() || request.parameters.is_investor() {
                 let chart = metadata::declared_chart(
                     envelopes
                         .iter()

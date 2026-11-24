@@ -548,6 +548,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "numbers.relative_size_factor"
                     | "numbers.threshold_splitting"
                     | "completeness.unrecorded_liabilities"
+                    | "ponzi.net_investment"
             )
         {
             return Ok(false);
