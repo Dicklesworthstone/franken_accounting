@@ -4391,3 +4391,19 @@ for the selection fragment used by the `MUT-018` control. The native
 registry suite refused the ambiguous target. The new serving path now
 retains the selected periods in its existing vector. The registered
 mutation still targets the original stock candidate selector.
+
+The native workspace run at `9fbe0d52` returned a timeout for a certified
+draft review. The retained book recorded the producer's access at sequence
+15 and published the certificate at sequence 16. The original locator
+replayed successfully. Three more certified requests timed out in a
+20-call local cohort. All three retained a certificate. The prepare-close
+cohort also timed out three times and recorded all five access events on
+each timed-out request. Stack samples for both cohorts reached native
+scratch replay inside the sparse shadow filesystem's rename calls.
+
+The single-draft command now accepts the original recorded sequence.
+On the original timeout fixture, repeating the request at sequence 15
+under the original producer recovered the same certificate and sequence-16
+publication. The retry recorded one new access event. A capped reader can
+rehearse its admitted sequence. Certification still requires current Produce
+authority, and an unrecorded future sequence is refused before access logging.

@@ -329,4 +329,50 @@ fn draft_review_requires_current_read_and_certification_requires_produce() {
         ),
         "open",
     );
+
+    let cutoff = before.to_string();
+    let token = f.dir.join("historical-reviewer.token");
+    let token = token.to_str().unwrap();
+    ok(
+        &f.book,
+        &[
+            "capability",
+            "issue",
+            "--holder",
+            "historical-reviewer",
+            "--profile",
+            "agent",
+            "--op",
+            "read",
+            "--known-at-most",
+            &cutoff,
+            "--out",
+            token,
+            "--grant",
+            "issue_capability",
+            "--grant",
+            "read",
+        ],
+    );
+    let head_before_review = head(&f.book);
+    let mut pinned = dry_run().to_vec();
+    pinned.extend(["--token", token, "--as-known-at", &cutoff]);
+    let (code, output) = many(&f.book, &pinned);
+    assert_eq!(code, 0, "{output:?}");
+    assert_eq!(integer(&output[0], "source_known_at"), before);
+    assert_eq!(head(&f.book), head_before_review + 1);
+
+    let mut no_produce = pinned.clone();
+    no_produce.push("--certify");
+    assert_eq!(many(&f.book, &no_produce).0, 7);
+    let too_recent = (before + 1).to_string();
+    *pinned.last_mut().unwrap() = &too_recent;
+    assert_eq!(many(&f.book, &pinned).0, 7);
+    assert_eq!(head(&f.book), head_before_review + 1);
+
+    let next = (head(&f.book) + 1).to_string();
+    let mut future = dry_run().to_vec();
+    future.extend(["--as-known-at", &next]);
+    assert_eq!(bound(&f, &["read"], &future).0, 2);
+    assert_eq!(head(&f.book), head_before_review + 1);
 }

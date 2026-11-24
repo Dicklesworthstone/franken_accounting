@@ -586,8 +586,9 @@ names use `book_name_utf8_hex` and `base_unit_code_utf8_hex`, preserving UTF-8
 without depending on the small TOML parser's supported escape subset.
 
 The same text law applies to identifiers in the chart, GL and trial balance.
-The std-only offline verifier has its own decoder and verifies the proven
-selection, accounts, units, amounts and trial-balance refold. A full-chart
+The std-only offline verifier has its own decoder and checks the authenticated
+selection (FA-INV-07), accounts, units, amounts and trial-balance refold
+(FA-INV-04). A full-chart
 proof also checks chart names against the signed checkpoint. With an
 account-index proof, chart names are informational. Description and memo
 text fall outside both checks. The regression tests are recorded in
@@ -944,6 +945,14 @@ period:
 fa close dry-run --period FY2026-P03 --draft accruals-march --certify --json
 fa close dry-run --period FY2026-P03 --draft reclasses-march --certify --json
 ```
+
+A single-draft review accepts a recorded sequence through `--as-known-at`
+or the MCP `as_known_at` argument. If a bound HEAD certification loses its
+response, find the original `close dry-run` access receipt for that producer.
+Its `recorded_at` is the review's source sequence. Retry the same draft and
+period with that sequence and the original producer capability. The retry
+records its access and returns the same certificate bytes and publication
+sequence if the certificate was already retained.
 
 Use each returned certificate's full `oid` in `close-tasks.json`:
 

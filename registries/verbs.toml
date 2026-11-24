@@ -5565,11 +5565,11 @@ name = "dry_run"
 verb = "close"
 subcommands = ["dry-run"]
 positionals = []
-flags = ["--draft", "--run", "--period"]
+flags = ["--draft", "--run", "--period", "--as-known-at"]
 switches = ["--certify"]
 required = []
 dont = ["Select exactly one run (combined remaining reviewed tasks in one scratch history) or draft with period (one atomic draft). A run already binds its period; an optional period must match. Neither form generates tasks, publishes money, issues statements or authorizes a close.", "Every draft batch preserves its original planner capability and approvals. A combined run applies batches sequentially, so later tasks observe earlier hypothetical effects and can refuse. A pending period transition still needs its separate native review and approvals.", "Use certify: true to retain the exact source and result, requiring read and produce. fa_read_replay reproduces it after restart or later legitimate draft changes. Retention publishes certificate metadata only; ordinary review changes no book data."]
-mistakes = ["Treating hypothetical entry references as trunk membership or a permit to promote.", "Requesting an empty, discarded or promoted draft at HEAD; historical certificates replay their original open draft prefix.", "Passing host output paths, grants, principal or confirmation; the session's launch authority stays fixed."]
+mistakes = ["Treating hypothetical entry references as trunk membership or a permit to promote.", "For a historical draft review, pass the original recorded sequence as as_known_at with draft and period. To recover a missing certification response, use certify: true at the same sequence under the original producer capability. The run form reads HEAD.", "Passing host output paths, grants, principal or confirmation; the session's launch authority stays fixed."]
 
 [[mcp.tool]]
 cluster = "fa.close"
@@ -6571,6 +6571,13 @@ ops = ["read", "verify", "maintain"]
 verbs = ["close"]
 subcommands = ["map"]
 ops = ["read", "schema_change"]
+
+[[bound]]
+verbs = ["close"]
+subcommands = ["dry-run"]
+when_all = ["--draft", "--as-known-at"]
+ops = ["read"]
+reach = "judged"
 
 [[bound]]
 verbs = ["close"]

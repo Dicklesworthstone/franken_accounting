@@ -500,6 +500,92 @@ fn draft_rehearsal_over_stdio_preserves_agent_plans_and_retained_replay() {
 }
 
 #[test]
+fn a_pinned_draft_review_recovers_its_stdio_receipt_after_promotion() {
+    let fixture = Fixture::new();
+    let draft = "review-with-lost-response";
+    cli_data(&["draft", "new", draft, "--book", &fixture.book_arg, "--json"]);
+    let path = fixture.dir.join("planned.json");
+    std::fs::write(&path, intent("retained-rent", "15.00 USD").to_string()).unwrap();
+    cli_data(&[
+        "post",
+        "--intent",
+        path.to_str().unwrap(),
+        "--evidence",
+        &fixture.evidence,
+        "--draft",
+        draft,
+        "--book",
+        &fixture.book_arg,
+        "--json",
+    ]);
+    let start_producer = || {
+        let mut producer = Mcp::start_with(
+            &fixture.book,
+            &[
+                "--cluster",
+                "fa.close",
+                "--principal",
+                "historical-producer",
+                "--grant",
+                "read",
+                "--grant",
+                "produce",
+            ],
+        );
+        producer.discover();
+        producer
+    };
+    let mut producer = start_producer();
+    let (error, text, result) = call_tool(
+        &mut producer,
+        "fa_close_dry_run",
+        json!({"draft":draft, "period":PERIOD, "certify":true}),
+    );
+    assert!(!error, "original certification: {text}");
+    let original = wire(&text);
+    let receipt = &original[1];
+    let coordinate = envelope(&result)["coordinate"].clone();
+    assert_eq!(producer.finish(), 0);
+    cli_data(&[
+        "draft",
+        "promote",
+        draft,
+        "--as",
+        "independent-controller",
+        "--yes",
+        "--book",
+        &fixture.book_arg,
+        "--json",
+    ]);
+
+    let before_retry = head(&fixture.book_arg);
+    let mut producer = start_producer();
+    let (error, text, result) = call_tool(
+        &mut producer,
+        "fa_close_dry_run",
+        json!({
+            "draft": draft,
+            "period": PERIOD,
+            "certify": true,
+            "as_known_at": receipt["known_at"].as_u64().unwrap().to_string(),
+        }),
+    );
+    assert!(!error, "historical retry: {text}");
+    let recovered = wire(&text);
+    assert_eq!(recovered[0], original[0]);
+    assert_eq!(envelope(&result)["coordinate"], coordinate);
+    for field in ["oid", "bytes", "known_at", "recorded_at", "output_digest"] {
+        assert_eq!(recovered[1][field], receipt[field], "receipt field {field}");
+    }
+    assert_eq!(producer.finish(), 0);
+    assert_eq!(
+        head(&fixture.book_arg),
+        before_retry + 1,
+        "the retry records its access and reuses the original certificate"
+    );
+}
+
+#[test]
 fn prepare_close_macro_rehearses_the_complete_run_without_executing_it() {
     let fixture = Fixture::new();
     let run = "macro-march-close";

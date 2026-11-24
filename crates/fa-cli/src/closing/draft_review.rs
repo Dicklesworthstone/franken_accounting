@@ -2,21 +2,22 @@
 
 use fa_money::{Amount, UnitId};
 
-use super::{options, required};
+use super::{known_at, options, required};
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, Out, hex, render_amount, usage};
 use crate::json::{Json, obj, s};
 
-const EXAMPLE: &str = "fa close dry-run --period FY2026-P12 --draft close-12 [--certify] --json";
+const EXAMPLE: &str = "fa close dry-run --period FY2026-P12 --draft close-12 [--as-known-at <seq>] [--certify] --json";
 
 pub(super) fn run(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     options(
         args,
-        &["--draft", "--period", "--certificate-out"],
+        &["--draft", "--period", "--as-known-at", "--certificate-out"],
         &["--certify"],
     )?;
     let name = required(args, "--draft")?;
     let period = required(args, "--period")?;
+    let known_at = known_at(args)?;
     if let Some(path) = args.flag("--certificate-out")
         && (path.is_empty() || path == "-")
     {
@@ -34,14 +35,27 @@ pub(super) fn run(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     };
     let capability = ctx.capability(args, ops)?;
     let mut book = ctx.books.open_admitted(args, |book| {
-        crate::rea::admit_read(book, principal, &capability)
+        if let Some(seq) = known_at {
+            book.read_scope(principal, &capability)??
+                .admit_whole_book(Some(seq))??;
+            if seq.0 == 0 || seq > book.head()? {
+                return Err(usage(
+                    "--as-known-at must name an already recorded sequence",
+                    EXAMPLE,
+                ));
+            }
+            Ok(())
+        } else {
+            crate::rea::admit_read(book, principal, &capability)
+        }
     })?;
     if !certify {
-        let diff = book.draft_diff(principal, &capability, name, period)??;
+        let diff = book.draft_diff_at(principal, &capability, name, period, known_at)??;
         ctx.out.at_book(&book)?;
         return render_draft_diff(&ctx.out, &book, &diff, None);
     }
-    let certified = book.certify_draft_diff(principal, &capability, name, period)??;
+    let certified =
+        book.certify_draft_diff_at(principal, &capability, name, period, known_at)??;
     let retained = book.retain_draft_diff(principal, &capability, &certified.certificate)??;
     let artifact = fa::ReportArtifact::try_from(&certified.certificate)?;
     let bytes = artifact.canonical_bytes()?;

@@ -505,6 +505,34 @@ pub(crate) fn check_replay(
 }
 
 impl Book {
+    fn draft_review_basis(
+        &self,
+        principal: VId,
+        capability: &Capability,
+        period: &str,
+        known_at: Option<CommitSeq>,
+        produce: bool,
+    ) -> Outcome<CommitSeq> {
+        if let Err(refusal) = authorize(self, principal, capability, known_at, produce)? {
+            return Ok(Err(refusal));
+        }
+        if let Err(refusal) = check_period(period) {
+            return Ok(Err(refusal));
+        }
+        let head = self.head()?;
+        let basis = known_at.unwrap_or(head);
+        if basis > head {
+            return Ok(Err(fa_journal::Refusal::new(
+                fa_journal::refusal::code::STRUCTURE,
+                fa_journal::exit::USAGE,
+                "a draft review cannot select a future recorded sequence",
+                "plan §15.2 (rehearsal of a recorded prefix)",
+                "select the original recorded sequence or omit --as-known-at",
+            )));
+        }
+        Ok(Ok(basis))
+    }
+
     /// Rehearse the complete currently open draft as one atomic batch and
     /// compare one period's stock balances. This publishes nothing on trunk.
     pub fn draft_diff(
@@ -514,13 +542,24 @@ impl Book {
         name: &str,
         period: &str,
     ) -> Outcome<DraftDiff> {
-        if let Err(refusal) = authorize(self, principal, capability, None, false)? {
-            return Ok(Err(refusal));
-        }
-        if let Err(refusal) = check_period(period) {
-            return Ok(Err(refusal));
-        }
-        let known_at = self.head()?;
+        self.draft_diff_at(principal, capability, name, period, None)
+    }
+
+    /// Rehearse the draft and compare its stock balances at a selected prefix
+    /// under current Read authority. Omit the prefix to review HEAD.
+    pub fn draft_diff_at(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        name: &str,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<DraftDiff> {
+        let known_at =
+            match self.draft_review_basis(principal, capability, period, known_at, false)? {
+                Ok(seq) => seq,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         let (scratch, rehearsal) =
             match self.rehearse_draft_at(principal, capability, name, known_at)? {
                 Ok(rehearsal) => rehearsal,
@@ -541,13 +580,25 @@ impl Book {
         name: &str,
         period: &str,
     ) -> Outcome<CertifiedDraftDiff> {
-        if let Err(refusal) = authorize(self, principal, capability, None, true)? {
-            return Ok(Err(refusal));
-        }
-        if let Err(refusal) = check_period(period) {
-            return Ok(Err(refusal));
-        }
-        let known_at = self.head()?;
+        self.certify_draft_diff_at(principal, capability, name, period, None)
+    }
+
+    /// Certify the exact draft review at a selected prefix. The original
+    /// producer and capability may request the same certificate again after
+    /// later publications. Current Read and Produce authority still applies.
+    pub fn certify_draft_diff_at(
+        &mut self,
+        principal: VId,
+        capability: &Capability,
+        name: &str,
+        period: &str,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<CertifiedDraftDiff> {
+        let known_at =
+            match self.draft_review_basis(principal, capability, period, known_at, true)? {
+                Ok(seq) => seq,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
         let (scratch, rehearsal) =
             match self.rehearse_draft_at(principal, capability, name, known_at)? {
                 Ok(rehearsal) => rehearsal,
