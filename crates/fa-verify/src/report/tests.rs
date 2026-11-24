@@ -242,6 +242,7 @@ fn bundle_with_input_values(
     let (codes, cutoff, activity) = match &selection {
         Selection::Statement(_)
         | Selection::CustomStatement(_)
+        | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
@@ -283,6 +284,7 @@ fn bundle_with_input_values(
     match selection {
         Selection::Statement(_)
         | Selection::CustomStatement(_)
+        | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {

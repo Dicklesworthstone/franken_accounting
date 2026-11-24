@@ -1744,6 +1744,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                     } else {
                                         "custom_statement"
                                     }
+                                } else if report.regulatory_schedule.is_some() {
+                                    "regulatory_schedule"
                                 } else if report.functional_statement.is_some() {
                                     "functional_statement"
                                 } else if let Some(trace) = &report.statement_trace {
@@ -1814,6 +1816,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                                         + group.income_statement.lines.len()
                                 } else if let Some(custom) = &report.custom_statement {
                                     custom.statement.lines.len()
+                                } else if let Some(regulatory) = &report.regulatory_schedule {
+                                    regulatory.statement.lines.len()
                                 } else if let Some(functional) = &report.functional_statement {
                                     functional.statement.lines.len()
                                 } else if let Some(trace) = &report.statement_trace {
@@ -1912,6 +1916,13 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                         checks.extend(custom_statement_checks(custom));
                         checks.extend(statement_checks(
                             &custom.statement,
+                            report.unit_universe_source,
+                        ));
+                    }
+                    if let Some(regulatory) = &report.regulatory_schedule {
+                        checks.extend(regulatory_schedule_checks(regulatory));
+                        checks.extend(statement_checks(
+                            &regulatory.statement,
                             report.unit_universe_source,
                         ));
                     }
@@ -3765,6 +3776,47 @@ fn consolidation_checks(report: &crate::report::VerifiedConsolidation) -> Vec<Ch
         ));
     }
     checks
+}
+
+fn regulatory_schedule_checks(report: &crate::report::VerifiedRegulatorySchedule) -> Vec<Check> {
+    vec![Check::pass(
+        "regulatory_schedule_recomputation",
+        "recomputation",
+        vec![
+            ("form", s(report.form)),
+            ("schedule", s(&report.schedule_code)),
+            ("instruction_version", s(&report.instruction_version)),
+            ("schedule_digest", h(&report.schedule_digest)),
+            ("calculation", s("general_ledger_projection")),
+            (
+                "definition_binding",
+                s("complete schedule and declared inputs bound by the certificate"),
+            ),
+            (
+                "declared_inputs",
+                Json::List(
+                    report
+                        .declared_instrument_inputs
+                        .iter()
+                        .map(|input| {
+                            Json::Obj(vec![
+                                ("line", s(&input.line_code)),
+                                ("instrument_kind", s(&input.instrument_kind)),
+                                ("attribute", s(&input.attribute_name)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "instrument_inputs_read",
+                Json::Bool(report.instrument_inputs_read),
+            ),
+            ("instrument_values", s("not_judged")),
+            ("published_regulatory_instructions", s("not_judged")),
+            ("regulatory_compliance", s("not_judged")),
+        ],
+    )]
 }
 
 fn custom_activation_checks(

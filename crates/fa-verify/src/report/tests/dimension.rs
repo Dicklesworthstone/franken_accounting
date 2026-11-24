@@ -218,6 +218,7 @@ fn dimension_bundle_with_registries(
         }
         Selection::Statement(_)
         | Selection::CustomStatement(_)
+        | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {

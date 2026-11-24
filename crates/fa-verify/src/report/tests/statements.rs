@@ -5,6 +5,9 @@ use super::*;
 #[path = "statement_diff.rs"]
 mod statement_diff;
 
+#[path = "regulatory.rs"]
+mod regulatory_tests;
+
 fn unhex(s: &str) -> Vec<u8> {
     let bytes: Vec<_> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     assert_eq!(bytes.len() % 2, 0);

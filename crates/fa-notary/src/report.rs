@@ -166,6 +166,9 @@ pub fn assemble(
 /// are reconstructed from the authenticated complete prefix.
 /// Native v8 dimension slices use the same four-registry closure as native
 /// statements; their hierarchy is independently reconstructed from the prefix.
+/// Native v9 regulatory schedules retain that four-registry closure and their
+/// complete instruction-versioned definition for general-ledger replay. Their
+/// declared Instrument attributes are parameters, not proven source values.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -221,6 +224,7 @@ pub fn assemble_with_registries(
     };
     if !(certificate_format(certificate, b"fa:report-certificate:v4")
         || certificate_format(certificate, b"fa:report-certificate:v8")
+        || regulatory_schedule_certificate(certificate)
         || custom
         || summary_certificate(certificate)
         || open_items_certificate(certificate)
@@ -249,7 +253,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2, or six including control_payload and symbols for native subledger reconciliation",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, regulatory schedules, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2, or six including control_payload and symbols for native subledger reconciliation",
         )));
     }
     assemble_inner(
@@ -395,6 +399,28 @@ fn custom_statement_certificate(certificate: &[u8]) -> bool {
         Ok(reader.fixed::<16>("custom statement branch")? == [0; 16]
             && reader.u64("custom statement frontier")? > 0
             && reader.u8("custom statement selector")? == 9)
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
+}
+
+/// Header routing for native regulatory general-ledger projections. Exact
+/// definitions, source completeness and output arithmetic are independently
+/// checked by fa-verify; this does not claim Instrument attribute coverage.
+fn regulatory_schedule_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.fixed::<{ b"fa:report-certificate:v9".len() }>("regulatory format")?
+            != *b"fa:report-certificate:v9"
+            || reader.str(64, "regulatory scope")? != "fa-fold-over-prefix"
+            || reader.str(64, "regulatory authority")? != "embedded-owner"
+            || reader.str(64, "regulatory output")? != "fa:regulatory-schedule:v1"
+        {
+            return Ok(false);
+        }
+        reader.fixed::<16>("regulatory book")?;
+        Ok(reader.fixed::<16>("regulatory branch")? == [0; 16]
+            && reader.u64("regulatory frontier")? > 0
+            && reader.u8("regulatory selector")? == 7)
     };
     certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
@@ -1028,6 +1054,7 @@ fn assemble_inner(
         || major == 2
             && (certificate_format(certificate, b"fa:report-certificate:v4")
                 || certificate_format(certificate, b"fa:report-certificate:v8")
+                || regulatory_schedule_certificate(certificate)
                 || custom_statement_certificate(certificate)
                 || summary_certificate(certificate)
                 || open_items_certificate(certificate)
@@ -1054,7 +1081,7 @@ fn assemble_inner(
                 || consolidation::profile(certificate, journal, known_at).is_some()))
     {
         return Ok(Err(refused(
-            "offline report bundles require a native v1/v2 trial balance, summary trial balance, native-subledger reconciliation, v8 dimension-filtered trial balance, v4 statement, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
+            "offline report bundles require a native v1/v2 trial balance, summary trial balance, native-subledger reconciliation, v8 dimension-filtered trial balance, v4 statement, v9 regulatory schedule, native or functional statement diff or trace, v5 functional statement, v10 functional trial balance, v13 functional dimension trial balance, v11/v12 custom statement, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2 procedure, or v3 open-item report, balance explanation, lot schedule, effective-date aging, aging reconciliation, roll-forward, equity roll-forward or equity comparison, direct, policy, split or indirect cash-flow with authenticated registries",
         )));
     }
     if known_at > journal.through_seq || checkpoint.checkpoint.body.statement != journal.statement()
@@ -1432,6 +1459,39 @@ mod format_tests {
         ] {
             assert!(!custom_statement_certificate(&malformed));
             assert!(!functional::certificate(&malformed, &journal, CommitSeq(9)));
+        }
+    }
+
+    #[test]
+    fn regulatory_schedule_routing_requires_its_exact_native_profile() {
+        let valid = native_header(9, "fa:regulatory-schedule:v1", 7);
+        assert!(regulatory_schedule_certificate(&valid));
+        for malformed in [
+            native_header(9, "fa:statement:v1", 7),
+            native_header(9, "fa:regulatory-schedule:v1", 2),
+            native_header(4, "fa:regulatory-schedule:v1", 7),
+            native_header(90, "fa:regulatory-schedule:v1", 7),
+            native_header(11, "fa:custom-statement-report:v1", 9),
+            valid[..valid.len() - 1].to_vec(),
+        ] {
+            assert!(!regulatory_schedule_certificate(&malformed));
+        }
+        for (branch, frontier, authority) in [
+            ([1; 16], 9, "embedded-owner"),
+            ([0; 16], 0, "embedded-owner"),
+            ([0; 16], 9, "untrusted"),
+        ] {
+            let mut writer = Writer::new();
+            writer
+                .fixed(b"fa:report-certificate:v9")
+                .str("fa-fold-over-prefix")
+                .str(authority)
+                .str("fa:regulatory-schedule:v1")
+                .fixed(&[3; 16])
+                .fixed(&branch)
+                .u64(frontier)
+                .u8(7);
+            assert!(!regulatory_schedule_certificate(&writer.finish().unwrap()));
         }
     }
 

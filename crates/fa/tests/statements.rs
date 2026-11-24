@@ -19,6 +19,8 @@ mod equity_bundle;
 mod explanation_bundle;
 #[path = "statements/open_items_bundle.rs"]
 mod open_items_bundle;
+#[path = "statements/regulatory_bundle.rs"]
+mod regulatory_bundle;
 #[path = "statements/report_bundle.rs"]
 mod report_bundle;
 #[path = "statements/roll_forward_bundle.rs"]

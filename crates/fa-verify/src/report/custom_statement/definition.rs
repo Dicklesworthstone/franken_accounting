@@ -180,7 +180,7 @@ impl AccountSet {
     }
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<Definition, ReportError> {
+pub(in crate::report) fn decode(bytes: &[u8]) -> Result<Definition, ReportError> {
     if bytes.len() > MAX_BYTES {
         return Err(invalid("custom definition exceeds 64 KiB"));
     }

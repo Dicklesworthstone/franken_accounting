@@ -1135,6 +1135,7 @@ impl Schema {
         match selection {
             Selection::Statement(_)
             | Selection::CustomStatement(_)
+            | Selection::RegulatorySchedule(_)
             | Selection::Consolidation(_)
             | Selection::OpenItems(_)
             | Selection::ExplainBalance { .. } => Err(failed(

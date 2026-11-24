@@ -154,6 +154,7 @@ mod portfolio;
 mod procedure;
 mod reconciliation;
 mod registry;
+mod regulatory;
 mod roll_forward;
 pub mod scenario;
 mod statement;
@@ -228,6 +229,7 @@ pub use procedure::{
 };
 pub use reconciliation::{VerifiedAgingReconciliation, VerifiedAgingReconciliationRow};
 pub use registry::Reason as ExplanationReason;
+pub use regulatory::{RegulatoryInstrumentInput, VerifiedRegulatorySchedule};
 pub use roll_forward::{
     RollForwardAccount, RollForwardBucket, RollForwardMovement, RollForwardRow, VerifiedRollForward,
 };
@@ -346,6 +348,9 @@ pub struct VerifiedReport {
     /// Company layout, authenticated activation/chart binding, exact rows and
     /// optional rounded presentation. Historical approval admission is unjudged.
     pub custom_statement: Option<VerifiedCustomStatement>,
+    /// Authenticated regulatory definition and independently replayed native GL
+    /// projection. Declared Instrument attributes and filing compliance are unjudged.
+    pub regulatory_schedule: Option<VerifiedRegulatorySchedule>,
     /// Two complete native statements and their exact historical bridge.
     pub statement_diff: Option<VerifiedStatementDiff>,
     /// Complete publication-by-publication attribution, including zero effects.
@@ -404,6 +409,7 @@ enum Selection {
     Activity(Vec<String>),
     Statement(statement::Selection),
     CustomStatement(Box<custom_statement::Selection>),
+    RegulatorySchedule(Box<regulatory::Selection>),
     Consolidation(String),
     OpenItems(Option<u128>),
     ExplainBalance { account: u128, period: String },
@@ -521,6 +527,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || functional_consolidation
         || functional_custom_statement;
     let statement = format.as_slice() == STATEMENT_CERTIFICATE_FORMAT || functional_statement;
+    let regulatory_schedule = format.as_slice() == regulatory::CERTIFICATE_FORMAT;
     let instant = format.as_slice() == INSTANT_CERTIFICATE_FORMAT;
     let dimension = format.as_slice() == DIMENSION_CERTIFICATE_FORMAT || functional_dimension;
     let open_items = format.as_slice() == OPEN_ITEMS_CERTIFICATE_FORMAT;
@@ -532,10 +539,11 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         && !functional
         && !consolidation
         && !custom_statement
+        && !regulatory_schedule
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v10 functional trial balance, v11/v12 custom statement, or v13 functional dimension trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v9 regulatory schedule, v10 functional trial balance, v11/v12 custom statement, or v13 functional dimension trial balance",
         ));
     }
     for (field, expected) in [
@@ -574,7 +582,15 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     } else {
         selector
     };
-    let selection = if custom_statement {
+    let selection = if regulatory_schedule {
+        if selector != 7 {
+            return Err(failed(
+                "supported_report",
+                "native v9 requires its regulatory schedule selector",
+            ));
+        }
+        Selection::RegulatorySchedule(Box::new(regulatory::Selection::read(&mut r)?))
+    } else if custom_statement {
         if selector != if functional_custom_statement { 10 } else { 9 } {
             return Err(failed(
                 "supported_report",
@@ -650,6 +666,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         Selection::Statement(_) => "fa:statement:v1",
         Selection::CustomStatement(_) if functional => "fa:functional-custom-statement:v1",
         Selection::CustomStatement(_) => "fa:custom-statement-report:v1",
+        Selection::RegulatorySchedule(_) => regulatory::OUTPUT_FORMAT,
         _ if functional_dimension => "fa:functional-dimension-trial-balance:v1",
         _ if dimension => "fa:dimension-trial-balance:v1",
         _ if functional => "fa:functional-trial-balance:v1",
@@ -721,7 +738,13 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let output = r.bytes(MAX_REPORT_BUNDLE_BYTES, "certificate.output")?;
     let output_digest = r.fixed("certificate.output_digest")?;
     let time_selection = if instant
-        || (statement || custom_statement || consolidation || dimension || open_items || functional)
+        || (statement
+            || custom_statement
+            || regulatory_schedule
+            || consolidation
+            || dimension
+            || open_items
+            || functional)
             && r.present("certificate.time_selection")?
     {
         Some(VerifiedInstantSelection::read(&mut r)?)
@@ -1391,11 +1414,19 @@ fn verify_report_with_native_subledger_input(
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
     let is_custom_statement = matches!(cert.selection, Selection::CustomStatement(_));
+    let is_regulatory_schedule = matches!(cert.selection, Selection::RegulatorySchedule(_));
+    if is_regulatory_schedule && cert.time_selection.is_some() {
+        return Err(failed(
+            "supported_report",
+            "native regulatory schedules require a sequence-selected trunk report",
+        ));
+    }
     let is_open_items = matches!(cert.selection, Selection::OpenItems(_));
     let is_explanation = matches!(cert.selection, Selection::ExplainBalance { .. });
     if ((!is_statement || cert.functional) && recipient_units.is_some())
         || (!is_statement
             && !is_custom_statement
+            && !is_regulatory_schedule
             && !is_open_items
             && !is_explanation
             && cert.dimension.is_none()
@@ -1406,7 +1437,7 @@ fn verify_report_with_native_subledger_input(
     {
         return Err(failed(
             "supported_report",
-            "registry bundles require a native statement, custom statement, dimension-filtered trial balance, OpenItems, ExplainBalance, summary, native subledger, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
+            "registry bundles require a native statement, custom statement, regulatory schedule, dimension-filtered trial balance, OpenItems, ExplainBalance, summary, native subledger, roll-forward, equity or direct cash flow; explicit unit universes require a v4 statement",
         ));
     }
     if (is_open_items
@@ -1415,13 +1446,14 @@ fn verify_report_with_native_subledger_input(
         || statement_diff.is_some() && !cert.functional
         || statement_trace.is_some() && !cert.functional
         || is_custom_statement && !cert.functional
+        || is_regulatory_schedule
         || summary.is_some()
         || native_subledger.is_some())
         && major != 2
     {
         return Err(failed(
             "registry_closure",
-            "native v3/v11 reports, summaries, native subledgers, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
+            "native v3/v9/v11 reports, summaries, native subledgers, roll-forwards, equity, direct cash flows and statement comparisons require a version-2 bundle with their authenticated complete registry closure",
         ));
     }
     if is_statement && major == 1 && recipient_units.is_none() {
@@ -1728,6 +1760,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -1748,6 +1781,77 @@ fn verify_report_with_native_subledger_input(
             functional_trial_balance: None,
             functional_statement: None,
             consolidation: Some(report),
+            unit_universe_source: "authenticated-registry",
+            output,
+            checked_records: records.len(),
+            receipt,
+        });
+    }
+    if let Selection::RegulatorySchedule(selection) = &cert.selection {
+        if certificate_digest != cert.digest {
+            return Err(failed(
+                "supported_report",
+                "regulatory schedules require their direct native report certificate",
+            ));
+        }
+        let (report, output) = regulatory::replay(
+            selection,
+            &cert.book,
+            &cert.branch,
+            cert.known_at,
+            &units,
+            &schema,
+            envelopes,
+            &infos,
+            &legs,
+            &visible_migrations,
+            &resolved,
+        )?;
+        if output != cert.output {
+            return Err(failed(
+                "regulatory_schedule_recomputation",
+                "regulatory general-ledger projection, exact amounts, historical mappings or canonical output differs from independent replay",
+            ));
+        }
+        let effective_through = Some(report.statement.columns[0].effective_through);
+        return Ok(VerifiedReport {
+            scope: "recomputation",
+            summary: None,
+            native_subledger: None,
+            procedure: None,
+            bundle_digest: digest,
+            certificate_digest: cert.digest,
+            output_digest: cert.output_digest,
+            checkpoint: signed,
+            known_at: cert.known_at,
+            time_selection: cert.time_selection,
+            effective_through,
+            activity: selection.source.activity(),
+            periods: selection.source.periods.clone(),
+            rows: Vec::new(),
+            statement: None,
+            custom_statement: None,
+            regulatory_schedule: Some(report),
+            statement_diff: None,
+            dimension: None,
+            statement_trace: None,
+            open_items: None,
+            lots: None,
+            explanation: None,
+            aging: None,
+            due_date_aging: None,
+            aging_reconciliation: None,
+            aging_portfolio: None,
+            due_date_aging_reconciliation: None,
+            roll_forward: None,
+            cash_flow: None,
+            split_cash_flow: None,
+            indirect_cash_flow: None,
+            equity_roll_forward: None,
+            equity_roll_forward_diff: None,
+            functional_trial_balance: None,
+            functional_statement: None,
+            consolidation: None,
             unit_universe_source: "authenticated-registry",
             output,
             checked_records: records.len(),
@@ -1961,6 +2065,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement,
+            regulatory_schedule: None,
             statement_diff,
             dimension: None,
             statement_trace,
@@ -2155,6 +2260,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff,
             dimension,
             statement_trace,
@@ -2571,6 +2677,7 @@ fn verify_report_with_native_subledger_input(
                 rows: Vec::new(),
                 statement: None,
                 custom_statement: None,
+                regulatory_schedule: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -2667,6 +2774,7 @@ fn verify_report_with_native_subledger_input(
                     rows: Vec::new(),
                     statement: None,
                     custom_statement: None,
+                    regulatory_schedule: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -2710,6 +2818,7 @@ fn verify_report_with_native_subledger_input(
                 rows: Vec::new(),
                 statement: None,
                 custom_statement: None,
+                regulatory_schedule: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -2797,6 +2906,7 @@ fn verify_report_with_native_subledger_input(
                     rows: Vec::new(),
                     statement: None,
                     custom_statement: None,
+                    regulatory_schedule: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -2870,6 +2980,7 @@ fn verify_report_with_native_subledger_input(
                     rows: Vec::new(),
                     statement: None,
                     custom_statement: None,
+                    regulatory_schedule: None,
                     statement_diff: None,
                     dimension: None,
                     statement_trace: None,
@@ -2913,6 +3024,7 @@ fn verify_report_with_native_subledger_input(
                 rows: Vec::new(),
                 statement: None,
                 custom_statement: None,
+                regulatory_schedule: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -2957,6 +3069,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -3026,6 +3139,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -3158,6 +3272,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff,
             dimension: None,
             statement_trace,
@@ -3272,6 +3387,7 @@ fn verify_report_with_native_subledger_input(
                 rows: Vec::new(),
                 statement: None,
                 custom_statement: None,
+                regulatory_schedule: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -3370,6 +3486,7 @@ fn verify_report_with_native_subledger_input(
                 rows: Vec::new(),
                 statement: None,
                 custom_statement: None,
+                regulatory_schedule: None,
                 statement_diff: None,
                 dimension: None,
                 statement_trace: None,
@@ -3413,6 +3530,7 @@ fn verify_report_with_native_subledger_input(
             rows: Vec::new(),
             statement: None,
             custom_statement: None,
+            regulatory_schedule: None,
             statement_diff: None,
             dimension: None,
             statement_trace: None,
@@ -3495,6 +3613,7 @@ fn verify_report_with_native_subledger_input(
         rows,
         statement: None,
         custom_statement: None,
+        regulatory_schedule: None,
         statement_diff: None,
         dimension,
         statement_trace: None,
