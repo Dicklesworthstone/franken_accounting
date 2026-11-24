@@ -27,6 +27,8 @@ mod number_analytics;
 mod open_items_aging;
 #[path = "offline/ordered_trace.rs"]
 mod ordered_trace;
+#[path = "offline/ponzi.rs"]
+mod ponzi;
 #[path = "offline/pro_rata.rs"]
 mod pro_rata;
 #[path = "offline/profile_admission.rs"]

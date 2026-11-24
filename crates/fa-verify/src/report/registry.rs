@@ -550,6 +550,7 @@ pub(super) fn verify_procedure(
         || profile.is_trace()
         || profile.is_number_analytics()
         || profile.is_account_screen()
+        || profile.is_investor()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }

@@ -43,6 +43,7 @@ impl Population {
                 trace: Some(TraceContext {
                     account_normal_balances: BTreeMap::from([(7, 0), (99, 1)]),
                     entries: BTreeMap::new(),
+                    investors: None,
                 }),
                 open_items: None,
                 policy_oid: [7; 32],

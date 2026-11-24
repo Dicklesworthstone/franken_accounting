@@ -2455,6 +2455,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
+                | crate::report::VerifiedProcedureStatistic::InvestorPrincipal { .. }
+                | crate::report::VerifiedProcedureStatistic::UnresolvedInvestorCash { .. }
         ) {
             amount(value)
         } else {
@@ -2485,6 +2487,41 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::InvestorPrincipal {
+                party,
+                unit,
+                accounts,
+                entries,
+                ..
+            } => {
+                details.push(("party", s(format!("{party:032x}"))));
+                details.push(("unit", n(u64::from(*unit))));
+                details.push((
+                    "accounts",
+                    Json::List(accounts.iter().map(|id| s(format!("{id:032x}"))).collect()),
+                ));
+                details.push((
+                    "entries",
+                    Json::List(entries.iter().map(|id| s(format!("{id:032x}"))).collect()),
+                ));
+                details.push(("principal_rule", s("posted_principal_transfer_v1")));
+            }
+            crate::report::VerifiedProcedureStatistic::UnresolvedInvestorCash {
+                unit,
+                accounts,
+                entries,
+                ..
+            } => {
+                details.push(("unit", n(u64::from(*unit))));
+                details.push((
+                    "accounts",
+                    Json::List(accounts.iter().map(|id| s(format!("{id:032x}"))).collect()),
+                ));
+                details.push((
+                    "entries",
+                    Json::List(entries.iter().map(|id| s(format!("{id:032x}"))).collect()),
+                ));
+            }
             crate::report::VerifiedProcedureStatistic::IsoWeekday { iso } => {
                 details.push(("iso_weekday", n(u64::from(*iso))));
             }

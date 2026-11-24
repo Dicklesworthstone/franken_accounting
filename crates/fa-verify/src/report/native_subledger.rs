@@ -215,7 +215,7 @@ fn party_field(r: &mut Reader<'_>) -> Result<[u8; 32], ReportError> {
     Ok(digest)
 }
 
-fn party_code(body: &[u8]) -> Result<String, ReportError> {
+pub(super) fn party_code(body: &[u8]) -> Result<String, ReportError> {
     let mut r = Reader::new(body);
     let code = text(&mut r, 64, "party.code")?.to_string();
     if code.is_empty() || !(1..=8).contains(&r.u8("party.kind")?) {
