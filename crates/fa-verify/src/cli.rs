@@ -2452,6 +2452,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::StructuredTransfers { .. }
                 | crate::report::VerifiedProcedureStatistic::RoundTrip { .. }
                 | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
+                | crate::report::VerifiedProcedureStatistic::CircularFlow { .. }
+                | crate::report::VerifiedProcedureStatistic::LayeredFlow { .. }
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
@@ -2760,6 +2762,12 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 unit,
                 entity,
                 ..
+            }
+            | crate::report::VerifiedProcedureStatistic::CircularFlow {
+                hops, unit, entity, ..
+            }
+            | crate::report::VerifiedProcedureStatistic::LayeredFlow {
+                hops, unit, entity, ..
             } => {
                 details.extend([
                     ("hop_count", n(hops.len() as u64)),
@@ -2785,6 +2793,12 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                         ),
                     ),
                 ]);
+                if let crate::report::VerifiedProcedureStatistic::LayeredFlow {
+                    destination, ..
+                } = &finding.statistic
+                {
+                    details.push(("destination_account", s(format!("{destination:032x}"))));
+                }
             }
             crate::report::VerifiedProcedureStatistic::AccountPairOccurrences {
                 first_account,
