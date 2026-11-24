@@ -106,7 +106,10 @@ fn amount_and_rounding_vector_digest() -> [u8; 32] {
 fn allocation_vector_digest() -> [u8; 32] {
     let mut w = Writer::new();
     let _catalog = AllocationCatalog::embedded().expect("embedded allocation catalog");
-    for law in AllocationLaw::ALL {
+    // The v1 vector fixes laws 1 through 5. Additive laws get their own
+    // vectors so a new catalog row cannot obscure drift in these bytes.
+    for id in 1..=5 {
+        let law = AllocationLaw::from_id(id).expect("legacy allocation law");
         w.u16(law.id()).str(law.name());
     }
 
@@ -198,6 +201,52 @@ fn allocation_vector_digest() -> [u8; 32] {
 
     let bytes = w.finish().expect("canonical writer");
     blake3_domain(b"fa:test:cross-target:allocation:v1", &bytes)
+}
+
+fn two_key_allocation_vector_digest() -> [u8; 32] {
+    let mut w = Writer::new();
+    let law = AllocationLaw::ByUnitsThenValue;
+    w.u16(law.id()).str(law.name());
+    let unit = UnitId(1);
+    for total in [i128::MIN, -10_000, -1, 0, 1, 10_000, i128::MAX] {
+        for (quantities, values) in [
+            ([1, 1, 1], [10, 30, 30]),
+            ([0, 1, 1], [u128::MAX, 2, 1]),
+            ([1, 2, 4], [u128::MAX, 0, 1]),
+            ([u128::MAX, u128::MAX, 1], [1, 2, 3]),
+        ] {
+            let request = AllocationRequest {
+                total: Amount::new(unit, total),
+                method: AllocationMethod::ByUnitsThenValue {
+                    values: values.to_vec(),
+                },
+                targets: [200, 100, 1]
+                    .into_iter()
+                    .zip(quantities)
+                    .map(|(id, basis)| AllocationTarget { id, basis })
+                    .collect(),
+            };
+            let outcome = request.execute().expect("two-key allocation");
+            let expected = fa_reference::reports::by_units_then_value(total, &quantities, &values)
+                .expect("independent two-key allocation");
+            assert!(outcome.shares().iter().all(|share| share.unit == unit));
+            assert!(
+                outcome
+                    .shares()
+                    .iter()
+                    .map(|share| share.mantissa)
+                    .eq(expected),
+                "two-key shares differ for {total}, {quantities:?}, {values:?}"
+            );
+            w.bytes(&request.canonical_bytes().expect("two-key request"))
+                .bytes(&outcome.receipt_bytes().expect("two-key receipt"));
+        }
+    }
+    let bytes = w.finish().expect("canonical writer");
+    blake3_domain(
+        b"fa:test:cross-target:allocation-units-then-value:v1",
+        &bytes,
+    )
 }
 
 fn fx_and_valuation_vector_digest() -> [u8; 32] {
@@ -570,7 +619,9 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
     let _ = Budget::INFINITE;
 
     let amount_rounding = hex32(&amount_and_rounding_vector_digest());
+    assert_eq!(AllocationLaw::ALL.len(), 6, "cover each law in a vector");
     let allocation = hex32(&allocation_vector_digest());
+    let two_key_allocation = hex32(&two_key_allocation_vector_digest());
     let fx_valuation = hex32(&fx_and_valuation_vector_digest());
 
     let book_run_1 = build_fixture_book_vectors();
@@ -600,6 +651,14 @@ fn supported_target_is_little_endian_and_pins_canonical_vector_digests() {
         allocation,
         "7b8e2abdf02ad1c2da7469ce68f7f7920454c7113bb4d031dc21a6f09683f991",
         "allocation corpus digest drifted on {}",
+        std::env::consts::ARCH
+    );
+    // An independent integer oracle and little-endian encoder supplied the
+    // 28 law-6 requests and receipts. The law 1–5 pin above stays fixed.
+    assert_eq!(
+        two_key_allocation,
+        "6e83ed8ea8399c6fc974c56eb03afdd5828bcde82ee98cb5a8e0f4e0f634ead7",
+        "two-key allocation corpus digest drifted on {}",
         std::env::consts::ARCH
     );
     assert_eq!(
