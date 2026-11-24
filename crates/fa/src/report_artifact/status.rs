@@ -201,6 +201,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 artifact.family().name(),
             ))));
         }
+        let status = match self
+            .report_artifact_family_status(cx, principal, capability, &artifact, expected)?
+        {
+            Ok(status) => status,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let checked_at = match &status {
+            CertificateStatus::Current { checked_at }
+            | CertificateStatus::SupersededBy { checked_at, .. } => *checked_at,
+        };
+        // A concurrent commit can advance the head between preflight and
+        // the family's read. Validate the exact prefix named by its verdict.
+        // The first check already covers an unchanged immutable prefix.
+        if checked_at != head
+            && let Err(error) = self.query(cx, |db, book| {
+                Ok(crate::certificate::context_at(db, book, checked_at))
+            })?
+        {
+            return Ok(Err(invalid(format!(
+                "the current {} context no longer matches the certified context: {error}",
+                artifact.family().name(),
+            ))));
+        }
+        Ok(Ok(status))
+    }
+
+    fn report_artifact_family_status(
+        &self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &Capability,
+        artifact: &ReportArtifact,
+        expected: ReportArtifactExpectation<'_>,
+    ) -> Outcome<CertificateStatus> {
         let source = match &artifact.inner {
             Artifact::Native(_) | Artifact::StatementDiff(_) | Artifact::StatementTrace(_) => {
                 return self.certificate_status(cx, artifact.source_certificate());
