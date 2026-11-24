@@ -1171,6 +1171,8 @@ fn historical_maintained_reports_pin_cells_tail_and_pending_resolution() {
     open_period(&mut k, &mut oracle, &april, 73_001);
     let usd = k.book.units.lookup("USD").unwrap();
     let in_march = DateDay::from_ymd(2026, 3, 10).unwrap();
+    let march_end = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let before_posting = DateDay::from_ymd(2026, 3, 9).unwrap();
     let in_april = DateDay::from_ymd(2026, 4, 10).unwrap();
     let selection = vec![march.clone()];
     let mut refs = Vec::new();
@@ -1229,6 +1231,8 @@ fn historical_maintained_reports_pin_cells_tail_and_pending_resolution() {
     kernel_post(&mut k, &late, usd, &refs).unwrap();
     maintain(&mut k, &march);
     let head = k.db.frontier().unwrap();
+    let cx = k.ctx();
+    let mut history = fa_registers::ReportHistoryMemo::default();
     for (tail, (at, stock, activity)) in snapshots.into_iter().enumerate() {
         for (actual, expected) in [
             (
@@ -1240,6 +1244,18 @@ fn historical_maintained_reports_pin_cells_tail_and_pending_resolution() {
                 fa_registers::period_activity_served_at(&k.db, &k.book, &selection, Some(at))
                     .unwrap(),
                 activity,
+            ),
+            (
+                fa_registers::balance_as_of_served(
+                    &k.db,
+                    &cx.query(),
+                    &k.book,
+                    march_end,
+                    Some(at),
+                    Some(&mut history),
+                )
+                .unwrap(),
+                fa_registers::balance_as_of(&k.db, &k.book, march_end, Some(at)).unwrap(),
             ),
         ] {
             let (report, served) = actual;
@@ -1256,11 +1272,49 @@ fn historical_maintained_reports_pin_cells_tail_and_pending_resolution() {
             ));
         }
     }
+    let (midperiod, served) = fa_registers::balance_as_of_served(
+        &k.db,
+        &cx.query(),
+        &k.book,
+        before_posting,
+        Some(head),
+        Some(&mut history),
+    )
+    .unwrap();
+    assert!(matches!(served, fa_registers::Served::Literal(ref reason)
+        if reason.contains("straddles 2026-03-09")));
+    assert!(midperiod.rows.is_empty());
+    assert_eq!(
+        midperiod,
+        fa_registers::balance_as_of(&k.db, &k.book, before_posting, Some(head)).unwrap()
+    );
     assert_eq!(
         k.db.frontier().unwrap(),
         head,
         "historical reads never publish"
     );
+
+    // The derived March boundary now claims March 9 is the period's last
+    // day, which would include a March 10 posting from its maintained cells.
+    let mut drift = WriteBatch::new(fa_model::symbols::relation::IN_BOOK);
+    drift.set_vertex_property(
+        fa_model::period_vid(&k.book.calendar.id, &march),
+        fa_model::symbols::property::PERIOD_END,
+        Some(fgdb_types::CanonicalScalar::Int(i64::from(in_march.0))),
+    );
+    k.runtime.block_on(k.db.write(&cx.commit(), drift)).unwrap();
+    let (report, served) = fa_registers::balance_as_of_served(
+        &k.db,
+        &cx.query(),
+        &k.book,
+        before_posting,
+        None,
+        Some(&mut history),
+    )
+    .unwrap();
+    assert!(matches!(served, fa_registers::Served::Literal(ref reason)
+        if reason.contains("period dates differ from the book calendar")));
+    assert!(report.rows.is_empty());
 }
 
 /// A later cache cannot serve an earlier unmaintained snapshot. Conversely,
@@ -1347,7 +1401,7 @@ fn historical_maintained_reports_fall_back_on_snapshot_corruption() {
     );
     let ctx = k.ctx();
     let mut snapshots = Vec::new();
-    for damaged_state in [false, true] {
+    for (damaged_state, damaged_checkpoint) in [(false, false), (true, false), (true, true)] {
         let mut write = WriteBatch::new(relation::IN_PERIOD);
         if damaged_state {
             write.set_vertex_property(
@@ -1362,10 +1416,17 @@ fn historical_maintained_reports_fall_back_on_snapshot_corruption() {
                 Some(rows::scalar_bytes("debits", 501i128.to_le_bytes().to_vec()).unwrap()),
             );
         }
+        if damaged_checkpoint {
+            write.set_vertex_property(
+                fa_registers::checkpoint::head_vid(k.book.book_id, &march),
+                property::TARGET_REF,
+                Some(rows::scalar_bytes("checkpoint pointer", vec![0]).unwrap()),
+            );
+        }
         k.runtime
             .block_on(k.db.write(&ctx.commit(), write))
             .unwrap();
-        snapshots.push(k.db.frontier().unwrap());
+        snapshots.push((k.db.frontier().unwrap(), damaged_checkpoint));
         k.runtime
             .block_on(fa_registers::rebuild(&mut k.db, &ctx, &k.book, &march))
             .unwrap();
@@ -1384,7 +1445,9 @@ fn historical_maintained_reports_fall_back_on_snapshot_corruption() {
         fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(intact_at)).unwrap();
     assert_eq!(report, intact);
     assert_eq!(served.tail_length(), Some(0));
-    for at in snapshots {
+    let march_end = DateDay::from_ymd(2026, 3, 31).unwrap();
+    let mut history = fa_registers::ReportHistoryMemo::default();
+    for (at, damaged_checkpoint) in snapshots {
         let literal = trial_balance_at(&k.db, &k.book, &selection, Some(at)).unwrap();
         let (report, served) =
             fa_registers::trial_balance_served_at(&k.db, &k.book, &selection, Some(at)).unwrap();
@@ -1404,6 +1467,40 @@ fn historical_maintained_reports_fall_back_on_snapshot_corruption() {
             matches!(served, fa_registers::Served::Literal(_)),
             "{served:?}"
         );
+        let (report, served) = fa_registers::balance_as_of_served(
+            &k.db,
+            &ctx.query(),
+            &k.book,
+            march_end,
+            Some(at),
+            Some(&mut history),
+        )
+        .unwrap();
+        assert_eq!(
+            report,
+            balance_as_of(&k.db, &k.book, march_end, Some(at)).unwrap()
+        );
+        if damaged_checkpoint {
+            assert!(
+                matches!(served, fa_registers::Served::Literal(_)),
+                "{served:?}"
+            );
+        } else {
+            let checkpoint = fa_registers::checkpoint::latest_before(
+                &k.db,
+                &ctx.query(),
+                &k.book,
+                &march,
+                at,
+                at,
+            )
+            .unwrap()
+            .expect("intact journaled checkpoint");
+            assert_eq!(
+                served,
+                fa_registers::Served::Maintained(vec![(march.clone(), checkpoint.through, 0)]),
+            );
+        }
     }
 }
 

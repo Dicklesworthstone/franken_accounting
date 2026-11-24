@@ -156,20 +156,26 @@ currentness at their selected observation. The strict check exits 8 for an
 absent or lagging cache and supplies the advancement command; drift supplies
 an explicit materialization command. Verification never repairs a cache.
 
-The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. This slice still scans projection metadata and writes the period's cells; it makes no throughput claim. Uncertified head and historical trial balances and period activity can use checked native cells plus an exact tail bounded by the requested recorded sequence. Historical reads pin the chart, periods, maintenance state and cells to that same snapshot, so later postings and cache repairs cannot enter the result. Missing or damaged historical cells and unavailable delta windows fall back to the literal journal fold; these retained snapshots are not journaled RegisterCheckpoints. Other selections retain literal folds.
+The embedded API's `Book::advance_registers(period)` consumes new committed entry payloads through `delta_since` for native posted/pending period cells. It publishes cells and the consumed cursor atomically; `Book::rebuild_registers(period)` replaces them from a fresh journal fold. Reopening rehydrates the delta window, and an actually retired cursor falls back to a full rebuild. Staged migration chunks stay invisible; finalizing a run triggers a full fold to include newly activated chunks older than the cursor. Pending-sum overflow also falls back to the final fold, so holds released later in the same suffix do not prevent advancement; a genuinely oversized final sum still fails. `verify_registers` also checks the maintenance state against its journal prefix. Advancement still scans projection metadata and writes the period's cells. Historical reads pin the chart, periods, maintenance state and cells to the selected snapshot, so later postings and cache repairs cannot enter the result.
 
 Authorized embedded readers use `Book::read_scope` before reading. Its
-`trial_balance_served` and `period_activity_served` methods return the report
-and its actual maintenance cursor/tail or literal fallback reason; their
-`_at` variants accept an explicit historical recorded sequence. The global
-delta window requires whole-book authority; narrower admitted reports fold
+`trial_balance_served`, `period_activity_served` and `balance_as_of_served`
+methods return the report and its actual maintenance cursor and tail, or the
+reason it folded the journal. Each supports a selected recorded frontier.
+The global delta window requires whole-book authority. Narrower admitted reports fold
 literally without exposing that window's metadata. The existing scope methods
 also use maintained cells for HEAD or an explicit known-at sequence when
 authority and resident history permit. Historical authority is admitted at the
 selected sequence before its cache or tail is inspected, including when a
 known-at caveat excludes HEAD. These reads load no history, repair no cache and
-preserve the same capability caveats. Uncertified CLI period-stock and activity
-reports also disclose the actual serving basis for historical selections.
+preserve the same capability caveats.
+
+Uncertified `fa tb` reports disclose their serving basis in `served`.
+A civil-date stock read can use checked register cells or a complete
+checkpoint plus an exact tail when the date includes whole periods.
+A midperiod cutoff folds the journal at the requested day. An unavailable
+checkpoint or delta window also selects the journal fold when the live
+register cannot serve the report.
 
 The daemon can maintain period caches on the same book writer that serves
 requests. For native currency, select exact periods:

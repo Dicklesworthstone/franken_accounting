@@ -2557,6 +2557,95 @@ fn authorized_head_reports_disclose_their_basis_and_keep_restricted_fallback_pin
         assert!(historical.render().contains("\"debits\":\"10.00 USD\""));
         assert!(historical.render().contains("\"credits\":\"10.00 USD\""));
     }
+    let as_of = doc(&ok(&["tb", "--as-of", "2026-03-31"]));
+    assert_eq!(int(&as_of, "known_at"), Some(posted_at[1]));
+    assert!(as_of.render().contains("\"debits\":\"12.00 USD\""));
+    assert!(as_of.render().contains("\"credits\":\"12.00 USD\""));
+    let serving = as_of.get("served").unwrap();
+    assert_eq!(
+        serving.get("mode").and_then(Json::as_str),
+        Some("maintained")
+    );
+    assert_eq!(int(serving, "tail_length"), Some(1));
+    assert_eq!(int(&arr(serving, "periods")[0], "served_at"), Some(cursor));
+
+    let midperiod = doc(&ok(&["tb", "--as-of", "2026-03-14"]));
+    let serving = midperiod.get("served").unwrap();
+    assert_eq!(serving.get("mode").and_then(Json::as_str), Some("literal"));
+    assert!(
+        serving
+            .get("reason")
+            .and_then(Json::as_str)
+            .unwrap()
+            .contains("straddles 2026-03-14")
+    );
+    assert!(arr(&midperiod, "rows").is_empty());
+
+    let before = posted_at[0].to_string();
+    let historical_as_of = doc(&ok(&[
+        "tb",
+        "--as-of",
+        "2026-03-31",
+        "--as-known-at",
+        &before,
+    ]));
+    assert_eq!(int(&historical_as_of, "known_at"), Some(posted_at[0]));
+    assert_eq!(
+        historical_as_of
+            .get("served")
+            .and_then(|served| served.get("mode"))
+            .and_then(Json::as_str),
+        Some("literal")
+    );
+    assert!(
+        historical_as_of
+            .render()
+            .contains("\"debits\":\"10.00 USD\"")
+    );
+
+    ok(&[
+        "capability",
+        "issue",
+        "--holder",
+        "march-as-of-reader",
+        "--profile",
+        "agent",
+        "--op",
+        "read",
+        "--effective-through",
+        "2026-03-31",
+        "--out",
+        "march-as-of.token",
+        "--grant",
+        "issue_capability",
+        "--grant",
+        "read",
+    ]);
+    let scoped = doc(&ok(&[
+        "--token",
+        "march-as-of.token",
+        "tb",
+        "--as-of",
+        "2026-03-31",
+    ]));
+    assert_eq!(scoped.get("rows"), as_of.get("rows"));
+    assert_eq!(
+        scoped
+            .get("served")
+            .and_then(|served| served.get("mode"))
+            .and_then(Json::as_str),
+        Some("literal")
+    );
+    let (code, out, _) = run(&[
+        "--token",
+        "march-as-of.token",
+        "tb",
+        "--as-of",
+        "2026-04-01",
+    ]);
+    assert_eq!(code, 7, "{out}");
+    assert!(out.contains("FA-REF-011"), "{out}");
+
     ok(&[
         "capability",
         "issue",

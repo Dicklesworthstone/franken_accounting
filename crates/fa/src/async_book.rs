@@ -8113,6 +8113,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         principal: VId,
         capability: &fa_policy::Capability,
     ) -> Outcome<()> {
+        self.prepare_head_reads_through(cx, principal, capability, None)
+            .await
+    }
+
+    pub(crate) async fn prepare_head_reads_through(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        through: Option<DateDay>,
+    ) -> Outcome<()> {
         cx.query().checkpoint().map_err(BookError::Context)?;
         if let Err(denial) = fa_policy::admit_read(capability, principal, self.context.book_id)
             .and_then(|()| fa_policy::reach(capability, &fa_policy::Reach::whole_book(true), None))
@@ -8123,8 +8134,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(refusal));
         }
         let oldest = self.query(cx, |db, book| {
+            let mut periods = fa_journal::genesis::list_periods(db)?;
+            if let Some(day) = through {
+                periods.retain(|p| p.calendar_id == book.calendar.id && p.start <= day);
+                // Period ends are exclusive. An as-of date inside a period
+                // uses the literal fold and has no need for a delta window.
+                if periods.iter().any(|p| p.end.0 > day.0.saturating_add(1)) {
+                    return Ok(None);
+                }
+            }
             let mut oldest: Option<CommitSeq> = None;
-            for period in fa_journal::genesis::list_periods(db)? {
+            for period in periods {
                 if let Some(cursor) = fa_registers::maintainer::cursor_with_context(
                     db,
                     &cx.query(),
@@ -8234,6 +8254,25 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
     ) -> Result<TrialBalance, BookError> {
         self.query(cx, |db, book| {
             Ok(fa_registers::balance_as_of(db, book, day, known_at)?)
+        })
+    }
+
+    pub(crate) fn balance_as_of_served(
+        &self,
+        cx: &PurposeContexts,
+        day: DateDay,
+        seq: CommitSeq,
+    ) -> Result<(TrialBalance, fa_registers::Served), BookError> {
+        self.query(cx, |db, book| {
+            let mut history = self.report_history.try_lock().ok();
+            Ok(fa_registers::balance_as_of_served(
+                db,
+                &cx.query(),
+                book,
+                day,
+                Some(seq),
+                history.as_deref_mut(),
+            )?)
         })
     }
 

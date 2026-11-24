@@ -13637,8 +13637,13 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         // preparation; historical reads use their own retained state. A
         // capability that cannot load it reads the journal literally, and
         // the disclosure names its refusal.
-        let window = if known_at.is_none() && !matches!(selection, TrialBalanceSelection::AsOf(_)) {
-            Some(book.prepare_head_reads(who, &read_cap)?)
+        let window = if known_at.is_none() {
+            Some(match &selection {
+                TrialBalanceSelection::AsOf(day) => {
+                    book.prepare_as_of_head_read(who, &read_cap, *day)?
+                }
+                _ => book.prepare_head_reads(who, &read_cap)?,
+            })
         } else {
             None
         };
@@ -13671,8 +13676,16 @@ pub(crate) fn tb_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 None,
                 refused(refusal),
             ),
+            (TrialBalanceSelection::AsOf(day), Some(Err(refusal))) => (
+                book.balance_as_of(*day, Some(admitted_at))?,
+                None,
+                refused(refusal),
+            ),
             (TrialBalanceSelection::AsOf(day), _) => {
-                (book.balance_as_of(*day, known_at)?, None, None)
+                let (report, served) = book
+                    .read_scope(who, &read_cap)??
+                    .balance_as_of_served(*day, Some(admitted_at))??;
+                (report, None, Some(served))
             }
             (TrialBalanceSelection::Periods(periods), None) => {
                 let (report, served) = book

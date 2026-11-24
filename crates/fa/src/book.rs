@@ -8799,6 +8799,20 @@ impl Book {
         )))
     }
 
+    /// Load the head delta window for a civil cutoff that can be answered
+    /// with complete periods. Uses the same authority as other head reads.
+    pub fn prepare_as_of_head_read(
+        &mut self,
+        principal: VId,
+        capability: &fa_journal::Capability,
+        day: DateDay,
+    ) -> Outcome<()> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.prepare_head_reads_through(
+            &purposes, principal, capability, Some(day),
+        )))
+    }
+
     /// The trial balance at the head and how it was served: maintained
     /// cells plus the exact tail, or the literal fold and why (plan §17).
     pub fn trial_balance_served(
@@ -9633,6 +9647,33 @@ impl ReadScope<'_> {
             Err(r) => return Ok(Err(r)),
         };
         Ok(Ok(self.book.balance_as_of(day, Some(seq))?))
+    }
+
+    /// The authorized civil-date report and its serving basis at the admitted
+    /// frontier. Effective-date caveats can permit the literal report while
+    /// denying access to the whole-book register window.
+    pub fn balance_as_of_served(
+        &self,
+        day: DateDay,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<(TrialBalance, fa_registers::Served)> {
+        let seq = match self.admit_as_of(day, known_at)? {
+            Ok(seq) => seq,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if let Err(refusal) = self.authority.whole_book(seq) {
+            return Ok(Ok((
+                self.book.balance_as_of(day, Some(seq))?,
+                fa_registers::Served::Literal(format!(
+                    "this capability cannot inspect the register window ({}: {}); the read folds the journal",
+                    refusal.code, refusal.message
+                )),
+            )));
+        }
+        let purposes = self.book.purposes();
+        Ok(Ok(
+            with_store!(&self.book.store, core => core.balance_as_of_served(&purposes, day, seq))?,
+        ))
     }
 
     /// Authorized activity at HEAD, with the actual cache cursor and tail

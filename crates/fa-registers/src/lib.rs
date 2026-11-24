@@ -2175,13 +2175,13 @@ fn trial_balance_served_at_inner<V: asupersync::fs::Vfs + Clone>(
         through = Some(through.map_or(DateDay(end), |d: DateDay| d.max(DateDay(end))));
     }
     let maintained = match through {
-        Some(day) => maintained_sums(db, cx, book, day, seq, history)?,
+        Some(day) => maintained_sums(db, cx, book, day, seq, history, false)?,
         None => Err("no period was selected".to_string()),
     };
     match maintained {
-        Ok((sums, served)) => Ok((
-            trial_balance_from_sums(db, sums, selected, seq, through)?,
-            Served::Maintained(served),
+        Ok(stock) => Ok((
+            trial_balance_from_sums(db, stock.sums, selected, seq, through)?,
+            Served::Maintained(stock.served),
         )),
         Err(reason) => Ok((
             report_at(db, book, selected, seq, through, &[], None)?,
@@ -2197,6 +2197,12 @@ type ColumnSums = BTreeMap<(VId, u32), [i128; 4]>;
 /// `(period, served_at, tail_entries)` of each period maintained cells answered.
 type ServedPeriods = Vec<(String, CommitSeq, usize)>;
 
+struct MaintainedStock {
+    sums: ColumnSums,
+    periods: BTreeSet<String>,
+    served: ServedPeriods,
+}
+
 /// The trial balance's column sums through `day` from maintained cells, or
 /// why they cannot answer exactly: a period straddles `day` (the literal
 /// fold selects by date inside it), or a period with postings has no
@@ -2208,7 +2214,8 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
     day: DateDay,
     seq: CommitSeq,
     history: Option<&mut ReportHistoryMemo>,
-) -> Result<Result<(ColumnSums, ServedPeriods), String>, RegisterError> {
+    check_civil_dates: bool,
+) -> Result<Result<MaintainedStock, String>, RegisterError> {
     let mut source = match history {
         Some(history) => Some(history.read(db, cx, book, seq)?),
         None => None,
@@ -2217,10 +2224,11 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
         Some(source) => source.metadata(),
         None => report_metadata_at(db, cx, book, seq)?,
     };
-    let mut sums = ColumnSums::new();
-    let mut served = Vec::new();
-    let mut populated_periods = None;
-    for period in periods {
+    if check_civil_dates && !period_dates_match_calendar(book, &periods) {
+        return Ok(Err("period dates differ from the book calendar".into()));
+    }
+    let selected: Vec<_> = periods.into_iter().filter(|p| p.start <= day).collect();
+    for period in &selected {
         let last = DateDay(
             period
                 .end
@@ -2228,9 +2236,6 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 .checked_sub(1)
                 .ok_or_else(|| KernelError::Corrupt("period end underflow".into()))?,
         );
-        if period.start > day {
-            continue;
-        }
         if last > day {
             return Ok(Err(format!(
                 "period `{}` straddles {}",
@@ -2238,6 +2243,15 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
                 day.render()
             )));
         }
+    }
+    let mut stock = MaintainedStock {
+        sums: ColumnSums::new(),
+        periods: BTreeSet::new(),
+        served: Vec::new(),
+    };
+    let mut populated_periods = None;
+    for period in selected {
+        stock.periods.insert(period.code.clone());
         let head = match maintained_fold_at(db, cx, book, &period.code, &accounts, seq) {
             Ok(head) => head,
             Err(RegisterError::Overflow | RegisterError::Capacity(_)) => {
@@ -2261,7 +2275,7 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
             }
             continue;
         };
-        match add_cells(&mut sums, &head.fold) {
+        match add_cells(&mut stock.sums, &head.fold) {
             Ok(()) => {}
             Err(RegisterError::Overflow) => {
                 // Only the literal selected prefix can identify the source
@@ -2272,9 +2286,34 @@ fn maintained_sums<V: asupersync::fs::Vfs + Clone>(
             }
             Err(error) => return Err(error),
         }
-        served.push((period.code, head.served_at, head.tail_entries));
+        stock
+            .served
+            .push((period.code, head.served_at, head.tail_entries));
     }
-    Ok(Ok((sums, served)))
+    Ok(Ok(stock))
+}
+
+// The calendar resolves every entry's effective date when building register
+// cells. A drifted period projection cannot establish which cells are wholly
+// before a civil cutoff. Calendar definitions are generated once per year.
+fn period_dates_match_calendar(book: &BookContext, periods: &[PeriodRow]) -> bool {
+    periods
+        .chunk_by(|a, b| a.fiscal_year == b.fiscal_year)
+        .all(|year| {
+            let Ok(definitions) = book.calendar.periods_for_year(year[0].fiscal_year) else {
+                return false;
+            };
+            definitions.len() == year.len()
+                && definitions.iter().all(|definition| {
+                    year.iter().any(|period| {
+                        definition.code == period.code
+                            && period.vid
+                                == fa_model::period_vid(&book.calendar.id, &definition.code)
+                            && definition.start == period.start
+                            && definition.end == period.end
+                    })
+                })
+        })
 }
 
 fn maintained_fold_at<V: asupersync::fs::Vfs + Clone>(
@@ -2543,6 +2582,38 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
     known_at: Option<CommitSeq>,
 ) -> Result<TrialBalance, RegisterError> {
     balance_as_of_filtered(db, book, day, known_at, None)
+}
+
+/// Read a civil-date stock position from complete maintained periods at one
+/// recorded frontier. A cutoff inside any selected period or an unusable
+/// register falls back to the literal date predicate. Admit the whole book
+/// at the selected frontier before inspecting its register window.
+pub fn balance_as_of_served<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    day: DateDay,
+    known_at: Option<CommitSeq>,
+    history: Option<&mut ReportHistoryMemo>,
+) -> Result<(TrialBalance, Served), RegisterError> {
+    report_checkpoint(Some(cx))?;
+    let seq = resolve_known_at(db, known_at)?;
+    match maintained_sums(db, Some(cx), book, day, seq, history, true)? {
+        Ok(stock) => Ok((
+            trial_balance_from_sums(
+                db,
+                stock.sums,
+                stock.periods.into_iter().collect(),
+                seq,
+                Some(day),
+            )?,
+            Served::Maintained(stock.served),
+        )),
+        Err(reason) => Ok((
+            balance_as_of(db, book, day, Some(seq))?,
+            Served::Literal(reason),
+        )),
+    }
 }
 
 fn balance_as_of_filtered<V: asupersync::fs::Vfs + Clone>(
