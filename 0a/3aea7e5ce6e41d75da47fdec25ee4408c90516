@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=0a3aea7e5ce6e41d75da47fdec25ee4408c90516
+tree=3c608f250852f4a64c0ea360c257d86dd6fc94cb
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=178
+log_dir=/var/folders/vt/n2xyn_s51b97_j3yh2qbqcnc0000gn/T//fa-tier0.ID2H2S
+recorded_utc=2026-11-24T05:16:22Z
