@@ -161,6 +161,7 @@ pub(super) fn plans<'a>(
     expected: &ScenarioExpectation,
     envelopes: &[LeafEnvelope],
     records: &[(usize, &'a [u8])],
+    declarations: &mut Vec<super::ScenarioPlannerDeclaration>,
 ) -> Result<Vec<AssumedEntry<'a>>, ReportError> {
     let expected_id = identity(
         b"fa:vid:scenario:v1",
@@ -272,13 +273,14 @@ pub(super) fn plans<'a>(
                 let intent = r.bytes(MAX_RECORD_BYTES, "scenario_plan.intent")?;
                 let capability = r.bytes(64 * 1024, "scenario_plan.historical_capability")?;
                 r.finish("scenario Plan")?;
-                if capability.is_empty() {
-                    return Err(failed(
-                        "scenario_records",
-                        "scenario Plan omits its historical capability bytes",
-                    ));
-                }
                 let assumption = assumed_entry(intent, expected, owner)?;
+                declarations.push(super::planner::check(
+                    capability,
+                    owner,
+                    record_id,
+                    envelope.commit_seq,
+                    &assumption.legs,
+                )?);
                 if record.key != control_key(record.object, 1, assumption.key).as_slice() {
                     return Err(failed(
                         "scenario_records",

@@ -7,6 +7,8 @@
 //! completeness of nonjournal accounting commits named by the native SeqMap.
 
 mod history;
+mod planner;
+pub use planner::ScenarioPlannerDeclaration;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -173,6 +175,8 @@ pub struct VerifiedScenarioMath {
     pub output: Vec<u8>,
     pub checked_records: usize,
     pub checked_intents: usize,
+    /// One authenticated static planner declaration per selected Plan, in journal order.
+    pub planner_declarations: Vec<ScenarioPlannerDeclaration>,
     pub checked_documents: usize,
     pub receipt: Option<ReceiptFacts>,
     /// Planner capability and Approval/SoD admission remain outside this claim.
@@ -431,7 +435,14 @@ pub fn verify_scenario_math_expected(
     }
     input.finish("scenario trunk transport")?;
     let historical = super::historical_inputs(&source, &prefix.envelopes, &records, &bodies)?;
-    let assumed = history::plans(&cert, expected, &prefix.envelopes, &records)?;
+    let mut planner_declarations = Vec::with_capacity(cert.intents.len());
+    let assumed = history::plans(
+        &cert,
+        expected,
+        &prefix.envelopes,
+        &records,
+        &mut planner_declarations,
+    )?;
     history::seq_map(map, &cert, expected, &prefix.envelopes)?;
     history::documents(&documents, expected, &assumed)?;
     let (rows, output) = recompute(
@@ -459,6 +470,7 @@ pub fn verify_scenario_math_expected(
         output,
         checked_records: records.len(),
         checked_intents: assumed.len(),
+        planner_declarations,
         checked_documents: documents.len(),
         receipt,
         historical_admission: "not_judged",

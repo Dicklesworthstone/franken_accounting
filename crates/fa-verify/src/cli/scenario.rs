@@ -130,6 +130,19 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             ("economic_truth", s("not_judged")),
         ],
     ));
+    for planner in &report.planner_declarations {
+        checks.push(Check::pass(
+            "scenario_planner_declaration",
+            "journaled_holder_post_op_and_leg_ceilings",
+            vec![
+                ("plan_record", s(format!("{:032x}", planner.plan_record))),
+                ("recorded_at", n(planner.recorded_at)),
+                ("holder", s(format!("{:032x}", planner.holder))),
+                ("declared_issuer", s(format!("{:032x}", planner.issuer))),
+                ("capability_commitment", h(&planner.capability_commitment)),
+            ],
+        ));
+    }
     for row in &report.rows {
         checks.push(Check::pass(
             "scenario_row",

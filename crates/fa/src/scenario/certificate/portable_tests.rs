@@ -293,6 +293,21 @@ fn signed_additive_scenario_replays_all_gross_columns_units_and_pinned_plans_wit
         source_bytes
     );
     assert_eq!(replay.checked_intents, 4);
+    let declarations = &replay.planner_declarations;
+    assert_eq!(declarations.len(), 4);
+    assert!(
+        declarations
+            .windows(2)
+            .all(|pair| pair[0].recorded_at < pair[1].recorded_at)
+    );
+    for (declaration, record) in declarations.iter().zip(certified.certificate.intents()) {
+        assert_eq!(declaration.plan_record, record.0);
+        assert_eq!(declaration.holder, PRINCIPAL.0);
+        assert_eq!(
+            declaration.capability_commitment,
+            cap(&["post"]).commitment().unwrap()
+        );
+    }
     assert_eq!(replay.checked_documents, 2);
     assert_eq!(replay.rows.len(), 5);
     let cash = replay
