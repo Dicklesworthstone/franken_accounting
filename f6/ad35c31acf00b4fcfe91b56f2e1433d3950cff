@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=f6ad35c31acf00b4fcfe91b56f2e1433d3950cff
+tree=691fe9deb05887ba4ea90ed0be2805c7cc6f4744
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=6
+check_status=PASS
+check_seconds=256
+log_dir=/Volumes/SANDISK_SSD/scratch/fa-build-20261122.BBDlDDVP/fa-merged-publication.ZfJONC/tier0
+recorded_utc=2026-11-24T02:03:28Z
