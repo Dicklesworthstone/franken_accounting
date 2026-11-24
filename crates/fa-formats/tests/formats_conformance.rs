@@ -2719,9 +2719,7 @@ fn conformance_matrices_match_published_docs_and_refuse_undocumented_divergence(
         oracle: "fa-formats ADS-shaped, SAF-T-shaped and XBRL writers and readers (self round-trip)".to_owned(),
         proof_class: "metamorphic (self round-trip) + summation check against a hand-written linkbase".to_owned(),
         no_claim_boundary: "Shows export-import round-trip identity through fa-formats' own writers and readers, coordinate certificate verification, FA-INV-04 refold equality, and summation consistency against XbrlCalculationLinkbase::standard_balance_sheet/standard_income_statement (written in this repository). No published AICPA ADS column set, OECD SAF-T XSD or XBRL taxonomy was used, so standards conformance is not claimed; that is fa-ipom.".to_owned(),
-        // The ADS text-version law lives in the README (f8babb03 relocated
-        // it from this note), so the published note carries none.
-        notes: String::new(),
+        notes: "See the [independent FASB taxonomy comparison](../../README.md#exact-xbrl-calculation-values) for results from exported demo books.".to_owned(),
         rows: vec![
             ConformanceRow {
                 fixture: "aicpa_ads_gl_v2_acme_fy2026_p03".to_owned(),

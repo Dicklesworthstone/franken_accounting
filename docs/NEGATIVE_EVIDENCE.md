@@ -4370,3 +4370,10 @@ from the MCP adapter made that old test pass. The corrected test requires
 the schedule, the same-account and same-frontier reconciliation when requested,
 and the selected certificate. All three aging stdio tests passed. Removing
 the same event now fails the reconciled call.
+
+The workspace test at `9fbe0d52` failed the exact rendering check for
+`docs/conformance/ads_saft_xbrl.md`. The independent FASB results added in
+`ae99d49c` had been appended directly to the generated matrix. The matrix now
+links to the independent results and command in the README. Its rendered
+rows, byte-for-byte comparison and seeded undocumented divergence still run
+under `conformance_matrices_match_published_docs_and_refuse_undocumented_divergence`.

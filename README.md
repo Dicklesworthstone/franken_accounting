@@ -628,10 +628,20 @@ python3 scripts/xbrl_fasb_oracle.py --taxonomy us-gaap-2026.zip \
 ```
 
 The JSON lists each exact sum and its contributing amounts in the published
-classified balance sheet and income statement roles. A family with omitted
-contributors is listed as incomplete. An incorrect sum or missing required
-parent exits 1. A missing taxonomy or a file with no eligible sums and no
-required parent exits 4. Whole-filing validation remains open.
+classified balance sheet and income statement roles. It checks monetary
+concept declarations and period types and compares amounts within the same
+context and unit. A family with omitted contributors is listed as incomplete.
+Repeat `--require` for each parent the recipient expects in every input.
+An incorrect sum or missing required parent exits 1. A missing taxonomy or a
+file with no eligible sums and no required parent exits 4.
+
+Seven demo instances from `f5579754` supplied 70 concept values, seven
+complete income calculations and 63 incomplete families. In a separate
+year-close instance, USD 60 group income less USD 12 attributable to
+noncontrolling interests gave USD 48 attributable to the parent. USD 48 parent
+equity plus USD 12 minority interest gave USD 60 total equity. A historical
+read at the same recorded coordinate reproduced the closed instance byte for
+byte after a role change. Whole-filing validation remains open.
 
 ### Dimension-preserving accounting extracts
 
