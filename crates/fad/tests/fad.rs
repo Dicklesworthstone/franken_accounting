@@ -25,6 +25,9 @@ mod session_admission;
 #[path = "fad/grouped_stage.rs"]
 mod grouped_stage;
 
+#[path = "fad/client_signing.rs"]
+mod client_signing;
+
 fn tmp(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {

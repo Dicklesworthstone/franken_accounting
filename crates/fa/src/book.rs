@@ -52,6 +52,20 @@ impl fa_policy::SignatureVerifier for NotaryVerifier {
 /// The one [`NotaryVerifier`] the facade hands the kernel.
 pub static PRINCIPAL_SIGNATURES: NotaryVerifier = NotaryVerifier;
 
+/// Public, read-only signing coordinates for one opaque-digest approval.
+///
+/// This request contains no private material and grants no authority. A client
+/// must bind `approval` to its intended book, principal, capability and proposal
+/// before signing its domain-separated digest. A changed policy epoch, key or
+/// authority is checked again by [`Book::approve_detached`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalSigningRequest {
+    pub approval: fa_policy::Approval,
+    pub generation: u32,
+    pub key_id: [u8; 32],
+    pub public_key: [u8; 32],
+}
+
 /// A client's principal key as the kernel's attestation signer (plan
 /// §14.5, fa-kae): fa-notary's Ed25519 key, held for one handle's life.
 #[derive(Debug)]
@@ -1859,6 +1873,34 @@ impl Book {
     ) -> Outcome<fa_journal::Approved> {
         let purposes = self.purposes();
         with_store!(&mut self.store, core => self.runtime.block_on(core.approve(&purposes, capability, proposal_digest)))
+    }
+
+    /// Prepare the public approval body and registered key coordinates
+    /// without publishing ([`AsyncBook::prepare_approval_signature`]).
+    pub fn prepare_approval_signature(
+        &self,
+        capability: &fa_journal::Capability,
+        proposal_digest: [u8; 32],
+    ) -> Outcome<ApprovalSigningRequest> {
+        let purposes = self.purposes();
+        with_store!(&self.store, core => core.prepare_approval_signature(
+            &purposes, capability, proposal_digest,
+        ))
+    }
+
+    /// Record an externally signed approval under current authority
+    /// ([`AsyncBook::approve_detached`]). Only the public signature crosses
+    /// this boundary; the handle never receives or retains the client's key.
+    pub fn approve_detached(
+        &mut self,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        signature: fa_policy::PrincipalSignature,
+    ) -> Outcome<fa_journal::Approved> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.approve_detached(
+            &purposes, capability, proposal_digest, signature,
+        )))
     }
 
     /// [`Self::approve`] signed with the principal's key (plan §14.5,

@@ -167,8 +167,8 @@ pub use bank::{
     BankUnmatchRequest,
 };
 pub use book::{
-    Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS, ProducedBundle, ReadScope,
-    Replanned,
+    ApprovalSigningRequest, Book, BookError, BookKeys, Entropy, Outcome, PLAN_BINDINGS,
+    ProducedBundle, ReadScope, Replanned,
 };
 pub use case_statements::{
     CaseEquityComparisonSelection, CaseEquityDisclosureComparison, CaseStatementBasis,

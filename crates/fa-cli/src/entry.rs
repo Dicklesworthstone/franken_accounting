@@ -30,6 +30,7 @@ use crate::lease::{Lease, LeaseError};
 use crate::verbs;
 
 mod routing;
+mod signing;
 
 /// Run one `fa` command line. With `capture`, the output is returned instead
 /// of written to stdio.
@@ -400,30 +401,48 @@ fn through_daemon(
     let Ok(reg) = verbs::registry() else {
         return cli::run(argv, Books::Dir, files.clone(), capture);
     };
-    let token = match token.map(CapabilityToken::canonical_bytes).transpose() {
+    let encoded_token = match token.map(CapabilityToken::canonical_bytes).transpose() {
         Ok(token) => token,
         Err(e) => return cli::foundation_error(argv, format!("capability token: {e}"), capture),
     };
-    let routed = match token {
-        None => routing::request(parsed, dir, files, &reg.daemon),
-        token @ Some(_) => routing::request_as(parsed, dir, files, &reg.daemon, token),
-    };
-    let request = match routed {
-        Ok(request) => request,
-        Err(routing::Error::Usage(message)) => {
-            return cli::usage_error(
-                argv,
+    let socket = dir.join(&reg.daemon.socket);
+    let send = |parsed: &args::Args| -> Result<crate::wire::Response, cli::Fail> {
+        let routed = match &encoded_token {
+            None => routing::request(parsed, dir, files, &reg.daemon),
+            Some(token) => {
+                routing::request_as(parsed, dir, files, &reg.daemon, Some(token.clone()))
+            }
+        };
+        let request = routed.map_err(|error| match error {
+            routing::Error::Usage(message) => cli::usage(
                 message,
                 "pass the unchanged plan or intent through a readable input file, or reduce the complete request size",
-                capture,
-            );
-        }
-        Err(routing::Error::Environment(message)) => {
-            return cli::environment_error(argv, message, capture);
-        }
+            ),
+            routing::Error::Environment(message) => cli::Fail::Environment(message),
+        })?;
+        client::call(&socket, &request, &reg.daemon).map_err(|error| match error {
+            ClientError::Connect(error) => match &held {
+                Some(held) => cli::Fail::Refusal(held.refusal(dir)),
+                None => cli::Fail::Environment(format!(
+                    "no fad serves {} ({}: {error})",
+                    dir.display(),
+                    socket.display(),
+                )),
+            },
+            error => cli::Fail::Internal(format!("fad transport: {error}")),
+        })
     };
-    let socket = dir.join(&reg.daemon.socket);
-    match client::call(&socket, &request, &reg.daemon) {
+    let response = if parsed
+        .positional
+        .first()
+        .is_some_and(|word| word == "approve")
+        && parsed.flag("--sign-key").is_some()
+    {
+        signing::approve(parsed, token, files, send)
+    } else {
+        send(parsed)
+    };
+    match response {
         Ok(response) => {
             if capture {
                 (
@@ -440,19 +459,7 @@ fn through_daemon(
                 (response.exit, Captured::default())
             }
         }
-        Err(ClientError::Connect(e)) => match held {
-            Some(held) => cli::refuse(argv, held.refusal(dir), capture),
-            None => cli::environment_error(
-                argv,
-                format!(
-                    "no fad serves {} ({}: {e})",
-                    dir.display(),
-                    socket.display()
-                ),
-                capture,
-            ),
-        },
-        Err(e) => cli::foundation_error(argv, format!("fad transport: {e}"), capture),
+        Err(error) => cli::host_failure(argv, error, capture),
     }
 }
 

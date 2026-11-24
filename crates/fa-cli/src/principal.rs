@@ -4,8 +4,9 @@
 //! principal has a key, `fa approve --proposal <digest> --sign-key <file>`
 //! signs its approvals; the kernel refuses its unsigned ones.
 //!
-//! Both read or write a secret on the host, so neither runs inside `fad`
-//! (the daemon never holds a principal's key) and neither is an MCP tool.
+//! Key creation and registration read or write a secret on the host and
+//! remain direct-only. Single proposal approvals can use a detached signature
+//! through `fad`; the client retains its key and the daemon verifies it.
 
 use fa_time::DateDay;
 
@@ -202,4 +203,106 @@ fn key_add(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         ),
     );
     Ok(())
+}
+
+/// Public-only preparation and detached submission of a single digest approval.
+/// The kernel reconstructs the approval under current authority at publication;
+/// no client-supplied body, epoch or identity is taken as authoritative.
+pub(crate) fn detached_approval(ctx: &mut Ctx<'_>, args: &Args) -> Result<bool, Fail> {
+    let prepare = args.switch("--prepare-signature");
+    let signature = args.flag("--approval-signature");
+    if !prepare && signature.is_none() {
+        return Ok(false);
+    }
+    let digest = single_approval_digest(args)?;
+    if args.flag("--sign-key").is_some()
+        || (prepare && signature.is_some())
+        || args.flag_all("--approval-signature").len() > 1
+    {
+        return Err(usage(
+            "choose --prepare-signature or one --approval-signature; --sign-key performs the client exchange itself",
+            APPROVAL_SIGNING_EXAMPLE,
+        ));
+    }
+    let signature = signature.map(decode_approval_signature).transpose()?;
+    let capability = ctx.capability(args, &["approve"])?;
+    let mut book = ctx.books.open(args)?;
+    if prepare {
+        let request = book.prepare_approval_signature(&capability, digest)??;
+        let body = request.approval.canonical_bytes().map_err(|error| {
+            Fail::Internal(format!("cannot encode the admitted approval: {error}"))
+        })?;
+        ctx.out.at_book(&book)?;
+        ctx.out.event(
+            "approval_signing_request",
+            vec![
+                ("approval", s(hex(&body))),
+                ("generation", Json::Int(i128::from(request.generation))),
+                ("key_id", s(hex(&request.key_id))),
+                ("public_key", s(hex(&request.public_key))),
+            ],
+            "Approval signing request prepared; no approval was recorded. Sign with the client's registered key and submit the unchanged proposal with --approval-signature.",
+        );
+    } else if let Some(signature) = signature {
+        let approved = book.approve_detached(capability, digest, signature)??;
+        crate::cli::emit_approved(&ctx.out, &book, approved)?;
+    }
+    Ok(true)
+}
+
+pub(crate) const APPROVAL_SIGNING_EXAMPLE: &str = "fa approve --proposal <64-hex> --sign-key <client key file> --token <holder token> --book <dir> --via fad";
+
+/// A single, independently chosen proposal is the supported detached profile.
+/// Review artifacts and groups have their own admission semantics and cannot
+/// silently become an approval of a daemon-selected digest.
+pub(crate) fn single_approval_digest(args: &Args) -> Result<[u8; 32], Fail> {
+    if args.positional.as_slice() != ["approve"]
+        || args.flag_all("--proposal").len() != 1
+        || ["--proposals", "--review", "--digest"]
+            .iter()
+            .any(|flag| args.flag(flag).is_some())
+    {
+        return Err(usage(
+            "client signing through fad requires exactly one approve --proposal <64-hex>; reviews and groups require their existing direct signing workflow",
+            APPROVAL_SIGNING_EXAMPLE,
+        ));
+    }
+    crate::cli::parse_digest(
+        args.require("--proposal", "the independently reviewed proposal digest")?,
+        "--proposal",
+    )
+}
+
+pub(crate) fn encode_approval_signature(signature: &fa_policy::PrincipalSignature) -> String {
+    format!(
+        "{}:{}:{}",
+        signature.generation,
+        hex(&signature.key_id),
+        hex(&signature.bytes),
+    )
+}
+
+fn decode_approval_signature(text: &str) -> Result<fa_policy::PrincipalSignature, Fail> {
+    let parts: Vec<_> = text.split(':').collect();
+    if parts.len() != 3 {
+        return Err(usage(
+            "--approval-signature is generation:key_id:signature (decimal:64-hex:128-hex)",
+            APPROVAL_SIGNING_EXAMPLE,
+        ));
+    }
+    let generation = parts[0]
+        .parse::<u32>()
+        .map_err(|_| usage("invalid approval key generation", APPROVAL_SIGNING_EXAMPLE))?;
+    if generation.to_string() != parts[0] {
+        return Err(usage(
+            "approval key generation must use canonical unsigned decimal",
+            APPROVAL_SIGNING_EXAMPLE,
+        ));
+    }
+    Ok(fa_policy::PrincipalSignature {
+        scheme: fa_policy::principal_key::SCHEME_ED25519,
+        generation,
+        key_id: crate::proof::fixed_hex(parts[1], "approval key id")?,
+        bytes: crate::proof::fixed_hex(parts[2], "approval signature")?,
+    })
 }

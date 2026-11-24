@@ -1849,7 +1849,7 @@ pub fn foundation_error(argv: &[String], message: String, capture: bool) -> (u8,
     host_failure(argv, Fail::Internal(message), capture)
 }
 
-fn host_failure(argv: &[String], fail: Fail, capture: bool) -> (u8, Captured) {
+pub(crate) fn host_failure(argv: &[String], fail: Fail, capture: bool) -> (u8, Captured) {
     let format = output_format_from_raw_argv(argv);
     finish_into(Out::new_format(format, capture), Err(fail))
 }
@@ -5905,6 +5905,9 @@ fn period_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
 /// record an Approval binding a planned proposal's digest or a portable entry,
 /// allocation or settlement review under the caller's capability.
 fn approve_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if crate::principal::detached_approval(ctx, args)? {
+        return Ok(());
+    }
     if let Some(input) = args.flag("--proposals") {
         if args.positional.len() != 1
             || args.flag_all("--proposals").len() != 1
@@ -6063,7 +6066,11 @@ fn read_approval_group(files: &Files, input: &str) -> Result<Vec<[u8; 32]>, Fail
         .collect()
 }
 
-fn emit_approved(out: &Out, book: &Book, approved: fa_journal::Approved) -> Result<(), Fail> {
+pub(crate) fn emit_approved(
+    out: &Out,
+    book: &Book,
+    approved: fa_journal::Approved,
+) -> Result<(), Fail> {
     out.at_book(book)?;
     let approval = approved.approval();
     let recorded_at = approved.recorded_at();

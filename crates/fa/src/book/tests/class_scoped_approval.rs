@@ -368,3 +368,301 @@ fn independently_valid_ed25519_signatures_do_not_make_a_shared_key_independent()
         assert_eq!(book.head().unwrap().0, before.0 + 1);
     }
 }
+
+fn detached_signature(
+    request: &ApprovalSigningRequest,
+    key: &fa_notary::SigningKey,
+) -> fa_policy::PrincipalSignature {
+    fa_policy::PrincipalSignature {
+        scheme: fa_policy::principal_key::SCHEME_ED25519,
+        generation: request.generation,
+        key_id: request.key_id,
+        bytes: key.sign(&fa_policy::principal_key::approval_message(
+            &request.approval.digest().unwrap(),
+        )),
+    }
+}
+
+#[test]
+fn detached_approval_preparation_is_read_only_and_commit_preserves_the_exact_signature() {
+    let (mut book, _, day, source) = certified_fixture();
+    let principal = VId(230);
+    let key = fa_notary::SigningKey::from_seed(&[230; 32]);
+    let capability = Capability::embedded(principal, &["approve"]).unwrap();
+    book.register_principal_key(
+        capability.clone(),
+        &key,
+        None,
+        day,
+        b"detached-approval-key",
+        "Register the external approval signer's key",
+    )
+    .unwrap()
+    .unwrap();
+    let proposal = book.read_entry(source).unwrap().unwrap().0.proposal;
+    let digest = proposal.proposal_digest().unwrap();
+    let before = book.head().unwrap();
+    let request = book
+        .prepare_approval_signature(&capability, digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.head().unwrap(), before);
+    assert_eq!(request.approval.book_id, proposal.book_id);
+    assert_eq!(request.approval.principal, principal);
+    assert_eq!(request.approval.profile, Profile::Human);
+    assert_eq!(request.approval.op, Op::Approve);
+    assert_eq!(request.approval.role, 0);
+    assert_eq!(request.approval.approved_proposal_digest, digest);
+    assert_eq!(
+        request.approval.capability_commitment,
+        capability.commitment().unwrap()
+    );
+    assert_eq!(request.approval.effects_digest, None);
+    assert_eq!(request.approval.target_coordinate, None);
+    assert_eq!(request.generation, 0);
+    assert_eq!(request.public_key, key.public_key());
+    assert_eq!(
+        request.key_id,
+        fa_policy::principal_key::key_id(&key.public_key())
+    );
+
+    // Only these public signature bytes return to the book. Recording still
+    // constructs and authenticates the approval inside its native transaction.
+    let signature = detached_signature(&request, &key);
+    let approved = book
+        .approve_detached(capability.clone(), digest, signature)
+        .unwrap()
+        .unwrap();
+    retained_signed_approval(
+        &book,
+        &approved,
+        &capability,
+        &proposal,
+        0,
+        &key.public_key(),
+    );
+    let query = book.purposes().query();
+    query.checkpoint().unwrap();
+    let records = query
+        .with_restriction(|| {
+            with_store!(&book.store, core =>
+                fa_journal::policy::approval_records(&core.db, &[approved.approval().approval_vid])
+            )
+        })
+        .unwrap();
+    let (retained, retained_signature) =
+        Approval::decode_record(records.get(&approved.approval().approval_vid).unwrap()).unwrap();
+    assert_eq!(retained, request.approval);
+    assert_eq!(retained_signature, Some(signature));
+    let recorded_at = book.head().unwrap();
+    assert_eq!(recorded_at.0, before.0 + 1);
+    let retry = book
+        .approve_detached(capability.clone(), digest, signature)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.approval(), approved.approval());
+    assert!(matches!(
+        retry,
+        fa_journal::Approved::AlreadyRecorded { .. }
+    ));
+    assert_eq!(book.head().unwrap(), recorded_at);
+
+    // The public-signature route must not leave a signing credential installed
+    // on a resident handle for a later request.
+    let refused = book.approve(capability, [231; 32]).unwrap().unwrap_err();
+    assert_eq!(refused.code, code::APPROVAL_SIGNATURE);
+    assert_eq!(book.head().unwrap(), recorded_at);
+}
+
+#[test]
+fn detached_approval_refuses_unadmitted_or_substituted_transcripts_without_writing() {
+    let (mut book, _, day, source) = certified_fixture();
+    let principal = VId(232);
+    let key = fa_notary::SigningKey::from_seed(&[232; 32]);
+    let other_key = fa_notary::SigningKey::from_seed(&[233; 32]);
+    let capability = Capability::embedded(principal, &["approve"]).unwrap();
+    let digest = book
+        .read_entry(source)
+        .unwrap()
+        .unwrap()
+        .0
+        .proposal
+        .proposal_digest()
+        .unwrap();
+    let before = book.head().unwrap();
+    let unkeyed = book
+        .prepare_approval_signature(&capability, digest)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(unkeyed.code, code::APPROVAL_SIGNATURE);
+    let unauthorized = book
+        .prepare_approval_signature(&Capability::embedded(principal, &["read"]).unwrap(), digest)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(unauthorized.code, code::CAPABILITY);
+    assert_eq!(book.head().unwrap(), before);
+    book.register_principal_key(
+        capability.clone(),
+        &key,
+        None,
+        day,
+        b"detached-approval-admission-key",
+        "Register the detached approver",
+    )
+    .unwrap()
+    .unwrap();
+    let before = book.head().unwrap();
+    let scoped = capability
+        .clone()
+        .for_classes(&[EntryClass::ORIGINAL])
+        .unwrap();
+    let refused = book
+        .prepare_approval_signature(&scoped, digest)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::CAPABILITY);
+    assert!(refused.message.contains("classes"), "{refused}");
+    let request = book
+        .prepare_approval_signature(&capability, digest)
+        .unwrap()
+        .unwrap();
+    let signature = detached_signature(&request, &key);
+
+    let mut changed_digest = digest;
+    changed_digest[0] ^= 1;
+    let refused = book
+        .approve_detached(capability.clone(), changed_digest, signature)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::APPROVAL_SIGNATURE);
+    let refused = book
+        .approve_detached(
+            Capability::embedded(principal, &["approve", "read"]).unwrap(),
+            digest,
+            signature,
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::APPROVAL_SIGNATURE);
+    let refused = book
+        .approve_detached(
+            capability.clone(),
+            digest,
+            detached_signature(&request, &other_key),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::APPROVAL_SIGNATURE);
+    let mut wrong_epoch = request.clone();
+    wrong_epoch.approval.security_policy_epoch += 1;
+    let refused = book
+        .approve_detached(capability, digest, detached_signature(&wrong_epoch, &key))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused.code, code::APPROVAL_SIGNATURE);
+    assert_eq!(book.head().unwrap(), before);
+}
+
+#[test]
+fn detached_approval_rechecks_key_rotation_and_revocation_between_calls() {
+    for rotate in [false, true] {
+        let (mut book, _, day, source) = certified_fixture();
+        let principal = VId(234);
+        let key = fa_notary::SigningKey::from_seed(&[234; 32]);
+        let next_key = fa_notary::SigningKey::from_seed(&[235; 32]);
+        let owner = Capability::embedded(principal, &["approve"]).unwrap();
+        book.register_principal_key(
+            owner.clone(),
+            &key,
+            None,
+            day,
+            b"detached-changing-key",
+            "Register the detached approver's initial key",
+        )
+        .unwrap()
+        .unwrap();
+        let capability = Capability::new(principal, Profile::Human, &[Op::Approve], VId(1))
+            .unwrap()
+            .holder_bound(possession_digest(&[234; 32]));
+        book.issue_capability(
+            Capability::embedded(VId(1), &["issue_capability", "approve"]).unwrap(),
+            capability.clone(),
+            day,
+            b"detached-changing-authority",
+            "Issue the detached approver's authority",
+        )
+        .unwrap()
+        .unwrap();
+        let proposal = book.read_entry(source).unwrap().unwrap().0.proposal;
+        let digest = proposal.proposal_digest().unwrap();
+        let request = book
+            .prepare_approval_signature(&capability, digest)
+            .unwrap()
+            .unwrap();
+        let signature = detached_signature(&request, &key);
+        if rotate {
+            book.register_principal_key(
+                owner,
+                &next_key,
+                Some(&key),
+                day,
+                b"rotate-before-detached-commit",
+                "Rotate while the client holds a signature request",
+            )
+            .unwrap()
+            .unwrap();
+        } else {
+            book.revoke_capability(
+                Capability::embedded(VId(1), &["issue_capability"]).unwrap(),
+                capability.commitment().unwrap(),
+                day,
+                b"revoke-before-detached-commit",
+                "Revoke while the client holds a signature request",
+            )
+            .unwrap()
+            .unwrap();
+        }
+        let before = book.head().unwrap();
+        let refused = book
+            .approve_detached(capability.clone(), digest, signature)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            refused.code,
+            if rotate {
+                code::APPROVAL_SIGNATURE
+            } else {
+                "FA-REF-023"
+            }
+        );
+        assert_eq!(book.head().unwrap(), before);
+        let refreshed = book
+            .prepare_approval_signature(&capability, digest)
+            .unwrap();
+        if rotate {
+            let refreshed = refreshed.unwrap();
+            assert_eq!(refreshed.generation, 1);
+            assert_eq!(refreshed.public_key, next_key.public_key());
+            assert_eq!(book.head().unwrap(), before);
+            let approved = book
+                .approve_detached(
+                    capability.clone(),
+                    digest,
+                    detached_signature(&refreshed, &next_key),
+                )
+                .unwrap()
+                .unwrap();
+            retained_signed_approval(
+                &book,
+                &approved,
+                &capability,
+                &proposal,
+                1,
+                &next_key.public_key(),
+            );
+        } else {
+            assert_eq!(refreshed.unwrap_err().code, "FA-REF-023");
+            assert_eq!(book.head().unwrap(), before);
+        }
+    }
+}

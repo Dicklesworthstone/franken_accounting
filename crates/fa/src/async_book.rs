@@ -1219,6 +1219,95 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await?)
     }
 
+    /// Prepare the exact public transcript for an approval signed by an
+    /// external client. This performs current approval admission before reading
+    /// the policy epoch or registered signing key and publishes nothing.
+    ///
+    /// The returned body is not an approval or authority. The client must
+    /// compare it with its intended book, principal, capability and proposal
+    /// before signing `fa_policy::principal_key::approval_message` of its
+    /// digest. [`Self::approve_detached`] reconstructs that body and verifies
+    /// the signature against the current registered key at publication.
+    /// Payload-scoped approvals require their ordinary entry/review route;
+    /// an opaque proposal digest cannot establish that scope.
+    pub fn prepare_approval_signature(
+        &self,
+        cx: &PurposeContexts,
+        capability: &fa_journal::Capability,
+        proposal_digest: [u8; 32],
+    ) -> Outcome<crate::book::ApprovalSigningRequest> {
+        self.query(cx, |db, context| {
+            if let Err(refusal) =
+                fa_journal::policy::admit_approval(db, context, capability, None)?
+            {
+                return Ok(Err(refusal));
+            }
+            let chain = fa_journal::read_principal_keys(db, context, capability.holder())?;
+            let Some(current) = chain.last() else {
+                return Ok(Err(fa_journal::Refusal::new(
+                    fa_journal::refusal::code::APPROVAL_SIGNATURE,
+                    fa_journal::refusal::exit::SAFETY,
+                    "the approving principal has no registered signing key",
+                    "plan §14.5 (non-repudiation); fa-kae",
+                    "register the principal's key with fa principal key add --sign-key <key file> before requesting a detached approval signature",
+                )));
+            };
+            let epoch = fa_journal::security_policy_epoch(db)?;
+            let approval = match fa_policy::Approval::by(
+                capability,
+                fa_policy::Op::Approve,
+                context.book_id,
+                proposal_digest,
+                epoch,
+                0,
+            )
+            .map_err(|error| match error {
+                fa_policy::CapabilityError::Encode(error) => KernelError::Model(error.into()),
+                fa_policy::CapabilityError::Decode(error) => KernelError::Model(error.into()),
+                other => KernelError::Corrupt(format!("capability: {other}")),
+            })? {
+                Ok(approval) => approval,
+                Err(denial) => return Ok(Err(fa_journal::policy::refusal(&denial))),
+            };
+            Ok(Ok(crate::book::ApprovalSigningRequest {
+                approval,
+                generation: current.key.generation,
+                key_id: current.key.key_id(),
+                public_key: current.key.public_key,
+            }))
+        })
+    }
+
+    /// Record a client's detached approval signature. No signing key or
+    /// callback is retained on this handle. The native transaction repeats
+    /// authority admission, reconstructs the approval from the supplied
+    /// capability and proposal digest, and verifies it against the current
+    /// policy epoch and registered key before its idempotency lookup.
+    pub async fn approve_detached(
+        &mut self,
+        cx: &PurposeContexts,
+        capability: fa_journal::Capability,
+        proposal_digest: [u8; 32],
+        signature: fa_policy::PrincipalSignature,
+    ) -> Outcome<fa_journal::Approved> {
+        cx.commit().checkpoint().map_err(BookError::Context)?;
+        Ok(fa_journal::record_signed_approval(
+            &mut self.db,
+            cx,
+            &self.context,
+            fa_journal::ApprovalRequest {
+                capability,
+                approved_proposal_digest: proposal_digest,
+                role: 0,
+            },
+            Some(fa_journal::SignedBy {
+                signature,
+                verifier: &crate::book::PRINCIPAL_SIGNATURES,
+            }),
+        )
+        .await?)
+    }
+
     /// Admit an exact entry approval without publishing or reading its
     /// signing key. This checks current authority and the complete payload
     /// scope; recording repeats the checks in the publication transaction.
