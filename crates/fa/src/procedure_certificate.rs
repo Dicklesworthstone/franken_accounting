@@ -1057,6 +1057,8 @@ impl ProcedureCertificate {
                 | "completeness.unrecorded_liabilities"
                 | "graph.circular_flows"
                 | "graph.layering"
+                | "graph.party_circular_flows"
+                | "graph.party_layering"
                 | "ponzi.net_investment"
         ) {
             EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
@@ -1068,7 +1070,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring, circular flows and two-through-eight-hop round trips v2, graph layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense aging v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense aging v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(

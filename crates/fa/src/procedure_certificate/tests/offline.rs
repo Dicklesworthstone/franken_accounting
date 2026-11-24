@@ -27,6 +27,8 @@ mod number_analytics;
 mod open_items_aging;
 #[path = "offline/ordered_trace.rs"]
 mod ordered_trace;
+#[path = "offline/party_graph.rs"]
+mod party_graph;
 #[path = "offline/ponzi.rs"]
 mod ponzi;
 #[path = "offline/portable_graph.rs"]

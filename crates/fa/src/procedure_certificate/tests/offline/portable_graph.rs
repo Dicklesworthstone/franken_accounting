@@ -43,7 +43,7 @@ fn verify_run(
     run
 }
 
-fn omit_posting(produced: &crate::ProducedBundle, digest: [u8; 32]) -> Vec<u8> {
+pub(super) fn omit_posting(produced: &crate::ProducedBundle, digest: [u8; 32]) -> Vec<u8> {
     let bytes = &produced.bundle.bytes;
     let mut reader = Reader::new(bytes);
     reader.bytes(64, "format").unwrap();

@@ -436,7 +436,7 @@ fn decoder_rejects_historical_layering_wrong_versions_cutoffs_and_parameter_rang
                 });
             }
             assert_eq!(
-                decode(&mut Reader::new(&writer.buf), circular)
+                decode(&mut Reader::new(&writer.buf), circular, false)
                     .unwrap_err()
                     .predicate,
                 "procedure_profile"

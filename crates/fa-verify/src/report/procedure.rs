@@ -66,6 +66,7 @@ mod journal_metadata;
 mod libr;
 mod number_analytics;
 mod ordered;
+pub(super) mod party_graph;
 pub(super) mod ponzi;
 mod post_closing;
 mod pro_rata;
@@ -179,6 +180,16 @@ pub enum VerifiedProcedureParameters {
         min_passthrough_bps: u32,
         window_days: u32,
     },
+    GraphPartyCircularFlows {
+        max_hops: u32,
+        min_retention_bps: u32,
+        window_days: u32,
+    },
+    GraphPartyLayering {
+        min_hops: u32,
+        min_passthrough_bps: u32,
+        window_days: u32,
+    },
     TraceLibr {
         intraday_order: u32,
         replenishment: u32,
@@ -257,6 +268,8 @@ impl VerifiedProcedureParameters {
             Self::GraphRoundTrips { .. } => "graph.round_trips",
             Self::GraphCircularFlows { .. } => "graph.circular_flows",
             Self::GraphLayering { .. } => "graph.layering",
+            Self::GraphPartyCircularFlows { .. } => "graph.party_circular_flows",
+            Self::GraphPartyLayering { .. } => "graph.party_layering",
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
@@ -294,6 +307,8 @@ impl VerifiedProcedureParameters {
             Self::GraphRoundTrips { .. } => "FA-EVID-L13",
             Self::GraphCircularFlows { .. } => "FA-EVID-L34",
             Self::GraphLayering { .. } => "FA-EVID-L35",
+            Self::GraphPartyCircularFlows { .. } => "FA-EVID-L67",
+            Self::GraphPartyLayering { .. } => "FA-EVID-L66",
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
@@ -393,12 +408,22 @@ impl VerifiedProcedureParameters {
                 max_hops,
                 min_retention_bps,
                 window_days,
+            }
+            | Self::GraphPartyCircularFlows {
+                max_hops,
+                min_retention_bps,
+                window_days,
             } => vec![
                 ("max_hops", max_hops),
                 ("min_retention_bps", min_retention_bps),
                 ("window_days", window_days),
             ],
             Self::GraphLayering {
+                min_hops,
+                min_passthrough_bps,
+                window_days,
+            }
+            | Self::GraphPartyLayering {
                 min_hops,
                 min_passthrough_bps,
                 window_days,
@@ -537,8 +562,12 @@ impl VerifiedProcedureParameters {
             Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
             Self::GraphStructuring { .. } => &structuring::DEFAULTS,
             Self::GraphRoundTrips { .. } => &round_trips::DEFAULTS,
-            Self::GraphCircularFlows { .. } => &temporal_graph::CIRCULAR_DEFAULTS,
-            Self::GraphLayering { .. } => &temporal_graph::LAYERING_DEFAULTS,
+            Self::GraphCircularFlows { .. } | Self::GraphPartyCircularFlows { .. } => {
+                &temporal_graph::CIRCULAR_DEFAULTS
+            }
+            Self::GraphLayering { .. } | Self::GraphPartyLayering { .. } => {
+                &temporal_graph::LAYERING_DEFAULTS
+            }
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
@@ -591,7 +620,17 @@ impl VerifiedProcedureParameters {
     pub(crate) fn is_temporal_graph(self) -> bool {
         matches!(
             self,
-            Self::GraphCircularFlows { .. } | Self::GraphLayering { .. }
+            Self::GraphCircularFlows { .. }
+                | Self::GraphLayering { .. }
+                | Self::GraphPartyCircularFlows { .. }
+                | Self::GraphPartyLayering { .. }
+        )
+    }
+
+    pub(crate) fn is_party_graph(self) -> bool {
+        matches!(
+            self,
+            Self::GraphPartyCircularFlows { .. } | Self::GraphPartyLayering { .. }
         )
     }
 
@@ -656,7 +695,9 @@ impl VerifiedProcedureParameters {
             }
             Self::GraphRoundTrips { .. }
             | Self::GraphCircularFlows { .. }
-            | Self::GraphLayering { .. } => {
+            | Self::GraphLayering { .. }
+            | Self::GraphPartyCircularFlows { .. }
+            | Self::GraphPartyLayering { .. } => {
                 "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
             }
             Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
@@ -889,6 +930,27 @@ pub enum VerifiedProcedureStatistic {
         mantissa: i128,
         scale: u8,
     },
+    /// A PAID cycle. Hop nodes are historical Party identities, literal
+    /// unknown dimension identities, or zero for the book. An account cite
+    /// exists only when a node is also an authenticated chart account.
+    PartyCircularFlow {
+        hops: Vec<(u128, u128)>,
+        account_citations: BTreeSet<u128>,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
+    /// A PAID pass-through chain with its final destination node.
+    PartyLayeredFlow {
+        hops: Vec<(u128, u128)>,
+        destination: u128,
+        account_citations: BTreeSet<u128>,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -948,8 +1010,8 @@ impl VerifiedProcedureStatistic {
             Self::SplitTotal { .. } => "split_total",
             Self::StructuredTransfers { .. } => "chain_mantissa",
             Self::RoundTrip { .. } | Self::RoundTripCycle { .. } => "round_trip_mantissa",
-            Self::CircularFlow { .. } => "retained_flow_mantissa",
-            Self::LayeredFlow { .. } => "layered_mantissa",
+            Self::CircularFlow { .. } | Self::PartyCircularFlow { .. } => "retained_flow_mantissa",
+            Self::LayeredFlow { .. } | Self::PartyLayeredFlow { .. } => "layered_mantissa",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -982,7 +1044,10 @@ impl VerifiedProcedureStatistic {
             Self::SplitTotal { mantissa, .. } => *mantissa,
             Self::StructuredTransfers { mantissa, .. } => *mantissa,
             Self::RoundTrip { mantissa, .. } | Self::RoundTripCycle { mantissa, .. } => *mantissa,
-            Self::CircularFlow { mantissa, .. } | Self::LayeredFlow { mantissa, .. } => *mantissa,
+            Self::CircularFlow { mantissa, .. }
+            | Self::LayeredFlow { mantissa, .. }
+            | Self::PartyCircularFlow { mantissa, .. }
+            | Self::PartyLayeredFlow { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -1008,10 +1073,30 @@ impl VerifiedProcedureStatistic {
             | Self::RoundTrip { scale, .. }
             | Self::RoundTripCycle { scale, .. }
             | Self::CircularFlow { scale, .. }
-            | Self::LayeredFlow { scale, .. } => *scale,
+            | Self::LayeredFlow { scale, .. }
+            | Self::PartyCircularFlow { scale, .. }
+            | Self::PartyLayeredFlow { scale, .. } => *scale,
             _ => 0,
         }
     }
+}
+
+fn party_citations(
+    hops: &[(u128, u128)],
+    accounts: &BTreeSet<u128>,
+    destination: Option<u128>,
+) -> Vec<(u8, u128)> {
+    let mut citations = Vec::with_capacity(hops.len() * 2 + 1);
+    for &(entry, node) in hops {
+        citations.push((1, entry));
+        if accounts.contains(&node) {
+            citations.push((3, node));
+        }
+    }
+    if let Some(node) = destination.filter(|node| accounts.contains(node)) {
+        citations.push((3, node));
+    }
+    citations
 }
 
 /// One independently reproduced finding. An entry citation, when present,
@@ -1045,6 +1130,23 @@ impl VerifiedProcedureFinding {
             return cites;
         }
         let citations: Vec<(u8, [u8; 16])> = match &self.statistic {
+            VerifiedProcedureStatistic::PartyCircularFlow {
+                hops,
+                account_citations,
+                ..
+            } => party_citations(hops, account_citations, None)
+                .into_iter()
+                .map(|(tag, id)| (tag, id.to_le_bytes()))
+                .collect(),
+            VerifiedProcedureStatistic::PartyLayeredFlow {
+                hops,
+                account_citations,
+                destination,
+                ..
+            } => party_citations(hops, account_citations, Some(*destination))
+                .into_iter()
+                .map(|(tag, id)| (tag, id.to_le_bytes()))
+                .collect(),
             VerifiedProcedureStatistic::InvestorPrincipal {
                 accounts, entries, ..
             } => accounts
@@ -1248,6 +1350,8 @@ pub(super) struct TraceContext {
     /// Complete Party declarations and original dimension lists, only for
     /// the investor profile; no identity is taken from a producer finding.
     pub investors: Option<ponzi::Context>,
+    /// PAID keeps raw party cardinality and its own dimension binding law.
+    pub paid: Option<party_graph::Context>,
 }
 
 #[derive(Clone, Default)]
@@ -1375,6 +1479,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "graph.round_trips" => ("FA-EVID-L13", None),
         "graph.circular_flows" => ("FA-EVID-L34", None),
         "graph.layering" => ("FA-EVID-L35", None),
+        "graph.party_circular_flows" => ("FA-EVID-L67", None),
+        "graph.party_layering" => ("FA-EVID-L66", None),
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
@@ -1385,7 +1491,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring, circular flows and two-through-eight-hop round trips v2, graph layering v3, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1407,6 +1513,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "completeness.unrecorded_liabilities"
                 | "graph.circular_flows"
                 | "graph.layering"
+                | "graph.party_circular_flows"
+                | "graph.party_layering"
                 | "ponzi.net_investment"
         )
     {
@@ -1420,11 +1528,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         || (id == "ponzi.net_investment" && version != 5)
         || (matches!(
             id,
-            "events.subsequent" | "jet.suspense_aging" | "graph.layering"
+            "events.subsequent" | "jet.suspense_aging" | "graph.layering" | "graph.party_layering"
         ) && version != 3)
         || (!matches!(
             id,
-            "events.subsequent" | "jet.suspense_aging" | "graph.layering"
+            "events.subsequent" | "jet.suspense_aging" | "graph.layering" | "graph.party_layering"
         ) && version == 3)
         || (matches!(
             id,
@@ -1450,6 +1558,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "graph.structuring"
                 | "graph.round_trips"
                 | "graph.circular_flows"
+                | "graph.party_circular_flows"
                 | "benford.first_digit"
                 | "benford.second_digit"
                 | "benford.first_two_digits"
@@ -1488,6 +1597,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "graph.round_trips"
                 | "graph.circular_flows"
                 | "graph.layering"
+                | "graph.party_circular_flows"
+                | "graph.party_layering"
         ))
         && effective_through.is_some()
     {
@@ -1524,8 +1635,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         structuring::decode(&mut question)?
     } else if id == "graph.round_trips" {
         round_trips::decode(&mut question)?
-    } else if matches!(id, "graph.circular_flows" | "graph.layering") {
-        temporal_graph::decode(&mut question, id == "graph.circular_flows")?
+    } else if matches!(
+        id,
+        "graph.circular_flows"
+            | "graph.layering"
+            | "graph.party_circular_flows"
+            | "graph.party_layering"
+    ) {
+        temporal_graph::decode(
+            &mut question,
+            matches!(id, "graph.circular_flows" | "graph.party_circular_flows"),
+            matches!(id, "graph.party_circular_flows" | "graph.party_layering"),
+        )?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
     } else if matches!(
@@ -1938,6 +2059,29 @@ fn finding(
                 w.u8(1).u128(*entry).u8(3).u128(*account);
             }
             w.u8(3).u128(*destination);
+        }
+        VerifiedProcedureStatistic::PartyCircularFlow {
+            hops,
+            account_citations,
+            ..
+        } => {
+            let cites = party_citations(hops, account_citations, None);
+            w.count(cites.len());
+            for (tag, identity) in cites {
+                w.u8(tag).u128(identity);
+            }
+        }
+        VerifiedProcedureStatistic::PartyLayeredFlow {
+            hops,
+            account_citations,
+            destination,
+            ..
+        } => {
+            let cites = party_citations(hops, account_citations, Some(*destination));
+            w.count(cites.len());
+            for (tag, identity) in cites {
+                w.u8(tag).u128(identity);
+            }
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
         | VerifiedProcedureStatistic::FirstDigitMad { .. }
@@ -2531,6 +2675,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::GraphRoundTrips { .. }
         | VerifiedProcedureParameters::GraphCircularFlows { .. }
         | VerifiedProcedureParameters::GraphLayering { .. }
+        | VerifiedProcedureParameters::GraphPartyCircularFlows { .. }
+        | VerifiedProcedureParameters::GraphPartyLayering { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -2664,6 +2810,8 @@ fn recompute_version(
             | VerifiedProcedureParameters::GraphRoundTrips { .. }
             | VerifiedProcedureParameters::GraphCircularFlows { .. }
             | VerifiedProcedureParameters::GraphLayering { .. }
+            | VerifiedProcedureParameters::GraphPartyCircularFlows { .. }
+            | VerifiedProcedureParameters::GraphPartyLayering { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
@@ -2810,6 +2958,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::GraphRoundTrips { .. }
         | VerifiedProcedureParameters::GraphCircularFlows { .. }
         | VerifiedProcedureParameters::GraphLayering { .. }
+        | VerifiedProcedureParameters::GraphPartyCircularFlows { .. }
+        | VerifiedProcedureParameters::GraphPartyLayering { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }

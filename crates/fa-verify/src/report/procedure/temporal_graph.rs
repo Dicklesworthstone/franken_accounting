@@ -1,4 +1,4 @@
-//! Independent replay of account circular flows v2 and layering v3.
+//! Independent replay of account and PAID circular flows v2 and layering v3.
 //!
 //! Original posting legs determine the complete unit/entity-partitioned
 //! transfer population. An iterative SCC traversal and bounded reachability
@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     Entry, MAX_FINDINGS, Reader, Registry, ReportError, VerifiedProcedureFinding,
-    VerifiedProcedureParameters, VerifiedProcedureStatistic, failed, structuring, text,
+    VerifiedProcedureParameters, VerifiedProcedureStatistic, failed, party_graph, structuring,
+    text,
 };
 
 pub(super) const CIRCULAR_DEFAULTS: [(&str, u32); 3] = [
@@ -50,6 +51,7 @@ fn invalid(message: &str) -> ReportError {
 pub(super) fn decode(
     reader: &mut Reader<'_>,
     circular: bool,
+    parties: bool,
 ) -> Result<VerifiedProcedureParameters, ReportError> {
     let defaults = if circular {
         &CIRCULAR_DEFAULTS
@@ -74,7 +76,19 @@ pub(super) fn decode(
     if !(2..=8).contains(&values[0]) {
         return Err(invalid("temporal graph hop bounds must be in 2..=8"));
     }
-    Ok(if circular {
+    Ok(if circular && parties {
+        VerifiedProcedureParameters::GraphPartyCircularFlows {
+            max_hops: values[0],
+            min_retention_bps: values[1],
+            window_days: values[2],
+        }
+    } else if parties {
+        VerifiedProcedureParameters::GraphPartyLayering {
+            min_hops: values[0],
+            min_passthrough_bps: values[1],
+            window_days: values[2],
+        }
+    } else if circular {
         VerifiedProcedureParameters::GraphCircularFlows {
             max_hops: values[0],
             min_retention_bps: values[1],
@@ -134,6 +148,29 @@ fn charge(comparisons: &mut u64, count: usize) -> Result<(), ReportError> {
 }
 
 type Transfer = structuring::Transfer;
+
+struct Nodes<'a> {
+    parties: Option<&'a party_graph::Context>,
+    accounts: &'a BTreeMap<u128, u8>,
+}
+
+impl Nodes<'_> {
+    fn through(&self, legs: &[&Transfer], path: &[usize]) -> String {
+        let Some(parties) = self.parties else {
+            return String::new();
+        };
+        let mut names = vec![parties.label(legs[path[0]].from)];
+        names.extend(path.iter().map(|&index| parties.label(legs[index].to)));
+        format!(" through parties {}", names.join(" -> "))
+    }
+
+    fn account_citations(&self, legs: &[&Transfer], path: &[usize]) -> BTreeSet<u128> {
+        path.iter()
+            .flat_map(|&index| [legs[index].from, legs[index].to])
+            .filter(|node| self.accounts.contains_key(node))
+            .collect()
+    }
+}
 
 struct Graph {
     index: BTreeMap<u128, usize>,
@@ -293,6 +330,7 @@ fn push(
 #[allow(clippy::too_many_arguments)]
 fn circular(
     legs: &[&Transfer],
+    nodes: &Nodes<'_>,
     max_hops: usize,
     minimum: i128,
     window: i64,
@@ -370,24 +408,38 @@ fn circular(
             }
             let retention = basis_points(retained, first.amount)?;
             let proof = witness(legs, &path);
+            let through = nodes.through(legs, &path);
+            let hops = path
+                .iter()
+                .map(|&i| (legs[i].entry, legs[i].from))
+                .collect();
+            let statistic = if nodes.parties.is_some() {
+                VerifiedProcedureStatistic::PartyCircularFlow {
+                    hops,
+                    account_citations: nodes.account_citations(legs, &path),
+                    unit: first.unit,
+                    entity: first.entity,
+                    mantissa: retained,
+                    scale,
+                }
+            } else {
+                VerifiedProcedureStatistic::CircularFlow {
+                    hops,
+                    unit: first.unit,
+                    entity: first.entity,
+                    mantissa: retained,
+                    scale,
+                }
+            };
             push(
                 findings,
                 VerifiedProcedureFinding {
                     entry: None,
                     severity: 3,
-                    statistic: VerifiedProcedureStatistic::CircularFlow {
-                        hops: path
-                            .iter()
-                            .map(|&i| (legs[i].entry, legs[i].from))
-                            .collect(),
-                        unit: first.unit,
-                        entity: first.entity,
-                        mantissa: retained,
-                        scale,
-                    },
+                    statistic,
                     population,
                     narrative: format!(
-                        "{}-hop directed cycle in SCC retaining {retained} of {} ({retention} bps, cgse_witness={proof})",
+                        "{}-hop directed cycle in SCC retaining {retained} of {}{through} ({retention} bps, cgse_witness={proof})",
                         path.len(),
                         first.amount
                     ),
@@ -401,6 +453,7 @@ fn circular(
 #[allow(clippy::too_many_arguments)]
 fn layering(
     legs: &[&Transfer],
+    nodes: &Nodes<'_>,
     graph: &Graph,
     min_hops: usize,
     minimum: i128,
@@ -463,25 +516,40 @@ fn layering(
                 used[index] = true;
             }
             let proof = witness(legs, &path);
+            let through = nodes.through(legs, &path);
+            let hops = path
+                .iter()
+                .map(|&i| (legs[i].entry, legs[i].from))
+                .collect();
+            let statistic = if nodes.parties.is_some() {
+                VerifiedProcedureStatistic::PartyLayeredFlow {
+                    hops,
+                    destination: legs[last].to,
+                    account_citations: nodes.account_citations(legs, &path),
+                    unit: first.unit,
+                    entity: first.entity,
+                    mantissa: minimum_amount,
+                    scale,
+                }
+            } else {
+                VerifiedProcedureStatistic::LayeredFlow {
+                    hops,
+                    destination: legs[last].to,
+                    unit: first.unit,
+                    entity: first.entity,
+                    mantissa: minimum_amount,
+                    scale,
+                }
+            };
             push(
                 findings,
                 VerifiedProcedureFinding {
                     entry: None,
                     severity: 3,
-                    statistic: VerifiedProcedureStatistic::LayeredFlow {
-                        hops: path
-                            .iter()
-                            .map(|&i| (legs[i].entry, legs[i].from))
-                            .collect(),
-                        destination: legs[last].to,
-                        unit: first.unit,
-                        entity: first.entity,
-                        mantissa: minimum_amount,
-                        scale,
-                    },
+                    statistic,
                     population,
                     narrative: format!(
-                        "{}-hop pass-through chain forwarding {minimum_amount} of {} within {window} day(s) (cgse_witness={proof})",
+                        "{}-hop pass-through chain forwarding {minimum_amount} of {} within {window} day(s){through} (cgse_witness={proof})",
                         path.len(),
                         first.amount
                     ),
@@ -497,12 +565,26 @@ pub(super) fn replay(
     live: &[&Entry],
     registry: &Registry,
 ) -> Result<(Vec<VerifiedProcedureFinding>, u64, u64), ReportError> {
-    let transfers = structuring::flow(live, registry)?;
+    let parties = profile.is_party_graph();
+    let transfers = if parties {
+        party_graph::flow(live, registry)?
+    } else {
+        structuring::flow(live, registry)?
+    };
+    let nodes = Nodes {
+        parties: if parties {
+            Some(party_graph::context(registry)?)
+        } else {
+            None
+        },
+        accounts: &registry.account_types,
+    };
     let population = transfers.len() as u64;
     let mut partitions: BTreeMap<_, Vec<&Transfer>> = BTreeMap::new();
     for transfer in &transfers {
-        if !registry.account_types.contains_key(&transfer.from)
-            || !registry.account_types.contains_key(&transfer.to)
+        if !parties
+            && (!registry.account_types.contains_key(&transfer.from)
+                || !registry.account_types.contains_key(&transfer.to))
         {
             return Err(invalid(
                 "temporal graph accounts lack authenticated declarations",
@@ -531,6 +613,11 @@ pub(super) fn replay(
                 max_hops,
                 min_retention_bps,
                 window_days,
+            }
+            | VerifiedProcedureParameters::GraphPartyCircularFlows {
+                max_hops,
+                min_retention_bps,
+                window_days,
             } => {
                 let (components, sizes) = graph.components(&mut budget)?;
                 let mut by_component: BTreeMap<_, Vec<&Transfer>> = BTreeMap::new();
@@ -544,6 +631,7 @@ pub(super) fn replay(
                 for legs in by_component.into_values() {
                     circular(
                         &legs,
+                        &nodes,
                         max_hops as usize,
                         i128::from(min_retention_bps),
                         i64::from(window_days),
@@ -559,9 +647,15 @@ pub(super) fn replay(
                 min_hops,
                 min_passthrough_bps,
                 window_days,
+            }
+            | VerifiedProcedureParameters::GraphPartyLayering {
+                min_hops,
+                min_passthrough_bps,
+                window_days,
             } => {
                 layering(
                     &legs,
+                    &nodes,
                     &graph,
                     min_hops as usize,
                     i128::from(min_passthrough_bps),
@@ -573,7 +667,7 @@ pub(super) fn replay(
                     &mut budget,
                 )?;
             }
-            _ => return Err(invalid("expected an account temporal graph procedure")),
+            _ => return Err(invalid("expected a temporal graph procedure")),
         }
     }
     Ok((findings, population, comparisons))

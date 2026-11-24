@@ -105,6 +105,17 @@ pub(super) fn decode(reader: &mut Reader<'_>) -> Result<VerifiedProcedureParamet
 }
 
 pub(super) fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>, ReportError> {
+    projected_flow(live, registry, true, |_, _, account| account)
+}
+
+/// Allocate original legs after selecting their projection nodes. Account and
+/// PAID flows share the same independent exact, two-margin allocation law.
+pub(super) fn projected_flow(
+    live: &[&Entry],
+    registry: &Registry,
+    self_flows: bool,
+    node: impl Fn(&Entry, usize, u128) -> u128,
+) -> Result<Vec<Transfer>, ReportError> {
     let context = registry
         .trace
         .as_ref()
@@ -134,11 +145,12 @@ pub(super) fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>
             .ok_or_else(|| invalid("a money-flow posting has no effective date"))?;
         let facts = &context.entries[&entry.identity];
         let mut partitions: BTreeMap<(u32, Option<u128>), Sides> = BTreeMap::new();
-        for ((&(unit, amount), &(account, debit)), entities) in entry
+        for (index, ((&(unit, amount), &(account, debit)), entities)) in entry
             .legs
             .iter()
             .zip(&entry.leg_accounts)
             .zip(&facts.entities)
+            .enumerate()
         {
             if amount < 0 {
                 return Err(invalid("a money-flow leg has a negative magnitude"));
@@ -153,6 +165,7 @@ pub(super) fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>
                 named_entities.first().copied()
             };
             let sides = partitions.entry((unit, entity)).or_default();
+            let account = node(entry, index, account);
             if debit {
                 sides.1.push((account, amount));
             } else {
@@ -192,7 +205,7 @@ pub(super) fn flow(live: &[&Entry], registry: &Registry) -> Result<Vec<Transfer>
                         .checked_sub(share)
                         .filter(|capacity| *capacity >= 0)
                         .ok_or_else(arithmetic)?;
-                    if share != 0 {
+                    if share != 0 && (self_flows || from != debits[index].0) {
                         transfers.push(Transfer {
                             entry: entry.identity,
                             recorded: entry.recorded_at,

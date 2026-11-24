@@ -126,6 +126,8 @@ pub fn profile(
         ("graph.round_trips", 2) => ("FA-EVID-L13", GRAPH_ROUND_TRIPS),
         ("graph.circular_flows", 2) => ("FA-EVID-L34", GRAPH_CIRCULAR_FLOWS),
         ("graph.layering", 3) => ("FA-EVID-L35", GRAPH_LAYERING),
+        ("graph.party_circular_flows", 2) => ("FA-EVID-L67", GRAPH_CIRCULAR_FLOWS),
+        ("graph.party_layering", 3) => ("FA-EVID-L66", GRAPH_LAYERING),
         ("benford.first_digit", 2) => ("FA-EVID-L10", BENFORD),
         ("benford.second_digit", 2) => ("FA-EVID-L30", BENFORD),
         ("benford.first_two_digits", 2) => ("FA-EVID-L31", BENFORD),
@@ -194,7 +196,7 @@ mod tests {
     type ProfileCase<'a> = (&'a str, u16, &'a [(&'a str, i128)], &'a str);
 
     #[test]
-    fn temporal_graph_profiles_bind_exact_versions_complete_parameters_and_account_scope() {
+    fn temporal_graph_profiles_bind_exact_versions_complete_parameters_and_whole_book_scope() {
         for (id, version, hop_name, ratio_name, evidence) in [
             (
                 "graph.circular_flows",
@@ -209,6 +211,20 @@ mod tests {
                 "min_hops",
                 "min_passthrough_bps",
                 "FA-EVID-L35",
+            ),
+            (
+                "graph.party_circular_flows",
+                2,
+                "max_hops",
+                "min_retention_bps",
+                "FA-EVID-L67",
+            ),
+            (
+                "graph.party_layering",
+                3,
+                "min_hops",
+                "min_passthrough_bps",
+                "FA-EVID-L66",
             ),
         ] {
             for hops in [2, 3, 8] {
@@ -247,11 +263,10 @@ mod tests {
                 invalid[index].1 = value;
                 assert_eq!(profile(id, version, None, &invalid, &[]), None);
             }
-            let party_id = id.replacen("graph.", "graph.party_", 1);
             assert_eq!(
-                profile(&party_id, version, None, &parameters, &[]),
+                profile(id, version, None, &parameters, &[("party", "A")]),
                 None,
-                "account-flow replay does not claim party projection verification"
+                "a producer cannot narrow the authenticated party population"
             );
         }
     }

@@ -2454,6 +2454,8 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::RoundTripCycle { .. }
                 | crate::report::VerifiedProcedureStatistic::CircularFlow { .. }
                 | crate::report::VerifiedProcedureStatistic::LayeredFlow { .. }
+                | crate::report::VerifiedProcedureStatistic::PartyCircularFlow { .. }
+                | crate::report::VerifiedProcedureStatistic::PartyLayeredFlow { .. }
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
@@ -2835,6 +2837,50 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 } = &finding.statistic
                 {
                     details.push(("destination_account", s(format!("{destination:032x}"))));
+                }
+            }
+            crate::report::VerifiedProcedureStatistic::PartyCircularFlow {
+                hops,
+                unit,
+                entity,
+                ..
+            }
+            | crate::report::VerifiedProcedureStatistic::PartyLayeredFlow {
+                hops,
+                unit,
+                entity,
+                ..
+            } => {
+                details.extend([
+                    ("hop_count", n(hops.len() as u64)),
+                    ("unit", n(u64::from(*unit))),
+                    (
+                        "legal_entity",
+                        entity.map_or(Json::Null, |entity| s(format!("{entity:032x}"))),
+                    ),
+                    (
+                        "entries",
+                        Json::List(
+                            hops.iter()
+                                .map(|(entry, _)| s(format!("{entry:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "party_nodes",
+                        Json::List(
+                            hops.iter()
+                                .map(|(_, party)| s(format!("{party:032x}")))
+                                .collect(),
+                        ),
+                    ),
+                ]);
+                if let crate::report::VerifiedProcedureStatistic::PartyLayeredFlow {
+                    destination,
+                    ..
+                } = &finding.statistic
+                {
+                    details.push(("destination_party_node", s(format!("{destination:032x}"))));
                 }
             }
             crate::report::VerifiedProcedureStatistic::AccountPairOccurrences {

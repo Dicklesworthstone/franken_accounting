@@ -1701,7 +1701,25 @@ The circular-flow profile accepts `max_hops` (2 through 8),
 the certificate. Both profiles use the complete population at the saved
 recorded frontier, including reversal and replacement liveness, and take no
 effective-date cutoff or external input handles. Earlier algorithm versions
-and party-projected variants remain outside these portable profiles.
+remain outside these portable profiles.
+
+`graph.party_circular_flows` v2 and `graph.party_layering` v3 export the
+corresponding counterparty analyses with the same parameter inventories and
+resource bounds. These can reveal party cycles and pass-through chains whose
+legs all use a shared clearing account. The independent verifier reconstructs
+the PAID projection from each original leg's party dimensions and the
+historical Party declarations. Exactly one raw party tag identifies a node;
+missing or multiple tags identify the book. Known dimension identities map
+to their declared parties; undeclared identities remain literal nodes.
+
+Projection occurs before exact transfer allocation, and self-transfers are
+removed only after consuming their original capacity. Replay checks the
+historical party labels, ordered entry citations, retained amounts, complete
+population and work counts. Units and legal entities remain separate. These
+profiles likewise require the complete authenticated population at the saved
+frontier, accept no effective-date cutoff or external handles, and refuse the
+whole result on exhausted traversal bounds. A reproduced party motif is an
+analytical finding; it does not establish beneficial ownership or wrongdoing.
 
 ```bash
 fa procedure run graph.circular_flows@2 --certificate-out circular-flows.cert \

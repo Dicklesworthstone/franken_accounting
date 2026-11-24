@@ -38,6 +38,7 @@ impl Population {
                         aliases: BTreeMap::from([(110, 10), (120, 20), (130, 30)]),
                         legs: BTreeMap::new(),
                     }),
+                    paid: None,
                 }),
                 open_items: None,
                 policy_oid: [7; 32],

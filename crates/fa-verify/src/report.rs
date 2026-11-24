@@ -2225,6 +2225,10 @@ fn verify_report_with_native_subledger_input(
                             .parameters
                             .is_investor()
                             .then(procedure::ponzi::Context::default),
+                        paid: request
+                            .parameters
+                            .is_party_graph()
+                            .then(procedure::party_graph::Context::default),
                     });
             if let Some(investors) = tracing
                 .as_mut()
@@ -2233,6 +2237,13 @@ fn verify_report_with_native_subledger_input(
                 for info in infos.values() {
                     if let Some((5, body)) = info.schema {
                         investors.declare(&cert.book, body)?;
+                    }
+                }
+            }
+            if let Some(parties) = tracing.as_mut().and_then(|context| context.paid.as_mut()) {
+                for info in infos.values() {
+                    if let Some((5, body)) = info.schema {
+                        parties.declare(&cert.book, body)?;
                     }
                 }
             }
@@ -2337,6 +2348,15 @@ fn verify_report_with_native_subledger_input(
                         );
                     }
                     if let Some(context) = &mut tracing {
+                        if let Some(parties) = &mut context.paid {
+                            parties.legs.insert(
+                                info.identity,
+                                details.iter().map(|leg| {
+                                    leg.dimensions.iter().filter(|(kind, _)| *kind == 12)
+                                        .map(|(_, party)| *party).collect()
+                                }).collect(),
+                            );
+                        }
                         if let Some(investors) = &mut context.investors {
                             investors.legs.insert(info.identity, details.iter().map(|leg| {
                                 leg.dimensions.iter().filter(|(kind, _)| *kind == 12)

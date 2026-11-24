@@ -550,6 +550,8 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "completeness.unrecorded_liabilities"
                     | "graph.circular_flows"
                     | "graph.layering"
+                    | "graph.party_circular_flows"
+                    | "graph.party_layering"
                     | "ponzi.net_investment"
             )
         {
@@ -1291,6 +1293,26 @@ mod format_tests {
                 "graph.layering",
                 3,
                 "FA-EVID-L35",
+                vec![
+                    ("min_hops", 3),
+                    ("min_passthrough_bps", 8000),
+                    ("window_days", 30),
+                ],
+            ),
+            (
+                "graph.party_circular_flows",
+                2,
+                "FA-EVID-L67",
+                vec![
+                    ("max_hops", 6),
+                    ("min_retention_bps", 8500),
+                    ("window_days", 30),
+                ],
+            ),
+            (
+                "graph.party_layering",
+                3,
+                "FA-EVID-L66",
                 vec![
                     ("min_hops", 3),
                     ("min_passthrough_bps", 8000),
