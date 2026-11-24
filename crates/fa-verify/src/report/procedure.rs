@@ -72,6 +72,7 @@ mod pro_rata;
 mod round_density;
 mod round_trips;
 mod structuring;
+mod temporal_graph;
 mod unusual_accounts;
 pub(super) use post_closing::period_transitions;
 
@@ -168,6 +169,16 @@ pub enum VerifiedProcedureParameters {
         period_end_days: u32,
         window_days: u32,
     },
+    GraphCircularFlows {
+        max_hops: u32,
+        min_retention_bps: u32,
+        window_days: u32,
+    },
+    GraphLayering {
+        min_hops: u32,
+        min_passthrough_bps: u32,
+        window_days: u32,
+    },
     TraceLibr {
         intraday_order: u32,
         replenishment: u32,
@@ -244,6 +255,8 @@ impl VerifiedProcedureParameters {
             Self::ThresholdSplitting { .. } => "numbers.threshold_splitting",
             Self::GraphStructuring { .. } => "graph.structuring",
             Self::GraphRoundTrips { .. } => "graph.round_trips",
+            Self::GraphCircularFlows { .. } => "graph.circular_flows",
+            Self::GraphLayering { .. } => "graph.layering",
             Self::TraceLibr { .. } => "trace.libr",
             Self::TraceFifo { .. } => "trace.fifo",
             Self::TraceLifo { .. } => "trace.lifo",
@@ -279,6 +292,8 @@ impl VerifiedProcedureParameters {
             Self::ThresholdSplitting { .. } => "FA-EVID-L33",
             Self::GraphStructuring { .. } => "FA-EVID-L14",
             Self::GraphRoundTrips { .. } => "FA-EVID-L13",
+            Self::GraphCircularFlows { .. } => "FA-EVID-L34",
+            Self::GraphLayering { .. } => "FA-EVID-L35",
             Self::TraceLibr { .. } => "FA-EVID-L15",
             Self::TraceFifo { .. } => "FA-EVID-L16",
             Self::TraceLifo { .. } => "FA-EVID-L17",
@@ -372,6 +387,24 @@ impl VerifiedProcedureParameters {
                 ("max_hops", max_hops),
                 ("max_search_steps", max_search_steps),
                 ("period_end_days", period_end_days),
+                ("window_days", window_days),
+            ],
+            Self::GraphCircularFlows {
+                max_hops,
+                min_retention_bps,
+                window_days,
+            } => vec![
+                ("max_hops", max_hops),
+                ("min_retention_bps", min_retention_bps),
+                ("window_days", window_days),
+            ],
+            Self::GraphLayering {
+                min_hops,
+                min_passthrough_bps,
+                window_days,
+            } => vec![
+                ("min_hops", min_hops),
+                ("min_passthrough_bps", min_passthrough_bps),
                 ("window_days", window_days),
             ],
             Self::ThresholdSplitting {
@@ -504,6 +537,8 @@ impl VerifiedProcedureParameters {
             Self::ThresholdSplitting { .. } => &number_analytics::SPLIT_DEFAULTS,
             Self::GraphStructuring { .. } => &structuring::DEFAULTS,
             Self::GraphRoundTrips { .. } => &round_trips::DEFAULTS,
+            Self::GraphCircularFlows { .. } => &temporal_graph::CIRCULAR_DEFAULTS,
+            Self::GraphLayering { .. } => &temporal_graph::LAYERING_DEFAULTS,
             Self::TraceLibr { .. } => &libr::DEFAULTS,
             Self::TraceFifo { .. } | Self::TraceLifo { .. } => &ordered::DEFAULTS,
             Self::TraceProRata { .. } => &pro_rata::DEFAULTS,
@@ -544,12 +579,20 @@ impl VerifiedProcedureParameters {
 
     pub(crate) fn uses_leg_entities(self) -> bool {
         self.is_trace()
+            || self.is_temporal_graph()
             || matches!(
                 self,
                 Self::GraphStructuring { .. }
                     | Self::GraphRoundTrips { .. }
                     | Self::PonziNetInvestment { .. }
             )
+    }
+
+    pub(crate) fn is_temporal_graph(self) -> bool {
+        matches!(
+            self,
+            Self::GraphCircularFlows { .. } | Self::GraphLayering { .. }
+        )
     }
 
     pub(crate) fn is_number_analytics(self) -> bool {
@@ -611,7 +654,9 @@ impl VerifiedProcedureParameters {
             Self::GraphStructuring { .. } => {
                 "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs)"
             }
-            Self::GraphRoundTrips { .. } => {
+            Self::GraphRoundTrips { .. }
+            | Self::GraphCircularFlows { .. }
+            | Self::GraphLayering { .. } => {
                 "O(posting_legs log posting_legs + allocation_cells log debit_legs + flow_legs log flow_legs + max_search_steps * max_hops)"
             }
             Self::FirstDigit { .. } | Self::SecondDigit { .. } | Self::FirstTwoDigits { .. } => {
@@ -825,6 +870,25 @@ pub enum VerifiedProcedureStatistic {
         mantissa: i128,
         scale: u8,
     },
+    /// A chronological SCC cycle with its exact bottleneck flow. Citations
+    /// alternate the original entry and source account for every hop.
+    CircularFlow {
+        hops: Vec<(u128, u128)>,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
+    /// An acyclic chronological pass-through chain, including its final
+    /// destination account after the alternating entry/source citations.
+    LayeredFlow {
+        hops: Vec<(u128, u128)>,
+        destination: u128,
+        unit: u32,
+        entity: Option<u128>,
+        mantissa: i128,
+        scale: u8,
+    },
     /// Below the requested minimum, only the population is scored.
     FirstDigitPopulation {
         counts: [u64; 9],
@@ -884,6 +948,8 @@ impl VerifiedProcedureStatistic {
             Self::SplitTotal { .. } => "split_total",
             Self::StructuredTransfers { .. } => "chain_mantissa",
             Self::RoundTrip { .. } | Self::RoundTripCycle { .. } => "round_trip_mantissa",
+            Self::CircularFlow { .. } => "retained_flow_mantissa",
+            Self::LayeredFlow { .. } => "layered_mantissa",
             Self::FirstDigitPopulation { .. } | Self::DigitPopulation { .. } => "population",
             Self::FirstDigitMad { .. } | Self::DigitMad { .. } => "mad",
         }
@@ -916,6 +982,7 @@ impl VerifiedProcedureStatistic {
             Self::SplitTotal { mantissa, .. } => *mantissa,
             Self::StructuredTransfers { mantissa, .. } => *mantissa,
             Self::RoundTrip { mantissa, .. } | Self::RoundTripCycle { mantissa, .. } => *mantissa,
+            Self::CircularFlow { mantissa, .. } | Self::LayeredFlow { mantissa, .. } => *mantissa,
             Self::FirstDigitPopulation { counts } => {
                 counts.iter().map(|&count| i128::from(count)).sum()
             }
@@ -939,7 +1006,9 @@ impl VerifiedProcedureStatistic {
             | Self::SplitTotal { scale, .. }
             | Self::StructuredTransfers { scale, .. }
             | Self::RoundTrip { scale, .. }
-            | Self::RoundTripCycle { scale, .. } => *scale,
+            | Self::RoundTripCycle { scale, .. }
+            | Self::CircularFlow { scale, .. }
+            | Self::LayeredFlow { scale, .. } => *scale,
             _ => 0,
         }
     }
@@ -1027,10 +1096,23 @@ impl VerifiedProcedureFinding {
                 (3, from.to_le_bytes()),
                 (3, to.to_le_bytes()),
             ],
-            VerifiedProcedureStatistic::RoundTripCycle { hops, .. } => hops
+            VerifiedProcedureStatistic::RoundTripCycle { hops, .. }
+            | VerifiedProcedureStatistic::CircularFlow { hops, .. } => hops
                 .iter()
                 .flat_map(|(entry, account)| [(1, entry.to_le_bytes()), (3, account.to_le_bytes())])
                 .collect(),
+            VerifiedProcedureStatistic::LayeredFlow {
+                hops, destination, ..
+            } => {
+                let mut citations: Vec<_> = hops
+                    .iter()
+                    .flat_map(|(entry, account)| {
+                        [(1, entry.to_le_bytes()), (3, account.to_le_bytes())]
+                    })
+                    .collect();
+                citations.push((3, destination.to_le_bytes()));
+                citations
+            }
             VerifiedProcedureStatistic::StructuredTransfers {
                 from, to, entries, ..
             } => {
@@ -1291,6 +1373,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "numbers.threshold_splitting" => ("FA-EVID-L33", None),
         "graph.structuring" => ("FA-EVID-L14", None),
         "graph.round_trips" => ("FA-EVID-L13", None),
+        "graph.circular_flows" => ("FA-EVID-L34", None),
+        "graph.layering" => ("FA-EVID-L35", None),
         "trace.libr" => ("FA-EVID-L15", None),
         "trace.fifo" => ("FA-EVID-L16", None),
         "trace.lifo" => ("FA-EVID-L17", None),
@@ -1301,7 +1385,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         _ => {
             return Err(failed(
                 "procedure_profile",
-                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
+                "supported statistical profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense aging v3, expense capitalization v2, authenticated-period cutoff v1, unrecorded-liability and unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring, circular flows and two-through-eight-hop round trips v2, graph layering v3, Benford digit profiles v2, posted-principal net investment v5, and one-account LIBR/FIFO/LIFO/pro-rata v2",
             ));
         }
     };
@@ -1321,6 +1405,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "numbers.relative_size_factor"
                 | "numbers.threshold_splitting"
                 | "completeness.unrecorded_liabilities"
+                | "graph.circular_flows"
+                | "graph.layering"
                 | "ponzi.net_investment"
         )
     {
@@ -1332,8 +1418,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     let version = question.u16("procedure.version")?;
     if !(matches!(version, 1..=3) || (id == "ponzi.net_investment" && version == 5))
         || (id == "ponzi.net_investment" && version != 5)
-        || (matches!(id, "events.subsequent" | "jet.suspense_aging") && version != 3)
-        || (!matches!(id, "events.subsequent" | "jet.suspense_aging") && version == 3)
+        || (matches!(
+            id,
+            "events.subsequent" | "jet.suspense_aging" | "graph.layering"
+        ) && version != 3)
+        || (!matches!(
+            id,
+            "events.subsequent" | "jet.suspense_aging" | "graph.layering"
+        ) && version == 3)
         || (matches!(
             id,
             "jet.post_closing"
@@ -1357,6 +1449,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
+                | "graph.circular_flows"
                 | "benford.first_digit"
                 | "benford.second_digit"
                 | "benford.first_two_digits"
@@ -1393,6 +1486,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "completeness.unrecorded_liabilities"
                 | "graph.structuring"
                 | "graph.round_trips"
+                | "graph.circular_flows"
+                | "graph.layering"
         ))
         && effective_through.is_some()
     {
@@ -1429,6 +1524,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         structuring::decode(&mut question)?
     } else if id == "graph.round_trips" {
         round_trips::decode(&mut question)?
+    } else if matches!(id, "graph.circular_flows" | "graph.layering") {
+        temporal_graph::decode(&mut question, id == "graph.circular_flows")?
     } else if id == "jet.unusual_accounts" {
         unusual_accounts::decode(&mut question)?
     } else if matches!(
@@ -1826,11 +1923,21 @@ fn finding(
                 .u8(3)
                 .u128(*to);
         }
-        VerifiedProcedureStatistic::RoundTripCycle { hops, .. } => {
+        VerifiedProcedureStatistic::RoundTripCycle { hops, .. }
+        | VerifiedProcedureStatistic::CircularFlow { hops, .. } => {
             w.count(hops.len() * 2);
             for (entry, account) in hops {
                 w.u8(1).u128(*entry).u8(3).u128(*account);
             }
+        }
+        VerifiedProcedureStatistic::LayeredFlow {
+            hops, destination, ..
+        } => {
+            w.count(hops.len() * 2 + 1);
+            for (entry, account) in hops {
+                w.u8(1).u128(*entry).u8(3).u128(*account);
+            }
+            w.u8(3).u128(*destination);
         }
         VerifiedProcedureStatistic::FirstDigitPopulation { .. }
         | VerifiedProcedureStatistic::FirstDigitMad { .. }
@@ -2422,6 +2529,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::GraphStructuring { .. }
         | VerifiedProcedureParameters::GraphRoundTrips { .. }
+        | VerifiedProcedureParameters::GraphCircularFlows { .. }
+        | VerifiedProcedureParameters::GraphLayering { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }
@@ -2553,6 +2662,8 @@ fn recompute_version(
             | VerifiedProcedureParameters::ThresholdSplitting { .. }
             | VerifiedProcedureParameters::GraphStructuring { .. }
             | VerifiedProcedureParameters::GraphRoundTrips { .. }
+            | VerifiedProcedureParameters::GraphCircularFlows { .. }
+            | VerifiedProcedureParameters::GraphLayering { .. }
             | VerifiedProcedureParameters::TraceLibr { .. }
             | VerifiedProcedureParameters::TraceFifo { .. }
             | VerifiedProcedureParameters::TraceLifo { .. }
@@ -2631,6 +2742,10 @@ fn recompute_version(
         (findings, live_legs, comparisons) =
             round_trips::replay(profile, &grouped_population, registry)?;
         live_entries = 0;
+    } else if profile.is_temporal_graph() {
+        (findings, live_legs, comparisons) =
+            temporal_graph::replay(profile, &grouped_population, registry)?;
+        live_entries = 0;
     } else if matches!(profile, VerifiedProcedureParameters::TraceLibr { .. }) {
         let (finding, legs, compared) =
             libr::replay(profile, effective_through, &grouped_population, registry)?;
@@ -2693,6 +2808,8 @@ fn recompute_version(
         | VerifiedProcedureParameters::ThresholdSplitting { .. }
         | VerifiedProcedureParameters::GraphStructuring { .. }
         | VerifiedProcedureParameters::GraphRoundTrips { .. }
+        | VerifiedProcedureParameters::GraphCircularFlows { .. }
+        | VerifiedProcedureParameters::GraphLayering { .. }
         | VerifiedProcedureParameters::TraceLibr { .. }
         | VerifiedProcedureParameters::TraceFifo { .. }
         | VerifiedProcedureParameters::TraceLifo { .. }

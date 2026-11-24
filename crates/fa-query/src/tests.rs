@@ -1042,6 +1042,132 @@ fn an_aggregate_over_an_amount_alias_is_computed_exactly() {
     assert!(r.message.contains("adds amounts of every unit"), "{r:?}");
 }
 
+/// Containers must not erase the amount type between WITH and an aggregate.
+/// Until the profile proves a field's provenance, it must refuse the carrier,
+/// rather than run native MAX/MIN and silently skip an unmirrored amount.
+#[test]
+fn amount_containers_cannot_bypass_the_exact_aggregation_boundary() {
+    for source in ["MATCH (l:Leg)", "MATCH (l:Leg {unit_id: 1})"] {
+        for suffix in [
+            "WITH {value: l.amount} AS row RETURN MAX(row.value)",
+            "WITH l{value: l.amount} AS row RETURN MAX(row.value)",
+            "WITH l{.amount} AS row RETURN MAX(row.amount)",
+            "WITH {body: {value: l.amount}} AS row RETURN MIN(row.body.value)",
+            "WITH [l.amount] AS values UNWIND values AS value RETURN MAX(value)",
+            "WITH [{value: l.amount}] AS rows UNWIND rows AS row RETURN MAX(row.value)",
+            "WITH [l.amount][0] AS value RETURN MAX(value)",
+            "WITH l{.*} AS row RETURN MAX(row.value)",
+            "RETURN MAX(l{.*})",
+            "RETURN MAX(l{.*}.amount)",
+            "RETURN l{.*} AS row ORDER BY row.value",
+            "WITH {value: l.amount} AS row WITH row.value AS value RETURN MAX(value)",
+            "RETURN {value: l.amount} AS row ORDER BY row.value",
+            "WITH {value: l.amount} AS IN RETURN MAX(IN.value)",
+            "WITH {value: l.amount} = {value: 1} AS result RETURN result",
+            "RETURN {value: l.amount} = {value: 1} AS result",
+            "RETURN [l.amount] = [1] AS result",
+            "RETURN {result: {value: l.amount} = {value: 1}}",
+        ] {
+            let query = format!("{source} {suffix}");
+            let r = refused(&query);
+            assert_eq!(r.law, Law::Amount, "{query}: {r:?}");
+        }
+    }
+    // A nested property name is still an amount, not an untyped native value.
+    let query = "MATCH (l:Leg) WITH {leg: l} AS row RETURN MAX(row.leg.amount)";
+    assert_eq!(refused(query).law, Law::Amount);
+    let query = "MATCH (l:Leg) WITH {leg: l, unit_id: 1} AS row WHERE row.unit_id = 1 RETURN MAX(row.leg.amount)";
+    assert_eq!(refused(query).law, Law::Amount);
+    // Properties named like predicate keywords do not turn an amount into a
+    // Boolean or erase the type of its alias.
+    for property in ["IN", "BETWEEN"] {
+        let query =
+            format!("MATCH (l:Leg) WITH l.amount + l.{property} AS value RETURN MAX(value)");
+        assert_eq!(refused(&query).law, Law::Amount);
+    }
+    // Rendering raw values, count-only containers and the supported scalar
+    // alias preserve their existing useful behavior.
+    for query in [
+        "MATCH (l:Leg) RETURN {value: l.amount, unit: l.unit_id} AS row",
+        "MATCH (l:Leg) RETURN l{.amount, .unit_id} AS row",
+        "MATCH (n) RETURN n{.*}",
+        "MATCH (l:Leg) RETURN l{.*} AS row",
+        "MATCH (l:Leg) WITH {count: COUNT(l.amount)} AS row RETURN row.count",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value WITH COUNT(value) AS value WHERE value > 0 RETURN value",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN MAX(value)",
+    ] {
+        native(query);
+    }
+}
+
+#[test]
+fn amount_membership_and_range_predicates_keep_the_comparison_law() {
+    let matched = "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 1})";
+    for expression in [
+        "a.amount IN [1, 2]",
+        "(a.amount) NOT IN [(1), b.amount]",
+        "1 IN [a.amount]",
+        "'1.00' IN [(a.amount)]",
+        "a.amount BETWEEN 1 AND b.amount",
+        "a.amount NOT BETWEEN b.amount AND (-1)",
+        "1 BETWEEN a.amount AND b.amount",
+        "b.amount BETWEEN a.amount AND 1",
+    ] {
+        for suffix in [
+            format!("RETURN {expression} AS result"),
+            format!("WITH {expression} AS result RETURN result"),
+            format!("WHERE {expression} RETURN a"),
+        ] {
+            let query = format!("{matched} {suffix}");
+            let r = refused(&query);
+            assert_eq!(r.law, Law::Amount, "{query}: {r:?}");
+            assert!(r.message.contains("literal"), "{query}: {r:?}");
+        }
+    }
+    for query in [
+        "MATCH (l:Leg) RETURN l.amount IN [l.amount] AS found",
+        "MATCH (l:Leg) RETURN l.amount BETWEEN l.amount AND l.amount AS found",
+        "MATCH (a:Leg {unit_id: 1}), (b:Leg {unit_id: 2}) RETURN a.amount IN [b.amount] AS found",
+    ] {
+        assert_eq!(refused(query).law, Law::Amount, "{query}");
+    }
+    for expression in [
+        "a.amount IN [b.amount, NULL]",
+        "(a.amount) NOT IN [(b.amount)]",
+        "a.amount BETWEEN b.amount AND b.amount",
+        "(a.amount) NOT BETWEEN (b.amount) AND (b.amount)",
+    ] {
+        // A Boolean alias is a scalar, so comparing it with true is valid.
+        native(&format!(
+            "{matched} WITH {expression} AS result WHERE result = true RETURN result"
+        ));
+    }
+    native("MATCH (l:Leg) RETURN COUNT(l.amount) IN [1, 2] AS counted");
+    // DISTINCT compares values, unlike ordinary COUNT. Even a unit pin does
+    // not make native deduplication safe when an amount has no decimal mirror.
+    for query in [
+        "MATCH (l:Leg) RETURN COUNT(DISTINCT ((l.amount)))",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(DISTINCT ((l.amount)))",
+        "MATCH (l:Leg) WITH l.amount AS value RETURN COUNT(DISTINCT value)",
+        "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN COUNT(DISTINCT value)",
+    ] {
+        assert_eq!(refused(query).law, Law::Amount, "{query}");
+    }
+    let query = "MATCH (l:Leg {unit_id: 1}) WITH l.amount AS value RETURN value IN [1]";
+    assert_eq!(refused(query).law, Law::Amount);
+    native(&format!(
+        "{matched} WHERE a.amount IN [b.amount] AND a.amount = b.amount RETURN a.amount"
+    ));
+    for query in [
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(l.amount > 100)",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(CASE l.amount WHEN 100 THEN true ELSE false END)",
+        "MATCH (a:Leg), (b:Leg) RETURN COUNT(a.amount + b.amount)",
+        "MATCH (l:Leg {unit_id: 1}) RETURN COUNT(l.amount IN [1])",
+    ] {
+        assert_eq!(refused(query).law, Law::Amount, "{query}");
+    }
+}
+
 /// A path mentioning IN_UNIT need not end at the amount's unit. In particular,
 /// a zero-hop walk returns the original Leg, whose absent code groups every
 /// currency together. Unit provenance requires one directed IN_UNIT hop.

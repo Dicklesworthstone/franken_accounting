@@ -638,6 +638,185 @@ fn summary_status_refuses_current_book_or_unit_context_corruption() {
 }
 
 #[test]
+fn aging_status_refuses_current_context_corruption_even_with_later_contributions() {
+    use crate::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
+    use fa_model::symbols::{property, relation};
+    use fgdb::{WriteBatch, WriteMismatchPolicy};
+    use fgdb_types::CanonicalScalar;
+
+    for corrupt_unit in [false, true] {
+        for later_post in [false, true] {
+            let mut h = Harness::new(111 + 2 * u8::from(corrupt_unit) + u8::from(later_post));
+            let aging = AgingRequest {
+                account: Some(h.id("1000")),
+                effective_through: day(20),
+                known_at: Some(h.head()),
+                buckets: AgingBuckets::new(vec![0, 10, 30]).unwrap(),
+            };
+            let reconciliation = AgingReconciliationRequest {
+                account: h.id("1000"),
+                effective_through: aging.effective_through,
+                known_at: aging.known_at,
+                buckets: aging.buckets.clone(),
+            };
+            let portfolio = AgingPortfolioRequest {
+                scope: AgingAccountScope::Selected(vec![h.id("1000")]),
+                effective_through: aging.effective_through,
+                known_at: aging.known_at,
+                buckets: aging.buckets.clone(),
+            };
+            let authority = cap(&["read", "produce"]);
+            let artifacts = [
+                (
+                    ReportArtifact::try_from(
+                        &h.book
+                            .certify_effective_date_aging(&h.cx(), PRINCIPAL, &authority, &aging)
+                            .unwrap()
+                            .unwrap()
+                            .certificate,
+                    )
+                    .unwrap(),
+                    ReportArtifactExpectation::AsSupplied,
+                ),
+                (
+                    ReportArtifact::try_from(
+                        &h.book
+                            .certify_effective_date_aging_reconciliation(
+                                &h.cx(),
+                                PRINCIPAL,
+                                &authority,
+                                &reconciliation,
+                            )
+                            .unwrap()
+                            .unwrap()
+                            .certificate,
+                    )
+                    .unwrap(),
+                    ReportArtifactExpectation::AgingReconciliation(&reconciliation),
+                ),
+                (
+                    ReportArtifact::try_from(
+                        &h.book
+                            .certify_aging_portfolio(&h.cx(), PRINCIPAL, &authority, &portfolio)
+                            .unwrap()
+                            .unwrap()
+                            .certificate,
+                    )
+                    .unwrap(),
+                    ReportArtifactExpectation::AgingPortfolio(&portfolio),
+                ),
+            ];
+            let later = later_post.then(|| {
+                h.post_at(
+                    b"later aging context contribution",
+                    7,
+                    day(15),
+                    "1000",
+                    "3000",
+                )
+            });
+            for (artifact, expected) in &artifacts {
+                assert_eq!(
+                    status_for(&h, artifact, *expected),
+                    match later {
+                        Some(entry) => CertificateStatus::SupersededBy {
+                            checked_at: h.head(),
+                            later_entries: vec![entry],
+                            cases: Vec::new(),
+                        },
+                        None => CertificateStatus::Current {
+                            checked_at: h.head(),
+                        },
+                    },
+                    "an intact {} context has an ordinary freshness verdict",
+                    artifact.family().name(),
+                );
+            }
+            let (target, key, corruption) = if corrupt_unit {
+                let unit = h.book.context().units.get(h.unit).unwrap();
+                (
+                    fa_model::unit_vid(
+                        h.book.context().book_id,
+                        &format!("{}@v{}", unit.code, unit.version),
+                    ),
+                    property::SCALE,
+                    CanonicalScalar::Int(i64::from(unit.scale) + 1),
+                )
+            } else {
+                let mut digest =
+                    fa_model::unit::unit_table_digest(&h.book.context().units).unwrap();
+                digest[0] ^= 1;
+                (
+                    fa_journal::rows::book_root(),
+                    property::UNIT_TABLE_DIGEST,
+                    fa_journal::rows::scalar_bytes("book.unit_table_digest", digest.to_vec())
+                        .unwrap(),
+                )
+            };
+            let cx = h.cx();
+            let row = cx
+                .query()
+                .with_restriction(|| h.book.db.vertex(target))
+                .unwrap()
+                .unwrap();
+            let mut damage = WriteBatch::new(relation::IN_BOOK);
+            damage.compare_and_set_vertex_property(
+                target,
+                key,
+                fa_journal::rows::prop(&row, key).cloned(),
+                corruption,
+                WriteMismatchPolicy::AbortWrite,
+            );
+            h.runtime
+                .block_on(h.book.db.write(&cx.commit(), damage))
+                .unwrap();
+            let head = h.head();
+            for (artifact, expected) in &artifacts {
+                let bytes = artifact.canonical_bytes().unwrap();
+                let replayed = h
+                    .book
+                    .replay_report_artifact_for(
+                        &cx,
+                        PRINCIPAL,
+                        &cap(&["read"]),
+                        &bytes,
+                        Some(artifact.digest()),
+                        *expected,
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    replayed.output,
+                    artifact.output(),
+                    "later corruption must not reinterpret historical {} output",
+                    artifact.family().name(),
+                );
+                let refused = h
+                    .book
+                    .report_artifact_status(
+                        &cx,
+                        PRINCIPAL,
+                        &cap(&["read"]),
+                        &bytes,
+                        Some(artifact.digest()),
+                        *expected,
+                    )
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(refused.code, crate::certificate::code::CERTIFICATE_INVALID);
+                assert_eq!(
+                    refused.exit,
+                    exit::VERIFICATION,
+                    "{}: corrupt_unit={corrupt_unit}, later_post={later_post}: {refused:?}",
+                    artifact.family().name(),
+                );
+                assert_eq!(head, h.head(), "freshness and replay publish nothing");
+            }
+        }
+    }
+}
+
+#[test]
 fn aging_families_track_their_own_accounts_and_inclusive_cutoff() {
     use crate::aging::portfolio::{AgingAccountScope, AgingPortfolioRequest};
     let mut h = Harness::new(93);
