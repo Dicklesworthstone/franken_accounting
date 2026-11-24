@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use fa_oracles::cases::book::{BookVariant, IntentDef, StepDef, StepKind, VariantKind};
+use fa_oracles::cases::book::{BookVariant, IntentDef, StepDef, StepKind};
 use fa_oracles::cases::check::{self, Verdict};
 use fa_oracles::cases::date::Day;
 use fa_oracles::cases::embedded::CASES;
@@ -982,7 +982,7 @@ impl<'c> BookRun<'c> {
                 }
                 Some(StepKind::Intent) => self.post(step.seq, &step.reference),
                 Some(StepKind::Allocate) => self.allocate(step.seq, &step.reference),
-                Some(StepKind::Batch) if self.book.kind != VariantKind::Ledger => {
+                Some(StepKind::Batch) if !self.book.batch_uses_ledger_map(&step.reference) => {
                     self.batch(step.seq, &step.reference);
                 }
                 Some(StepKind::PeriodLock) => self.period_lock(step),

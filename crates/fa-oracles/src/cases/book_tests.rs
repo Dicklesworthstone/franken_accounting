@@ -941,6 +941,8 @@ fn statement_and_ledger_stems_load_with_their_kind() {
     let ledger = &case.books["ledger"];
     assert_eq!(ledger.kind, VariantKind::Ledger);
     assert_eq!(ledger.ledger_maps.len(), 2);
+    assert!(ledger.batch_uses_ledger_map(&ledger.steps[1].reference));
+    assert!(!ledger.batch_uses_ledger_map("start..end"));
     let p1 = ledger.parties.iter().find(|p| p.id == "P1").expect("P1");
     assert_eq!(
         p1.relations,

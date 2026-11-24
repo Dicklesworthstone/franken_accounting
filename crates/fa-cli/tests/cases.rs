@@ -185,6 +185,90 @@ fn minc_neg_changed_published_amount_disagrees_with_original_receipt() {
     );
 }
 
+#[test]
+fn ledger_case_posts_an_authored_batch_range() {
+    use fa_oracles::cases::{CaseFiles, embedded::WORLDCOM};
+
+    // Reuse the sourced as-filed posting and its citation. This micro-book
+    // has only that posting and does not claim a WorldCom tie-out.
+    let fixture = WORLDCOM.case_files();
+    let header = r#"
+id = "worldcom"
+letter = "W"
+title = "Authored ledger range regression"
+version = 1
+kind = "case"
+scope = "One sourced as-filed posting used to exercise batch replay."
+claims = []
+capabilities = ["verb:batch"]
+pinned_commit = "109e248e"
+variants = ["ledger"]
+"#;
+    let statement = fixture
+        .files
+        .iter()
+        .find_map(|(name, text)| (*name == "books/statement.toml").then_some(*text))
+        .unwrap();
+    let (end, _) = statement.match_indices("\n[[intent]]\n").nth(1).unwrap();
+    let mut book = statement[..end].replacen("variant = \"statement\"", "variant = \"ledger\"", 1);
+    book.push_str(
+        r#"
+[[step]]
+seq = 1
+kind = "period_open"
+ref = "2000Q4"
+principal = "case-closer-1"
+
+[[step]]
+seq = 2
+kind = "batch"
+ref = "W-ST-ta2000-prev..W-ST-ta2000-prev"
+"#,
+    );
+
+    let mut files: Vec<_> = fixture
+        .files
+        .iter()
+        .copied()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "sources.toml" | "facts.toml" | "receipts.toml" | "roles.toml"
+            )
+        })
+        .collect();
+    files.extend([("case.toml", header), ("books/ledger.toml", book.as_str())]);
+    let out = run::run_case(
+        &CaseFiles {
+            id: fixture.id,
+            files: &files,
+        },
+        HARNESS_VERBS,
+    );
+    let batch = out
+        .steps
+        .iter()
+        .find(|step| step.verb == "batch")
+        .unwrap_or_else(|| {
+            panic!(
+                "the ordinary ledger runner never called fa batch\n{}",
+                out.text()
+            )
+        });
+    assert_eq!(batch.step, 2);
+    assert_eq!(batch.exit, 0, "{}", out.text());
+    assert!(out.rows_ok, "{}", out.text());
+    let args = ["tb", "--as-of", "2000-12-31", "--json"].map(str::to_owned);
+    let balance = fa(&out.books["ledger"], &args);
+    assert_eq!(balance.exit, 0, "{}", balance.stdout);
+    assert!(balance.stdout.contains("\"debits\":\"98727000000.00 USD\""));
+    assert!(
+        balance
+            .stdout
+            .contains("\"credits\":\"98727000000.00 USD\"")
+    );
+}
+
 /// A8 (§15): the WorldCom pilot on the native book. F2, F4, F9 and F12 post
 /// as the record describes them, and the claimed rows (W-D-01 and W-D-03,
 /// the detections; W-N-01, the no-finding with its mutation twin; W-P-02

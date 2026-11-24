@@ -280,6 +280,16 @@ pub struct BookVariant {
     pub migration_imports: Vec<MigrationImportDef>,
 }
 
+impl BookVariant {
+    /// In a ledger variant, a named ledger map takes precedence over an
+    /// authored intent range in a batch step.
+    #[must_use]
+    pub fn batch_uses_ledger_map(&self, reference: &str) -> bool {
+        self.kind == VariantKind::Ledger
+            && self.ledger_maps.iter().any(|map| map.account == reference)
+    }
+}
+
 /// `[book]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BookHeader {
@@ -3172,10 +3182,7 @@ impl<'a> Check<'a, '_> {
                     Some(_) => None,
                 },
                 StepKind::Batch | StepKind::MigrateStage => {
-                    let ledger_account = kind == StepKind::Batch
-                        && self.book.kind == VariantKind::Ledger
-                        && self.book.ledger_maps.iter().any(|m| m.account == r);
-                    if ledger_account {
+                    if kind == StepKind::Batch && self.book.batch_uses_ledger_map(r) {
                         None
                     } else {
                         self.range(r)
