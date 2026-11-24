@@ -1,0 +1,14 @@
+tier0 v1
+verdict=pass
+commit=6db0226c905fcef60cd4d77c10310d7d15d8c14c
+tree=8330421003aff24f250654abefbc987c0ab65d08
+lane=local
+host=mac-studio:Darwin-arm64
+worker=local
+toolchain=rustc 1.100.0-nightly (908501772 2026-08-30)
+fmt_status=PASS
+fmt_seconds=7
+check_status=PASS
+check_seconds=39
+log_dir=/Volumes/SANDISK_SSD/scratch/fa-build-20261122.BBDlDDVP/tier0-6db0226c
+recorded_utc=2026-11-24T18:27:43Z
