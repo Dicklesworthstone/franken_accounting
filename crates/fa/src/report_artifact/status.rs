@@ -186,6 +186,21 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(artifact) => artifact,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        // Historical replay authenticates the original context only. Every
+        // freshness family also observes the current book: a later posting
+        // must not turn corrupt current unit definitions or Book mirrors into
+        // a successful SupersededBy result. Admit this shared context before
+        // any family's early return, not only when its selected rows appear
+        // unchanged and need a second fold.
+        let head = self.head(cx)?;
+        if let Err(error) = self.query(cx, |db, book| {
+            Ok(crate::certificate::context_at(db, book, head))
+        })? {
+            return Ok(Err(invalid(format!(
+                "the current {} context no longer matches the certified context: {error}",
+                artifact.family().name(),
+            ))));
+        }
         let source = match &artifact.inner {
             Artifact::Native(_) | Artifact::StatementDiff(_) | Artifact::StatementTrace(_) => {
                 return self.certificate_status(cx, artifact.source_certificate());
@@ -274,18 +289,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(invalid("summary source is not a trial balance")));
         };
         let head = self.head(cx)?;
-        // Replay establishes the original context. Freshness also needs the
-        // current Book/Unit mirrors to agree with the context used to rerun
-        // the report, even if a legitimate later entry will supersede it.
-        if let Err(refusal) = self.query(cx, |db, book| {
-            Ok(crate::certificate::context_at(db, book, head).map_err(|error| {
-                invalid(format!(
-                    "the current summary context no longer matches the certified context: {error}"
-                ))
-            }))
-        })? {
-            return Ok(Err(refusal));
-        }
         let mut current = match self.summary_trial_balance(
             cx,
             principal,
