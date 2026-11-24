@@ -937,6 +937,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut report_base_unit = None;
     let mut equity_diff_request = false;
     let mut native_subledger_request = None;
+    let mut external_feed_request = None;
     let mut scenario_math = false;
     let produced = if let Some(source) = report_source {
         let bytes = crate::notary::read_certificate_bytes(
@@ -960,10 +961,11 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     | fa::ReportArtifactFamily::IndirectCashFlow
                     | fa::ReportArtifactFamily::EquityRollForwardDiff
                     | fa::ReportArtifactFamily::NativeSubledger
+                    | fa::ReportArtifactFamily::ExternalFeed
             )
         {
             return Err(usage(
-                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, native-subledger reconciliation, policy cash-flow, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
+                "--expect on bundle produce applies only to an aging, aging reconciliation, aging portfolio, native-subledger or external-feed reconciliation, policy cash-flow, split cash-flow, indirect cash-flow or equity-roll-forward-diff certificate",
                 "omit --expect for other portable report families",
             ));
         }
@@ -1001,6 +1003,24 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                     &expected,
                 )??;
                 native_subledger_request = Some(expected);
+                result
+            }
+            fa::ReportArtifactFamily::ExternalFeed => {
+                let expected = crate::notary::external_feed_bundle_expectation(
+                    args,
+                    &book,
+                    principal,
+                    &capability,
+                )?;
+                let certificate = fa::ExternalFeedCertificate::decode(&bytes)?;
+                let result = book.produce_external_feed_bundle(
+                    principal,
+                    &capability,
+                    state,
+                    &certificate,
+                    &expected,
+                )??;
+                external_feed_request = Some(expected);
                 result
             }
             fa::ReportArtifactFamily::Native => {
@@ -1210,7 +1230,7 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                         artifact.family().name(),
                     ),
                     "plan §13.2–§13.6 (every portable report authenticates and recomputes its complete family-specific closure)",
-                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, native subledger reconciliation, lot schedule, jet.round_amounts v1 procedure, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward or comparison, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
+                    "use a supported native, summary or functional trial-balance or statement report, native statement diff or trace, native subledger or external-feed reconciliation, lot schedule, jet.round_amounts v1 procedure, effective-date aging, aging reconciliation or portfolio, roll-forward, equity roll-forward or comparison, direct, policy, split or indirect cash-flow certificate; replay other report families against their original retained book",
                 ).into());
             }
         }
@@ -1308,6 +1328,18 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             known_at.0,
         ));
     }
+    if let Some(expected) = &external_feed_request {
+        let known_at = expected.known_at.ok_or_else(|| {
+            Fail::Internal("exported external-feed request has no fixed prefix".into())
+        })?;
+        verify.push_str(&format!(
+            " --external-feed={} --control-account 0x{:032x} --through {} --known-at {}",
+            fa_journal::refusal::command_word(&expected.feed),
+            expected.control_account.0,
+            expected.effective_through.0,
+            known_at.0,
+        ));
+    }
     if let Some(base_unit) = report_base_unit {
         verify.push_str(&format!(" --base-unit {base_unit}"));
     }
@@ -1323,6 +1355,8 @@ pub(crate) fn bundle_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     }
     let unit_premise = if scenario_math {
         "\nSupply the canonical question retained with scenario diff --request-out before delivery. This profile recomputes additive assumed effects over the authenticated fork and exact evidence. Historical planner admission, native marker membership and economic truth are not judged; hypothetical entries are not trunk journal members."
+    } else if external_feed_request.is_some() {
+        "\nRetain the feed, control account, civil-day cutoff and recorded prefix independently. These flags reproduce the supplied --expect question; compare them with the recipient's original request. Verification recomputes recorded detail and all control effects; source-system completeness and human review independence are not judged."
     } else if native_subledger_request.is_some() {
         "\nRetain the subledger code, control account, civil-day cutoff and recorded prefix independently. These flags reproduce the supplied --expect question; compare them with the recipient's original request before verification."
     } else if equity_diff_request {

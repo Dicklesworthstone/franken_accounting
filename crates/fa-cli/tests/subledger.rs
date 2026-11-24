@@ -12,6 +12,9 @@ use fa_cli::verbs::registry;
 #[path = "subledger/external.rs"]
 mod external;
 
+#[path = "subledger/external_portable.rs"]
+mod external_portable;
+
 #[path = "subledger/certificate.rs"]
 mod certificate;
 

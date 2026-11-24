@@ -323,6 +323,22 @@ pub(crate) fn portfolio_bundle_expectation(
     }
 }
 
+/// Reviewed external detail answers a fixed recipient question. Its exported
+/// certificate never supplies its own expected feed, control or cutoff.
+pub(crate) fn external_feed_bundle_expectation(
+    args: &Args,
+    book: &Book,
+    principal: VId,
+    capability: &Capability,
+) -> Result<fa::ExternalFeedRequest, Fail> {
+    match parse(args, book, principal, capability)? {
+        Expected::ExternalFeed(request) => Ok(request),
+        _ => Err(invalid(
+            "external-feed export requires --expect JSON with kind external-feed-reconciliation, feed, control_account, through and fixed known_at",
+        )),
+    }
+}
+
 /// Native party/control reconciliation answers a fixed recipient question.
 /// Its exported certificate never supplies its own expected control or cutoff.
 pub(crate) fn native_subledger_bundle_expectation(

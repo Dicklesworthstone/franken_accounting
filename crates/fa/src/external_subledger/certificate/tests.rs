@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tests/portable.rs"]
+mod portable;
+
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, Cx};
 use fa_journal::{AccountSpec, BookSpec, Document, PostRequest, UnitPolicy};

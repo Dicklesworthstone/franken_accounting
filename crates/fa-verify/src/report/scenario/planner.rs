@@ -144,7 +144,7 @@ mod tests {
             unit: 2,
             mantissa: 87,
         };
-        let legs = [leg.clone(), leg];
+        let legs = [leg, leg];
         for version_two in [false, true] {
             let bytes = capability(7, &[0, 1], &[(2, 87)], version_two);
             let verified = check(&bytes, 7, 8, 10, &legs).unwrap();

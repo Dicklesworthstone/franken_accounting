@@ -169,6 +169,10 @@ pub fn assemble(
 /// Native v9 regulatory schedules retain that four-registry closure and their
 /// complete instruction-versioned definition for general-ledger replay. Their
 /// declared Instrument attributes are parameters, not proven source values.
+/// External-feed reconciliations retain their original AsOf control source and
+/// append external_subledger, attestation, evidence_policy and redaction_contracts.
+/// The embedded detail and original review records are independently replayed;
+/// native graph mirrors and historical authority admission remain unjudged.
 /// V2 appends a list of (registry name, canonical registry document) frames;
 /// existing v1 trial-balance bytes remain unchanged.
 pub fn assemble_with_registries(
@@ -185,6 +189,7 @@ pub fn assemble_with_registries(
         || custom_statement_trace_certificate(certificate);
     let procedure = procedure_certificate(certificate);
     let native_subledger = native_subledger_certificate(certificate);
+    let external_feed = external_feed_certificate(certificate);
     let expected: &[&str] = if explanation {
         &[
             "account_types",
@@ -219,6 +224,17 @@ pub fn assemble_with_registries(
             "control_payload",
             "symbols",
         ]
+    } else if external_feed {
+        &[
+            "account_types",
+            "entry_classes",
+            "units",
+            "foundations",
+            "external_subledger",
+            "attestation",
+            "evidence_policy",
+            "redaction_contracts",
+        ]
     } else {
         &["account_types", "entry_classes", "units", "foundations"]
     };
@@ -232,6 +248,7 @@ pub fn assemble_with_registries(
         || lots_certificate(certificate)
         || procedure
         || native_subledger
+        || external_feed
         || due_date_aging_certificate(certificate)
         || reconciliation_certificate(certificate)
         || roll_forward_certificate(certificate)
@@ -253,7 +270,7 @@ pub fn assemble_with_registries(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, regulatory schedules, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2, or six including control_payload and symbols for native subledger reconciliation",
+            "native reports require their exact canonical registry profile in closure order: four documents for built-in statements, regulatory schedules, dimension-filtered and summary trial balances, open items, lots, aging, reconciliation, roll-forwards and direct cash flow, five including reason_codes for balance explanations, five including rounding_laws for custom statements, six including procedures and sod_policy for JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2, six including control_payload and symbols for native subledger reconciliation, or eight including external_subledger, attestation, evidence_policy and redaction_contracts for external-feed reconciliation",
         )));
     }
     assemble_inner(
@@ -697,6 +714,73 @@ fn native_subledger_certificate(certificate: &[u8]) -> bool {
     certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
 }
 
+/// Route only the complete outer external-feed container over its original
+/// sequence-selected trunk AsOf control. The facade replays the native source;
+/// the recipient independently checks every value and original review record.
+fn external_feed_certificate(certificate: &[u8]) -> bool {
+    let header = || -> Result<bool, fa_model::DecodeError> {
+        let mut reader = Reader::new(certificate);
+        if reader.bytes(64, "external feed format")? != b"fa:external-feed-certificate:v1" {
+            return Ok(false);
+        }
+        let source = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "external feed source")?;
+        if !certificate_format(source, b"fa:report-certificate:v1") {
+            return Ok(false);
+        }
+        let mut native = Reader::new(source);
+        native.fixed::<{ b"fa:report-certificate:v1".len() }>("report format")?;
+        if native.str(64, "report scope")? != "fa-fold-over-prefix"
+            || native.str(64, "report authority")? != "embedded-owner"
+            || native.str(64, "report output format")? != "fa:trial-balance:v1"
+        {
+            return Ok(false);
+        }
+        let book = native.fixed::<16>("report book")?;
+        if native.fixed::<16>("report branch")? != [0; 16] {
+            return Ok(false);
+        }
+        let known_at = native.u64("report known-at")?;
+        if known_at == 0 || native.u8("report selector")? != 1 {
+            return Ok(false);
+        }
+        let through = native.i32("report cutoff")?;
+        if reader.count(4, "external native source count")? != 4 {
+            return Ok(false);
+        }
+        for _ in 0..4 {
+            reader.bytes(1024 * 1024, "external native source")?;
+        }
+        let feed = reader.str(64, "external feed")?;
+        if feed.is_empty()
+            || !feed
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+        {
+            return Ok(false);
+        }
+        let control = reader.u128("external control")?;
+        if reader.i32("external cutoff")? != through || reader.u64("external prefix")? != known_at {
+            return Ok(false);
+        }
+        reader.fixed::<32>("external registries")?;
+        reader.u128("external producer")?;
+        reader.fixed::<32>("external capability")?;
+        let output = reader.bytes(MAX_REPORT_BUNDLE_BYTES, "external output")?;
+        reader.fixed::<32>("external certificate digest")?;
+        reader.finish()?;
+        let mut output = Reader::new(output);
+        Ok(
+            output.bytes(64, "external output format")? == b"fa:external-feed-reconciliation:v1"
+                && output.fixed::<16>("external output book")? == book
+                && output.u64("external output prefix")? == known_at
+                && output.str(64, "external output feed")? == feed
+                && output.u128("external output control")? == control
+                && output.i32("external output cutoff")? == through,
+        )
+    };
+    certificate.len() <= MAX_REPORT_BUNDLE_BYTES && header().unwrap_or(false)
+}
+
 fn aging_certificate_with_format(certificate: &[u8], format: &[u8]) -> bool {
     let header = || -> Result<bool, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
@@ -1063,6 +1147,7 @@ fn assemble_inner(
                 || lots_certificate(certificate)
                 || procedure_certificate(certificate)
                 || native_subledger_certificate(certificate)
+                || external_feed_certificate(certificate)
                 || due_date_aging_certificate(certificate)
                 || reconciliation_certificate(certificate)
                 || roll_forward_certificate(certificate)
@@ -1234,6 +1319,138 @@ mod format_tests {
             .u8(selector)
             .i32(30);
         w.finish().unwrap()
+    }
+
+    fn external_feed_output(
+        book: [u8; 16],
+        at: u64,
+        feed: &str,
+        control: u128,
+        through: i32,
+    ) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer
+            .bytes(b"fa:external-feed-reconciliation:v1")
+            .fixed(&book)
+            .u64(at)
+            .str(feed)
+            .u128(control)
+            .i32(through);
+        writer.finish().unwrap()
+    }
+
+    fn external_feed_header(
+        source: &[u8],
+        sources: usize,
+        feed: &str,
+        control: u128,
+        through: i32,
+        at: u64,
+        output: &[u8],
+    ) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer
+            .bytes(b"fa:external-feed-certificate:v1")
+            .bytes(source)
+            .list(&vec![Vec::<u8>::new(); sources], |writer, input| {
+                writer.bytes(input);
+            })
+            .str(feed)
+            .u128(control)
+            .i32(through)
+            .u64(at)
+            .fixed(&[9; 32])
+            .u128(7)
+            .fixed(&[8; 32])
+            .bytes(output)
+            .fixed(&[6; 32]);
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn external_feed_routing_requires_original_question_and_complete_source_container() {
+        let source = native_header(1, "fa:trial-balance:v1", 1);
+        let output = external_feed_output([3; 16], 9, "ap", 10, 30);
+        let valid = external_feed_header(&source, 4, "ap", 10, 30, 9, &output);
+        assert!(external_feed_certificate(&valid));
+        for (sources, feed, control, through, at) in [
+            (3, "ap", 10, 30, 9),
+            (5, "ap", 10, 30, 9),
+            (4, "", 10, 30, 9),
+            (4, "ap payroll", 10, 30, 9),
+            (4, "ar", 10, 30, 9),
+            (4, "ap", 11, 30, 9),
+            (4, "ap", 10, 31, 9),
+            (4, "ap", 10, 30, 10),
+        ] {
+            assert!(!external_feed_certificate(&external_feed_header(
+                &source, sources, feed, control, through, at, &output,
+            )));
+        }
+        for wrong_output in [
+            external_feed_output([4; 16], 9, "ap", 10, 30),
+            external_feed_output([3; 16], 10, "ap", 10, 30),
+            external_feed_output([3; 16], 9, "ar", 10, 30),
+            external_feed_output([3; 16], 9, "ap", 11, 30),
+            external_feed_output([3; 16], 9, "ap", 10, 31),
+        ] {
+            assert!(!external_feed_certificate(&external_feed_header(
+                &source,
+                4,
+                "ap",
+                10,
+                30,
+                9,
+                &wrong_output,
+            )));
+        }
+        assert!(!external_feed_certificate(&valid[..valid.len() - 1]));
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(!external_feed_certificate(&trailing));
+    }
+
+    #[test]
+    fn external_feed_routing_preserves_sequence_selected_trunk_asof_control() {
+        let output = external_feed_output([3; 16], 9, "ap", 10, 30);
+        for source in [
+            native_header(2, "fa:trial-balance:v1", 1),
+            native_header(10, "fa:trial-balance:v1", 1),
+            native_header(1, "fa:statement:v1", 1),
+            native_header(1, "fa:trial-balance:v1", 0),
+            native_header(1, "fa:trial-balance:v1", 2),
+        ] {
+            assert!(!external_feed_certificate(&external_feed_header(
+                &source, 4, "ap", 10, 30, 9, &output,
+            )));
+        }
+        for (branch, at, scope, authority) in [
+            ([1; 16], 9, "fa-fold-over-prefix", "embedded-owner"),
+            ([0; 16], 0, "fa-fold-over-prefix", "embedded-owner"),
+            ([0; 16], 9, "other-scope", "embedded-owner"),
+            ([0; 16], 9, "fa-fold-over-prefix", "other-authority"),
+        ] {
+            let mut source = Writer::new();
+            source
+                .fixed(b"fa:report-certificate:v1")
+                .str(scope)
+                .str(authority)
+                .str("fa:trial-balance:v1")
+                .fixed(&[3; 16])
+                .fixed(&branch)
+                .u64(at)
+                .u8(1)
+                .i32(30);
+            assert!(!external_feed_certificate(&external_feed_header(
+                &source.finish().unwrap(),
+                4,
+                "ap",
+                10,
+                30,
+                9,
+                &output,
+            )));
+        }
     }
 
     fn reconciliation_header(source: &[u8], control: &[u8]) -> Vec<u8> {

@@ -6,6 +6,8 @@
 //! encode Cash D100/C40 and Equity C60 in one reviewed Workpaper; hostile
 //! variants recompute all public commitments and checkpoint signatures.
 
+#![forbid(unsafe_code)]
+
 use fa_verify::report::{
     ExternalFeedRequest, verify_report_expected, verify_report_external_feed_expected,
 };
@@ -233,4 +235,90 @@ fn external_feed_public_cli_names_verified_and_unjudged_claims() {
     ] {
         assert!(result.stdout.contains(claim), "{claim}: {}", result.stdout);
     }
+}
+
+/// Reuse the existing eight canonical registry documents verbatim. The new
+/// compact fixture contains the complete replacement certificate, signed
+/// checkpoint, prefix and record payloads, ending after migration witnesses.
+fn attach_existing_registries(mut head: Vec<u8>) -> Vec<u8> {
+    fn count(bytes: &[u8], at: &mut usize) -> usize {
+        let value = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap()) as usize;
+        *at += 4;
+        value
+    }
+    fn skip_frame(bytes: &[u8], at: &mut usize) {
+        let length = count(bytes, at);
+        *at += length;
+        assert!(*at <= bytes.len());
+    }
+    let original = unhex(VALID);
+    let mut at = 0;
+    skip_frame(&original, &mut at); // Bundle format.
+    at += 4; // Bundle major/minor.
+    for _ in 0..3 {
+        skip_frame(&original, &mut at); // Certificate, checkpoint and prefix.
+    }
+    for _ in 0..count(&original, &mut at) {
+        at += 4; // Record proposal length.
+        skip_frame(&original, &mut at);
+    }
+    assert_eq!(count(&original, &mut at), 0); // Migration witnesses.
+    head.extend_from_slice(&original[at..]);
+    head
+}
+
+#[test]
+fn external_feed_public_accepts_atomic_reversal_before_its_target_leaf() {
+    let bundle = attach_existing_registries(unhex(include_str!(
+        "external_feed/same-commit-reversal.head.hex"
+    )));
+    let digest = fixed(include_str!("external_feed/same-commit-reversal.digest"));
+    let verified = verify_report_external_feed_expected(
+        &bundle,
+        &[fixed(KEY)],
+        None,
+        None,
+        &question(),
+        Some(&digest),
+    )
+    .unwrap();
+    assert_eq!(verified.checked_records, 6);
+    assert_eq!(verified.checkpoint.checkpoint.through_seq, 5);
+    assert_eq!(verified.checkpoint.checkpoint.leaf_count, 6);
+    let report = verified.external_feed.unwrap();
+    assert!(report.reconciled);
+    assert_eq!(report.batches.len(), 1);
+    assert_eq!(report.batches[0].recorded_at, 5);
+    assert_eq!(report.contributions.len(), 2);
+    let reversal = &report.contributions[0];
+    let original = &report.contributions[1];
+    assert!(reversal.reversed);
+    assert!(!original.reversed);
+    assert!(reversal.entry < original.entry);
+    assert_eq!(reversal.source, original.entry);
+    assert_eq!(reversal.source_digest, original.entry_digest);
+    assert_eq!((reversal.recorded_at, original.recorded_at), (5, 5));
+    assert_eq!(report.batches[0].entry, original.entry);
+    assert!(report.unattributed.is_empty());
+    assert_eq!(
+        (
+            report.totals[0].detail_debits,
+            report.totals[0].detail_credits
+        ),
+        (140, 140)
+    );
+    assert_eq!(
+        (
+            report.totals[0].control_debits,
+            report.totals[0].control_credits
+        ),
+        (140, 140)
+    );
+    assert_eq!(
+        (
+            report.totals[0].register_debits,
+            report.totals[0].register_credits
+        ),
+        (140, 140)
+    );
 }

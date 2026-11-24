@@ -6949,6 +6949,26 @@ impl Book {
         ))
     }
 
+    /// Export reviewed external detail and the complete control-account fold
+    /// at the original recorded prefix. `expected` must independently fix the
+    /// feed, control account, civil cutoff and recorded sequence. Current Read
+    /// and Produce authority is checked before observing source evidence.
+    pub fn produce_external_feed_bundle(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ExternalFeedCertificate,
+        expected: &crate::ExternalFeedRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(
+            core.produce_external_feed_bundle(
+                &purposes, principal, capability, state, certificate, expected,
+            )
+        ))
+    }
+
     /// Produce an evidence bundle (plan §13.2) and its detached production
     /// receipt. The bundle is produced against the journaled state `state`
     /// (default: the latest), whose checkpoint is recomputed from the

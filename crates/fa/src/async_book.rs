@@ -192,6 +192,10 @@ enum ReportBundleCertificate<'a> {
         certificate: &'a crate::NativeSubledgerCertificate,
         expected: &'a crate::NativeSubledgerRequest,
     },
+    ExternalFeed {
+        certificate: &'a crate::ExternalFeedCertificate,
+        expected: &'a crate::ExternalFeedRequest,
+    },
 }
 
 impl<'a> ReportBundleCertificate<'a> {
@@ -233,6 +237,7 @@ impl<'a> ReportBundleCertificate<'a> {
                 certificate.aging_source().source()
             }
             Self::NativeSubledger { certificate, .. } => certificate.source_certificate(),
+            Self::ExternalFeed { certificate, .. } => certificate.source_certificate(),
         }
     }
 }
@@ -6150,6 +6155,30 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         .await
     }
 
+    /// Export reviewed external detail and every selected control-account
+    /// effect for a recipient's independently fixed feed, cutoff and prefix.
+    pub async fn produce_external_feed_bundle(
+        &mut self,
+        cx: &PurposeContexts,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        state: Option<fa_model::Oid>,
+        certificate: &crate::ExternalFeedCertificate,
+        expected: &crate::ExternalFeedRequest,
+    ) -> Outcome<Option<ProducedBundle>> {
+        self.produce_report_bundle_inner(
+            cx,
+            principal,
+            capability,
+            state,
+            ReportBundleCertificate::ExternalFeed {
+                certificate,
+                expected,
+            },
+        )
+        .await
+    }
+
     async fn produce_report_bundle_inner(
         &mut self,
         cx: &PurposeContexts,
@@ -6178,6 +6207,11 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         }
         if let ReportBundleCertificate::Procedure(procedure) = report
             && let Err(refusal) = procedure.check_offline_profile()
+        {
+            return Ok(Err(refusal));
+        }
+        if let ReportBundleCertificate::ExternalFeed { certificate, .. } = report
+            && let Err(refusal) = certificate.check_offline_profile()
         {
             return Ok(Err(refusal));
         }
@@ -6280,7 +6314,10 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         // carrying/Rate evidence even when a source selects HEAD. A cold
         // checkpoint can answer today's rows without having that history
         // loaded; the ordinary report preparation intentionally skips it.
-        let prepared = if certificate.selection.uses_functional_valuations() {
+        let prepared = if matches!(report, ReportBundleCertificate::ExternalFeed { .. }) {
+            self.prepare_external_feed_history(cx, principal, capability, Some(history_start))
+                .await?
+        } else if certificate.selection.uses_functional_valuations() {
             self.prepare_functional_report(
                 cx,
                 principal,
@@ -6521,6 +6558,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 None
             }
+            ReportBundleCertificate::ExternalFeed {
+                certificate,
+                expected,
+            } => {
+                if let Err(refusal) =
+                    self.replay_external_feed(cx, principal, capability, certificate, expected)?
+                {
+                    return Ok(Err(refusal));
+                }
+                None
+            }
         };
         let closure_frontier = certificate
             .time_selection
@@ -6561,6 +6609,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | ReportBundleCertificate::AgingPortfolio { .. }
                 | ReportBundleCertificate::DueDateAgingReconciliation { .. }
                 | ReportBundleCertificate::NativeSubledger { .. }
+                | ReportBundleCertificate::ExternalFeed { .. }
         ) || matches!(
             &certificate.selection,
             crate::ReportSelection::OpenItems { .. }
@@ -6620,6 +6669,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 let Some(registries) = registries else {
                     return Err(KernelError::Corrupt(
                         "native-subledger proof lost its native registry closure".into(),
+                    )
+                    .into());
+                };
+                match certificate.offline_registry_documents(registries) {
+                    Ok(registries) => Some(registries),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::ExternalFeed { certificate, .. } => {
+                let Some(registries) = registries else {
+                    return Err(KernelError::Corrupt(
+                        "external-feed proof lost its native registry closure".into(),
                     )
                     .into());
                 };
@@ -6923,6 +6984,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
             }
             ReportBundleCertificate::NativeSubledger { certificate, .. } => {
+                match certificate.canonical_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+            ReportBundleCertificate::ExternalFeed { certificate, .. } => {
                 match certificate.canonical_bytes() {
                     Ok(bytes) => bytes,
                     Err(refusal) => return Ok(Err(refusal)),

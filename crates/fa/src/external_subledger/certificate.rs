@@ -158,6 +158,44 @@ fn capture<V: Vfs + Clone>(
 }
 
 impl ExternalFeedCertificate {
+    /// The portable profile preserves the original sequence-selected trunk
+    /// control and every supplemental native source. It does not turn those
+    /// native query attestations into independent graph-membership proofs.
+    pub fn check_offline_profile(&self) -> Result<(), Refusal> {
+        self.validate()?;
+        if self.known_at().0 == 0 {
+            return Err(invalid(
+                "portable external-feed reconciliation requires a nonzero recorded prefix",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Export the two original registry closures in their independent orders.
+    /// The native source may resolve an archived compatible epoch; the outer
+    /// external-feed closure must still be available exactly as certified.
+    pub(crate) fn offline_registry_documents(
+        &self,
+        mut native: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<(String, Vec<u8>)>, Refusal> {
+        self.check_offline_profile()?;
+        let expected = ["account_types", "entry_classes", "units", "foundations"];
+        if native.iter().map(|(name, _)| name.as_str()).ne(expected) {
+            return Err(invalid(
+                "portable external-feed reconciliation requires its complete original four-document native registry closure",
+            ));
+        }
+        for (name, text) in REGISTRIES {
+            let canonical = fa_registry::toml::parse(text)
+                .map_err(|error| {
+                    invalid(format!("embedded registry {name} does not parse: {error}"))
+                })?
+                .canonical_bytes();
+            native.push(((*name).to_string(), canonical));
+        }
+        Ok(native)
+    }
+
     #[must_use]
     pub fn source(&self) -> &ReportCertificate {
         &self.source
