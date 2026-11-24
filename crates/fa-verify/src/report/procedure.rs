@@ -1727,11 +1727,17 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::SameSameSame
         }
     };
-    if !parameters.is_trace() && question.count(0, 8, "procedure.inputs")? != 0 {
-        return Err(failed(
-            "procedure_profile",
-            "procedure input handles are unsupported",
-        ));
+    if parameters.is_party_graph() {
+        // The party graph profiles refuse every handle at profile admission.
+        // Reading the count does not decode or allocate handle payloads.
+        if question.u32("procedure.inputs")? != 0 {
+            return Err(failed(
+                "procedure_profile",
+                "procedure input handles are unsupported",
+            ));
+        }
+    } else if !parameters.is_trace() {
+        question.count(0, 8, "procedure.inputs")?;
     }
     // All remaining output fields are reconstructed below and compared byte
     // for byte. In particular no claimed count controls an allocation here.

@@ -13,7 +13,7 @@ use fa_journal::{
     UnitPolicy,
 };
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128, LegPayload, Oid,
+    EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128, LegPayload, Oid, Reader,
     account_vid,
 };
 use fa_money::allocation::{AllocationMethod, AllocationRequest, AllocationTarget};
@@ -396,10 +396,31 @@ fn two_key_allocation_posts_the_reviewed_value_tie_and_rejects_rebound_drivers()
         .unwrap()
         .unwrap();
     assert_eq!(stored.proposal, original);
+    assert_eq!(stored.proposal.extensions.len(), 1);
+    let (tag, record) = &stored.proposal.extensions[0];
+    assert_eq!(*tag, ALLOCATION_EXTENSION);
+    let mut record = Reader::new(record);
     assert_eq!(
-        AllocationPosting::decode_record(&stored.proposal.extensions[0].1).unwrap(),
+        record.fixed::<14>("allocation magic").unwrap(),
+        *b"FA-ALLOC-POST\0"
+    );
+    assert_eq!(record.u16("allocation record version").unwrap(), 1);
+    let encoded_basis = record
+        .bytes(fa_model::limits::MAX_EXTENSION_BYTES, "allocation basis")
+        .unwrap();
+    assert_eq!(
+        AllocationPosting::decode_basis(encoded_basis).unwrap(),
         basis
     );
+    assert_eq!(
+        record.fixed::<32>("law digest").unwrap(),
+        basis.law_digest()
+    );
+    assert_eq!(
+        record.fixed::<32>("basis digest").unwrap(),
+        basis.basis_digest().unwrap()
+    );
+    record.finish().unwrap();
     assert_eq!(
         (h.net("source"), h.net("a"), h.net("b"), h.net("c")),
         (-10_000, 3333, 3334, 3333)
