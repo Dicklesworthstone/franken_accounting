@@ -4216,6 +4216,21 @@ fa tb --period FY2026-P03 --activity --book ./books/myco --json\n\
 fa registers materialize --period FY2026-P03 --book ./books/myco\n\
 fa verify registers --period FY2026-P03 --book ./books/myco  # exit 8 on drift\n\
 \n\
+# intercompany.json (a book created with --entity A:Alpha --entity B:Beta)\n\
+# Both complete entity entries publish atomically; pair ordinals are zero-based.\n\
+# Its chart includes 1000 Cash, 1200 Receivable, 4000 Revenue and 6000 Expense.\n\
+{\"effective_date\":\"2026-03-15\",\"idempotency_key\":\"internal-sale-1\",\n\
+ \"intercompany_pairs\":[{\"pair_key\":\"sale-A-B-1\",\"left_leg\":1,\"right_leg\":2}],\n\
+ \"legs\":[{\"side\":\"debit\",\"account\":\"1200\",\"amount\":\"100.00 USD\",\"entity\":\"A\"},\n\
+         {\"side\":\"credit\",\"account\":\"4000\",\"amount\":\"100.00 USD\",\"entity\":\"A\"},\n\
+         {\"side\":\"debit\",\"account\":\"6000\",\"amount\":\"100.00 USD\",\"entity\":\"B\"},\n\
+         {\"side\":\"credit\",\"account\":\"1000\",\"amount\":\"100.00 USD\",\"entity\":\"B\"}]}\n\
+fa post --intent intercompany.json --evidence <source-oid> --book ./books/group --json\n\
+# Fresh pair declarations require whole-book authority. Exact authorized retries and reversals retain their target scope.\n\
+# Keys are unique within this book and remain spent after exact reversal.\n\
+# This native profile requires the book's base unit; cross-book and FX matching refuse.\n\
+fa verify projections --book ./books/group --json\n\
+\n\
 # hold.json (a Pending: 80.00 reserved, nothing posted)\n\
 {\"effective_date\":\"2026-03-10\",\"description\":\"PO 77 hold\",\"idempotency_key\":\"hold-77\",\n\
  \"legs\":[{\"side\":\"debit\",\"account\":\"6000\",\"amount\":\"80.00 USD\"},{\"side\":\"credit\",\"account\":\"1000\",\"amount\":\"80.00 USD\"}]}\n\
@@ -8581,6 +8596,74 @@ struct PostTiming {
     relates_to: Option<String>,
 }
 
+/// Parse complete pairs into the canonical proposal before planning or approval.
+/// Reversals inherit their target's exact terms; there is no independent match
+/// command and no partially posted counterpart.
+fn attach_intercompany_pairs(doc: &Json, proposal: &mut EntryPayload) -> Result<(), Fail> {
+    const FIX: &str = "intercompany_pairs is an array of {pair_key, left_leg, right_leg}; ordinals are zero-based and ascending; each pair names opposite equal base-unit legs in distinct legal entities of this same complete entry";
+    let Json::Obj(fields) = doc else {
+        return Err(usage("intent must be an object", FIX));
+    };
+    let mut supplied = fields
+        .iter()
+        .filter(|(name, _)| name == "intercompany_pairs");
+    let Some((_, value)) = supplied.next() else {
+        return Ok(());
+    };
+    if supplied.next().is_some() {
+        return Err(usage("intercompany_pairs was supplied more than once", FIX));
+    }
+    if !matches!(proposal.class, EntryClass::ORIGINAL | EntryClass::ADJUSTING) {
+        return Err(usage(
+            "only Original and Adjusting intents declare pairs; a Reversal inherits its target's exact declaration",
+            FIX,
+        ));
+    }
+    let Json::Arr(items) = value else {
+        return Err(usage("intercompany_pairs must be an array", FIX));
+    };
+    if items.is_empty() || items.len() > fa_model::limits::MAX_LEGS_PER_ENTRY / 2 {
+        return Err(usage("intercompany_pairs has an invalid number of pairs", FIX));
+    }
+    let mut pairs = Vec::with_capacity(items.len());
+    for item in items {
+        let Json::Obj(fields) = item else {
+            return Err(usage("each intercompany pair must be an object", FIX));
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, _) in fields {
+            if !matches!(name.as_str(), "pair_key" | "left_leg" | "right_leg")
+                || !seen.insert(name)
+            {
+                return Err(usage(
+                    format!("unknown or repeated intercompany pair field {name}"),
+                    FIX,
+                ));
+            }
+        }
+        let pair_key = item
+            .get("pair_key")
+            .and_then(Json::as_str)
+            .ok_or_else(|| usage("intercompany pair_key must be a string", FIX))?;
+        let ordinal = |name: &str| -> Result<u16, Fail> {
+            match item.get(name) {
+                Some(Json::Int(value)) => u16::try_from(*value)
+                    .map_err(|_| usage(format!("intercompany {name} is out of range"), FIX)),
+                _ => Err(usage(format!("intercompany {name} must be an integer"), FIX)),
+            }
+        };
+        pairs.push(fa_model::IntercompanyPair {
+            pair_key: pair_key.to_string(),
+            left_leg: ordinal("left_leg")?,
+            right_leg: ordinal("right_leg")?,
+        });
+    }
+    pairs.sort_by(|left, right| left.pair_key.cmp(&right.pair_key));
+    proposal
+        .set_intercompany_pairs(&fa_model::IntercompanyPairs { pairs })
+        .map_err(|error| usage(error.to_string(), FIX))
+}
+
 /// Timing is request data. The posting kernel resolves its committed tick
 /// anchor and schedule law, and judges the prior period; the CLI never reads
 /// a clock or creates an effect.
@@ -8614,6 +8697,7 @@ fn post_timing(args: &Args, doc: &Json, class: EntryClass) -> Result<PostTiming,
         "relates_to",
         "fx",
         "application",
+        "intercompany_pairs",
         "external_subledger",
         "obligation_maturity",
         "receivable_maturity",
@@ -8934,6 +9018,7 @@ fn build_post_request_with_prior(
     let mut reversal_asset_basis = None;
     let mut reversal_application_terms = None;
     let mut reversal_fx_settlement_terms = None;
+    let mut reversal_intercompany_pairs = None;
     let mut target_evidence = Vec::new();
     let legs: Vec<LegPayload> = if class == EntryClass::RECLASSIFICATION {
         // A Reclassification names its target and moves part of its legs to
@@ -9220,6 +9305,12 @@ fn build_post_request_with_prior(
             .extensions
             .iter()
             .find(|(tag, _)| *tag == fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION)
+            .cloned();
+        reversal_intercompany_pairs = target
+            .proposal
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION)
             .cloned();
         if let Some(totals) = &mut reversal_base_totals {
             std::mem::swap(&mut totals.debits, &mut totals.credits);
@@ -9593,6 +9684,13 @@ fn build_post_request_with_prior(
         proposal.extensions.push(extension);
         proposal.extensions.sort_by_key(|(tag, _)| *tag);
     }
+    if let Some(extension) = reversal_intercompany_pairs {
+        proposal.schema_minor = proposal
+            .schema_minor
+            .max(fa_model::entry::INTERCOMPANY_PAIRS_SCHEMA_MINOR);
+        proposal.extensions.push(extension);
+        proposal.extensions.sort_by_key(|(tag, _)| *tag);
+    }
     for evidence in reversal_rate_evidence {
         if !proposal.evidence.contains(&evidence) {
             proposal.evidence.push(evidence);
@@ -9643,6 +9741,7 @@ fn build_post_request_with_prior(
             }
         }
     }
+    attach_intercompany_pairs(doc, &mut proposal)?;
     let proposal =
         crate::external_subledger::value_intent(book, &capability, doc, proposal, draft)?;
     let proposal = crate::fx::value_intent(book, &capability, doc, proposal, draft)?;

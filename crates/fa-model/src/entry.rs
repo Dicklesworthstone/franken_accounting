@@ -52,9 +52,10 @@ pub const SCHEMA_MAJOR: u16 = 1;
 /// explicit base-unit receipt/payment differences to their complete legs.
 /// Minor 10 binds explicit net-cash differences on source-bound FX settlements.
 /// Minor 11 retains approved, versioned cash-flow classification policy bodies.
+/// Minor 12 binds atomic native intercompany pairs to their complete entry.
 /// A writer may emit any minor ≤ this; bytes at a higher minor decode with
 /// their unknown extension tags preserved and skipped.
-pub const SCHEMA_MINOR: u16 = 11;
+pub const SCHEMA_MINOR: u16 = 12;
 /// The first minor whose layout carries the trailing extension block.
 pub const EXTENSIONS_MINOR: u16 = 1;
 pub const PROPOSAL_DIGEST_DOMAIN: &[u8] = b"fa:entry-proposal:v1";
@@ -291,6 +292,9 @@ pub const FX_SETTLEMENT_TERMS_SCHEMA_MINOR: u16 = 10;
 /// Immutable, reviewed cash-flow classification on its own PolicyControl.
 pub const CASH_FLOW_POLICY: u16 = 43;
 pub const CASH_FLOW_POLICY_MINOR: u16 = 11;
+/// Complete reciprocal base-unit leg pairs, published atomically in one entry.
+pub const INTERCOMPANY_PAIRS_EXTENSION: u16 = 44;
+pub const INTERCOMPANY_PAIRS_SCHEMA_MINOR: u16 = 12;
 pub const PRIOR_PERIOD_ADJUSTMENT_SCHEMA_MINOR: u16 = 3;
 
 /// The immutable source-period claim of a prior-period adjustment.
@@ -369,6 +373,7 @@ pub const KNOWN_EXTENSION_TAGS: &[u16] = &[
     APPLICATION_TERMS_EXTENSION,
     FX_SETTLEMENT_TERMS_EXTENSION,
     CASH_FLOW_POLICY,
+    INTERCOMPANY_PAIRS_EXTENSION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1939,6 +1944,7 @@ impl EntryPayload {
             ));
         }
         crate::cash_flow_policy::validate_entry(self)?;
+        crate::intercompany::validate_entry(self)?;
         if self
             .extensions
             .iter()
@@ -2710,6 +2716,34 @@ impl EntryPayload {
             .iter()
             .find(|(tag, _)| *tag == APPLICATION_TERMS_EXTENSION)
             .map(|(_, bytes)| crate::ApplicationTerms::decode(bytes).map_err(EntryError::from))
+            .transpose()
+    }
+
+    /// Bind complete reciprocal leg pairs before sealing or approval.
+    pub fn set_intercompany_pairs(
+        &mut self,
+        pairs: &crate::IntercompanyPairs,
+    ) -> Result<(), EntryError> {
+        pairs.validate_shape(self.legs.len())?;
+        let bytes = pairs.encode()?;
+        self.schema_minor = self.schema_minor.max(INTERCOMPANY_PAIRS_SCHEMA_MINOR);
+        match self
+            .extensions
+            .binary_search_by_key(&INTERCOMPANY_PAIRS_EXTENSION, |(tag, _)| *tag)
+        {
+            Ok(index) => self.extensions[index].1 = bytes,
+            Err(index) => self
+                .extensions
+                .insert(index, (INTERCOMPANY_PAIRS_EXTENSION, bytes)),
+        }
+        Ok(())
+    }
+
+    pub fn intercompany_pairs(&self) -> Result<Option<crate::IntercompanyPairs>, EntryError> {
+        self.extensions
+            .iter()
+            .find(|(tag, _)| *tag == INTERCOMPANY_PAIRS_EXTENSION)
+            .map(|(_, bytes)| crate::IntercompanyPairs::decode(bytes).map_err(EntryError::from))
             .transpose()
     }
 

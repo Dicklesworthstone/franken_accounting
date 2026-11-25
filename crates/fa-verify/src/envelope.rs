@@ -278,6 +278,14 @@ pub(crate) fn proposal_leg_details(proposal: &[u8]) -> Result<Vec<LegDetails>, D
     Ok(proposal_prefix(proposal)?.leg_details)
 }
 
+/// Native legs and their dimensions from one independent canonical parse.
+pub(crate) fn proposal_legs_and_details(
+    proposal: &[u8],
+) -> Result<(Vec<Leg>, Vec<LegDetails>), DecodeError> {
+    let prefix = proposal_prefix(proposal)?;
+    Ok((prefix.legs, prefix.leg_details))
+}
+
 fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeError> {
     let major = r.u16("entry.schema_major")?;
     if major != 1 {

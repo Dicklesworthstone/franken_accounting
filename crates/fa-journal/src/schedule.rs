@@ -1042,6 +1042,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
                         | fa_model::entry::FX_SETTLEMENT_VALUATION_EXTENSION
                         | fa_model::entry::APPLICATION_TERMS_EXTENSION
                         | fa_model::entry::FX_SETTLEMENT_TERMS_EXTENSION
+                        | fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION
                 )
             })
             .cloned(),

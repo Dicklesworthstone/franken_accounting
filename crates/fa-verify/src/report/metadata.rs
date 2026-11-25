@@ -3,6 +3,7 @@
 
 mod asset_cost;
 mod cash_policy;
+mod intercompany;
 #[cfg(test)]
 mod cutoff_tests;
 
@@ -476,6 +477,21 @@ fn entry_info_with_shape<'a>(
             if tag == 43 {
                 cash_policy::activation(proposal, envelope, bytes)?;
                 cash_policy_body = true;
+            }
+            if tag == 44 {
+                if minor < 12
+                    || !matches!(envelope.class, 1 | 4 | 7)
+                    || envelope.class != 4 && origin != 0
+                    || has_control
+                    || has_pending
+                    || has_base_totals
+                {
+                    return Err(failed(
+                        "intercompany_pairs",
+                        "native pairs require schema minor 12 and an Original/Adjusting Intent or exact Reversal, without control, pending or FX effects",
+                    ));
+                }
+                intercompany::validate(proposal, bytes)?;
             }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);

@@ -1355,6 +1355,9 @@ impl TemplateByteTracker {
                 );
             }
         }
+        for edge in crate::intercompany::projection_edges(entry_vid, &entry.proposal)? {
+            self.add_edge(relation::INTERCOMPANY_WITH, &edge.props);
+        }
         Ok(())
     }
 

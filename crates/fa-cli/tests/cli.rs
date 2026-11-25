@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use fa_cli::json::{self, Json};
 use fa_cli::verbs::registry;
 
+#[path = "cli/intercompany.rs"]
+mod intercompany;
 #[path = "cli/lot_disposal.rs"]
 mod lot_disposal;
 #[path = "cli/part370.rs"]

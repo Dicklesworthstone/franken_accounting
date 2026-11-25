@@ -2602,6 +2602,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             return Ok(Err(r));
         }
     };
+    // The complete native intercompany declaration is judged before any
+    // write; ordinary per-entity balance remains mandatory below.
+    if let Err(refusal) = crate::intercompany::admit(proposal, spec.base_unit, &leg_entities) {
+        return Ok(Err(refusal));
+    }
     // 1d. FX valuations (plan §5.2, §6.4; fa-s3c): unregistered FX laws or
     //     unvalued claims are refused as not implemented; registered FX laws
     //     are checked structurally and per-entity here and recomputed against
@@ -3166,6 +3171,14 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
         return Ok(Err(identity_conflict(Identity::Replacement, evid)));
     }
     if let Err(refusal) = crate::outcome::require_fresh_key(&txn, db, book, proposal, evid)? {
+        txn.abort();
+        return Ok(Err(refusal));
+    }
+
+    // Recognize exact historical retries before claiming the pair keys.
+    if let Err(refusal) =
+        crate::intercompany::witness_fresh(&txn, db, proposal, req.capability.is_scoped())?
+    {
         txn.abort();
         return Ok(Err(refusal));
     }
@@ -5627,6 +5640,14 @@ fn checked_entry_staged_counted<V: asupersync::fs::Vfs + Clone>(
 /// additional supporting evidence may be cited without changing the quote.
 pub(crate) fn exact_side_swap(original: &EntryPayload, reversal: &EntryPayload) -> bool {
     !original.legs.is_empty()
+        && original
+            .extensions
+            .iter()
+            .find(|(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION)
+            == reversal
+                .extensions
+                .iter()
+                .find(|(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION)
         && original
             .extensions
             .iter()

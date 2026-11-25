@@ -45,6 +45,7 @@ pub mod finding_history;
 pub mod fx;
 pub mod genesis;
 pub mod import;
+mod intercompany;
 pub mod issuance;
 pub mod legal_hold;
 pub mod limit;

@@ -48,10 +48,11 @@ pub(super) fn entry_identity(
     // identities with no distinguishing immutable marker. Control identities
     // are separately registered and must not fall through to the posting law.
     // Minors 9/10 add application/FX terms (extensions 41/42); minor 11 adds a
-    // separate PolicyControl definition. Monetary identities are unchanged.
+    // separate PolicyControl definition; minor 12 adds atomic intercompany
+    // pair declarations. Monetary entry identities are unchanged.
     // Posting semantics remain outside this citation proof;
     // future minors still refuse rather than assume their identity rules.
-    if minor > 11 || !(1..=15).contains(&class) || class == 5 {
+    if minor > 12 || !(1..=15).contains(&class) || class == 5 {
         return Err(EvidenceProductionError::UnsupportedTargetIdentity { leaf_index, class });
     }
     // Complete frame and citation checks apply to referenced targets even if

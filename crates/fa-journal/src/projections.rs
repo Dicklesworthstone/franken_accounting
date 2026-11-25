@@ -50,7 +50,7 @@ pub(crate) fn stage_legs(
     entry_vid: VId,
     entry: &Entry,
     book: &BookContext,
-) -> Result<[WriteBatch; 3], KernelError> {
+) -> Result<[WriteBatch; 4], KernelError> {
     let mut posts_to = WriteBatch::new(relation::POSTS_TO);
     let mut in_unit = WriteBatch::new(relation::IN_UNIT);
     let mut dimensions = WriteBatch::new(relation::FOR);
@@ -91,7 +91,8 @@ pub(crate) fn stage_legs(
             );
         }
     }
-    Ok([posts_to, in_unit, dimensions])
+    let intercompany = crate::intercompany::projection_batch(entry_vid, &entry.proposal)?;
+    Ok([posts_to, in_unit, dimensions, intercompany])
 }
 
 const LEG_PROPERTIES: [PropertyKeyId; 7] = [
@@ -120,8 +121,18 @@ fn expect_edge(
     props: Vec<(PropertyKeyId, CanonicalScalar)>,
 ) -> Result<(), KernelError> {
     let (relation, src, dst) = topology;
+    expect_edge_id(edges, edge_id(relation, src, dst), topology, owner, props)
+}
+
+fn expect_edge_id(
+    edges: &mut BTreeMap<EId, ExpectedEdge>,
+    eid: EId,
+    topology: (RelationId, VId, VId),
+    owner: (VId, u16),
+    props: Vec<(PropertyKeyId, CanonicalScalar)>,
+) -> Result<(), KernelError> {
+    let (relation, src, dst) = topology;
     let (entry, ordinal) = owner;
-    let eid = edge_id(relation, src, dst);
     if edges
         .insert(
             eid,
@@ -147,7 +158,11 @@ fn expect_edge(
 fn is_projection(relation: RelationId) -> bool {
     matches!(
         relation,
-        relation::HAS_LEG | relation::POSTS_TO | relation::FOR | relation::IN_UNIT
+        relation::HAS_LEG
+            | relation::POSTS_TO
+            | relation::FOR
+            | relation::IN_UNIT
+            | relation::INTERCOMPANY_WITH
     )
 }
 
@@ -321,6 +336,15 @@ pub fn verify_projections<V: asupersync::fs::Vfs + Clone>(
                     ));
                 }
             }
+        }
+        for edge in crate::intercompany::projection_edges(row.vid, &entry.proposal)? {
+            expect_edge_id(
+                &mut expected_edges,
+                edge.eid,
+                (relation::INTERCOMPANY_WITH, edge.src, edge.dst),
+                (row.vid, edge.ordinal),
+                edge.props,
+            )?;
         }
     }
     for row in rows.iter().filter(|row| row.labels.contains(&label::LEG)) {

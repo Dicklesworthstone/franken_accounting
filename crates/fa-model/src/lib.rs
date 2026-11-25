@@ -34,6 +34,7 @@ pub mod entry;
 pub mod erasable;
 pub mod fx_settlement;
 pub mod ids;
+pub mod intercompany;
 pub mod json;
 pub mod limits;
 pub mod lot_disposal;
@@ -80,6 +81,7 @@ pub use ids::{
     rule_name_vid, rule_version_vid, scenario_vid, statement_definition_vid,
     statement_issuance_vid, unit_vid,
 };
+pub use intercompany::{IntercompanyPair, IntercompanyPairs};
 pub use lot_disposal::{LotDisposalBasis, LotPolicy};
 pub use mirrors::{MirrorError, entry_mirrors, leg_mirrors};
 pub use proportional::ProportionalPostBasis;
