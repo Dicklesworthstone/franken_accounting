@@ -351,10 +351,11 @@ fn render_consolidation_basis(
 }
 
 // ---------------------------------------------------------------------------
-// fa recon (anchor | post | book-to-book) — plan §12.2, FA-INV-13, fa-259c
+// fa recon (anchor | post | book-to-book | intercompany) — plan §12.2–12.3
 // ---------------------------------------------------------------------------
 
-const RECON_USAGE: &str = "fa recon <anchor|post|book-to-book> ...";
+const RECON_USAGE: &str = "fa recon <anchor|post|book-to-book|intercompany> ...";
+const RECON_INTERCOMPANY_EXAMPLE: &str = "fa recon intercompany [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--budget <work units>] [--certify | --certificate-out <new-file>] --book <dir> --json";
 const RECON_ANCHOR_EXAMPLE: &str = "fa recon anchor (--parent-book <dir> [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>) --book <layer-dir> --json";
 const RECON_POST_EXAMPLE: &str = "fa recon post --reason-code <M1-TEMP-DEPRECIATION|M1-PERM-MEALS|...> [--rule-oid <64-hex>] --intent <file|-> [--approval <vid>]... [--dry-run [--plan-out <new-file>]] --book <layer-dir> --json";
 const RECON_BRIDGE_EXAMPLE: &str = "fa recon book-to-book (--period <code> | --as-of YYYY-MM-DD) --parent-book <dir> [--ancestor-book <dir>]... [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] [--as-known-at HEAD|<seq>|<RFC3339>] --book <layer-dir> --json";
@@ -382,11 +383,54 @@ pub(crate) fn recon_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         Some("anchor") => recon_anchor(ctx, args),
         Some("post") => recon_post(ctx, args),
         Some("book-to-book") => recon_book_to_book(ctx, args),
+        Some("intercompany") => recon_intercompany(ctx, args),
         _ => Err(usage(
-            "fa recon requires a subcommand: anchor, post, or book-to-book",
+            "fa recon requires a subcommand: anchor, post, book-to-book, or intercompany",
             RECON_USAGE,
         )),
     }
+}
+
+/// The plan's reconciliation spelling uses the same procedure, authority,
+/// budget, retained certificate and replay path as an explicit procedure run.
+/// Reject every adjustment-layer option instead of silently ignoring it.
+fn recon_intercompany(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
+    if args.positional.len() != 2 {
+        return Err(usage(
+            "fa recon intercompany takes no further positional arguments",
+            RECON_INTERCOMPANY_EXAMPLE,
+        ));
+    }
+    let registry = crate::verbs::registry().map_err(|error| Fail::Internal(error.into()))?;
+    for flag in args.flags.keys() {
+        if !registry.global.flags.contains(flag)
+            && ![
+                "--grant",
+                "--known-at",
+                "--as-known-at",
+                "--effective-through",
+                "--budget",
+                "--certificate-out",
+            ]
+            .contains(&flag.as_str())
+        {
+            return Err(usage(
+                format!("{flag} is not an intercompany reconciliation option"),
+                RECON_INTERCOMPANY_EXAMPLE,
+            ));
+        }
+    }
+    for switch in &args.switches {
+        if !registry.global.switches.contains(switch) && switch != "--certify" {
+            return Err(usage(
+                format!("{switch} is not an intercompany reconciliation option"),
+                RECON_INTERCOMPANY_EXAMPLE,
+            ));
+        }
+    }
+    let mut run = args.clone();
+    run.positional = vec!["procedure".into(), "run".into(), "recon.intercompany".into()];
+    crate::cli::procedure_cmd(ctx, &run)
 }
 
 fn parse_id128_hex(raw: &str, flag: &str) -> Result<fa_model::Id128, Fail> {

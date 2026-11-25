@@ -2949,6 +2949,57 @@ mod tests {
     }
 
     #[test]
+    fn intercompany_reconciliation_preserves_selectors_and_certification_authority() {
+        let (mcp, reg) = embedded();
+        let tool = mcp
+            .tool_by_wire("fa_match_intercompany")
+            .expect("intercompany reconciliation tool");
+        let schema = tool.input_schema(&mcp, reg);
+        assert!(schema["properties"].get("known_at").is_some());
+        assert!(schema["properties"].get("effective_through").is_some());
+        assert!(schema["properties"].get("certify").is_some());
+        assert!(schema["properties"].get("parent_book").is_none());
+        for certify in [false, true] {
+            let invocation = tool
+                .invocation(
+                    &mcp,
+                    reg,
+                    &json!({
+                        "known_at": "17",
+                        "effective_through": "2026-03-31",
+                        "budget": "1000",
+                        "certify": certify
+                    }),
+                )
+                .expect("registered intercompany invocation");
+            let parsed =
+                args::parse(&invocation.argv, &reg.value_flags(), &reg.switches()).unwrap();
+            assert_eq!(parsed.positional, vec!["recon", "intercompany"]);
+            assert_eq!(parsed.flag("--known-at"), Some("17"));
+            assert_eq!(parsed.flag("--effective-through"), Some("2026-03-31"));
+            assert_eq!(parsed.flag("--budget"), Some("1000"));
+            assert_eq!(parsed.switch("--certify"), certify);
+            assert_eq!(
+                fa_cli::cli::bound_command_ops("recon", &parsed)
+                    .map(|ops| ops.iter().map(|op| op.name()).collect::<Vec<_>>()),
+                Some(if certify {
+                    vec!["read", "produce"]
+                } else {
+                    vec!["read"]
+                })
+            );
+        }
+        for forbidden in [
+            json!({"grant": ["produce"]}),
+            json!({"certificate_out": "/tmp/intercompany.cert"}),
+            json!({"parent_book": "/other/book"}),
+            json!({"period": "FY2026-P03"}),
+        ] {
+            assert!(tool.invocation(&mcp, reg, &forbidden).is_err());
+        }
+    }
+
+    #[test]
     fn post_reserve_proportion_schema_preserves_exact_strings_and_scalar_compatibility() {
         let (mcp, reg) = embedded();
         let tool = mcp

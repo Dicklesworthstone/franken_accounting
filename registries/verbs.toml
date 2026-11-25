@@ -7921,14 +7921,14 @@ reason = "host-only: activation requires rule_change authority, two independent 
 
 [[verb]]
 name = "recon"
-summary = "Multi-book adjustment layers and Schedule M-1 / book-to-book reconciliation bridges (plan §12.2, FA-INV-13): anchor a layered book to a parent book's known-at frontier, post adjustment-layer entries carrying registered reason codes and rule lineage, and compute a certified book-to-book bridge."
+summary = "Reconcile declared intercompany pairs at a retained historical coordinate, or manage multi-book adjustment layers and Schedule M-1 / book-to-book bridges (plan §12.2–12.3, FA-INV-13)."
 writes = true
-subcommands = ["anchor", "post", "book-to-book"]
-flags = ["--parent-certificate", "--parent-book", "--ancestor-book", "--parent-book-id", "--parent-known-at", "--reason-code", "--rule-oid", "--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--prior-period-error", "--relates-to", "--draft", "--scenario", "--review", "--review-out", "--digest", "--approval", "--period", "--as-of", "--as-known-at"]
-switches = ["--dry-run", "--review-only"]
-events = ["adjustment_layer_anchored", "plan", "posted", "recorded", "book_to_book_reconciled"]
-exits = [0, 2, 3, 4, 5, 6, 7]
-usage = ["recon anchor (--parent-book <dir> [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>)   (journals an immutable SchemaChange adjustment-layer anchor under schema_change; reading a native parent also requires read, and an optional parent certificate is replayed against that book before its coordinates are accepted)", "recon post --reason-code <M1-PERM-MEALS|M1-PERM-TAX-EXEMPT|M1-PERM-PENALTIES|M1-TEMP-DEPRECIATION|M1-TEMP-BAD-DEBT|M1-TEMP-UNEARNED-REV|M3-TEMP-STOCK-COMP|STAT-RECLASS|MGMT-ALLOC> [--rule-oid <64-hex>] --intent <file.json|-> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]   (posts an adjustment-layer entry tagged with a registered book-to-book reason code and rule_version_oid; every non-zero book difference requires an explicit coded adjustment)", "recon book-to-book (--period <code> | --as-of YYYY-MM-DD) --parent-book <dir> [--ancestor-book <dir>]... [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] [--as-known-at HEAD|<seq>|<RFC3339>]   (replays complete parent stock against native history under read and reconcile; for a nested layer, list ancestor directories in immediate-parent-to-primary order, each read at its historical recorded anchor and the same civil cutoff. The output includes parent_source_digest and primary-to-parent ancestry; these identify in-process native replay, not a portable signed proof. Certificate-only imports refuse, parent restatements require re-anchoring, and every adjustment requires a registered reason code)"]
+subcommands = ["anchor", "post", "book-to-book", "intercompany"]
+flags = ["--parent-certificate", "--parent-book", "--ancestor-book", "--parent-book-id", "--parent-known-at", "--reason-code", "--rule-oid", "--intent", "--grant", "--evidence", "--event", "--balancing", "--plan-out", "--timeout-ns", "--reverse-on", "--prior-period-error", "--relates-to", "--draft", "--scenario", "--review", "--review-out", "--digest", "--approval", "--period", "--as-of", "--as-known-at", "--known-at", "--effective-through", "--budget", "--certificate-out"]
+switches = ["--dry-run", "--review-only", "--certify"]
+events = ["adjustment_layer_anchored", "plan", "posted", "recorded", "book_to_book_reconciled", "procedure_run", "report_certificate"]
+exits = [0, 2, 3, 4, 5, 6, 7, 8]
+usage = ["recon intercompany [--known-at HEAD|<seq>] [--effective-through YYYY-MM-DD] [--budget <work units>] [--certify | --certificate-out <new-file>]   (runs the current recon.intercompany procedure over the original declared pair bytes and reversal history; --as-known-at is an alias of --known-at. Each positive live leg on an intercompany or intercompany_activity role account needs an explicit pair declaration, even when unrelated legs net to zero. Declared pairs on ordinary accounts are also examined. The cutoff applies before reversal liveness. This does not infer missing declarations, match other books, choose FX rates or post eliminations.)", "Intercompany reconciliation emits procedure_run and, when certified, report_certificate. Current whole-book read is required; certification additionally requires produce and retains the existing procedure artifact for replay, status and supported portable verification. Findings are observations about declared coverage, not accounting or audit approval. A book with neither an assigned role nor declared history in the selected window refuses an empty population. Use procedure run recon.intercompany@2 to replay the retained aggregate-only algorithm; it takes no effective cutoff. Adjustment-layer posting flags are refused by the intercompany subcommand.", "recon anchor (--parent-book <dir> [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] | --parent-book-id <32-hex> --parent-known-at <seq>)   (journals an immutable SchemaChange adjustment-layer anchor under schema_change; reading a native parent also requires read, and an optional parent certificate is replayed against that book before its coordinates are accepted)", "recon post --reason-code <M1-PERM-MEALS|M1-PERM-TAX-EXEMPT|M1-PERM-PENALTIES|M1-TEMP-DEPRECIATION|M1-TEMP-BAD-DEBT|M1-TEMP-UNEARNED-REV|M3-TEMP-STOCK-COMP|STAT-RECLASS|MGMT-ALLOC> [--rule-oid <64-hex>] --intent <file.json|-> [--approval <vid>]... [--dry-run [--plan-out <new-file>]]   (posts an adjustment-layer entry tagged with a registered book-to-book reason code and rule_version_oid; every non-zero book difference requires an explicit coded adjustment)", "recon book-to-book (--period <code> | --as-of YYYY-MM-DD) --parent-book <dir> [--ancestor-book <dir>]... [--parent-certificate <hex|file> | --parent-known-at HEAD|<seq>] [--as-known-at HEAD|<seq>|<RFC3339>]   (replays complete parent stock against native history under read and reconcile; for a nested layer, list ancestor directories in immediate-parent-to-primary order, each read at its historical recorded anchor and the same civil cutoff. The output includes parent_source_digest and primary-to-parent ancestry; these identify in-process native replay, not a portable signed proof. Certificate-only imports refuse, parent restatements require re-anchoring, and every adjustment requires a registered reason code)"]
 example = "fa recon book-to-book --period FY2026-P03 --parent-book ./books/gaap --book ./books/tax --json"
 
 [[bound]]
@@ -7964,6 +7964,18 @@ verbs = ["recon"]
 subcommands = ["book-to-book"]
 ops = ["read", "reconcile"]
 
+[[bound]]
+verbs = ["recon"]
+subcommands = ["intercompany"]
+when_any = ["--certify", "--certificate-out"]
+ops = ["read", "produce"]
+
+[[bound]]
+verbs = ["recon"]
+subcommands = ["intercompany"]
+ops = ["read"]
+
+
 [[mcp.tool]]
 cluster = "fa.evidence"
 name = "retention"
@@ -7993,6 +8005,18 @@ stdin_via = "--file"
 required = ["id", "--parameter", "--file"]
 dont = ["Supply clean_scores, labeled_items ({score, anomaly}) and optional candidate_thresholds inline in calibration as exact integers; floats are refused.", "Treat calibrated thresholds and empirical FPR intervals as Claim::Statistical evidence under a replayable decision card, never as an accounting invariant or accusation; when no candidate satisfies the split-conformal bound, the pinned registry default is selected as fallback."]
 mistakes = ["Passing a floating-point score or threshold instead of an exact integer in the parameter's registered unit.", "Passing a host path as file instead of the inline calibration object."]
+
+[[mcp.tool]]
+cluster = "fa.match"
+name = "intercompany"
+verb = "recon"
+subcommands = ["intercompany"]
+positionals = []
+flags = ["--known-at", "--effective-through", "--budget"]
+switches = ["--certify"]
+required = []
+dont = ["This is the current declaration-aware recon.intercompany procedure. It validates explicit native pair declarations and flags every positive live leg on an intercompany or intercompany_activity account without a declared counterpart. Offsetting unrelated postings do not establish a match.", "known_at is HEAD or a recorded sequence; effective_through is an optional civil cutoff applied before reversal liveness. Omit both for the current all-date population. A run does not post accounting entries or elimination entries.", "Current whole-book read authority is required. certify: true additionally requires produce and returns the retained procedure certificate inline for fa_read_replay and certificate status. A call cannot grant itself authority; host paths and certificate_out are not accepted."]
+mistakes = ["Treating zero findings as a statement that all intercompany business was recorded: undeclared postings on accounts without these roles are outside the declared population.", "Passing a period, parent book, FX rate or adjustment-layer posting arguments; this read takes only its recorded coordinate, optional cutoff, work budget and certification switch."]
 
 [[mcp.tool]]
 cluster = "fa.match"

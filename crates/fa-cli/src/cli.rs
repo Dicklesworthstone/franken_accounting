@@ -25499,7 +25499,10 @@ pub(crate) fn procedure_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
                 .transpose()?;
             let who = ctx.principal(args);
             let bank = matches!(id, "recon.bank_statement_drift" | "graph.kiting");
-            let protected_cap = if certify || bank {
+            // Declaration reconciliation validates retained pair and reversal
+            // history even for an uncertified historical read. Use the same
+            // admitted history preparation as its certified counterpart.
+            let protected_cap = if certify || bank || id == "recon.intercompany" {
                 let cap = ctx.capability(
                     args,
                     if certify {

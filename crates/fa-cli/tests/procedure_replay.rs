@@ -584,5 +584,201 @@ fn procedure_calibrate_emits_statistical_conformal_bound_and_fallback_card() {
     assert_eq!(fl_exit, 2, "{fl_out}");
 }
 
+#[test]
+fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_exceptions() {
+    let dir = temp();
+    let path = dir.join("book");
+    ok(
+        &path,
+        &[
+            "book",
+            "create",
+            "--name",
+            "Declared intercompany reconciliation",
+            "--entity",
+            "A:Alpha",
+            "--entity",
+            "B:Beta",
+        ],
+    );
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[
+            {"code":"1000","name":"Cash","type":"Asset","unit":"USD"},
+            {"code":"1100","name":"Due from","type":"Asset","unit":"USD"},
+            {"code":"2000","name":"Due to","type":"Liability","unit":"USD"},
+            {"code":"3000","name":"Capital","type":"Equity","unit":"USD"},
+            {"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Expense","type":"Expense","unit":"USD"}
+        ]}"#,
+    )
+    .unwrap();
+    ok(&path, &["chart", "import", chart.to_str().unwrap()]);
+    ok(&path, &["period", "create", "--fiscal-year", "2026"]);
+    for period in ["FY2026-P01", "FY2026-P02"] {
+        ok(&path, &["period", "open", period]);
+    }
+    let source = dir.join("source.txt");
+    std::fs::write(&source, "Synthetic intercompany and unrelated source assertions").unwrap();
+    let recorded = ok(
+        &path,
+        &[
+            "document",
+            "add",
+            source.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&recorded[0]), "oid").to_string();
+    let intent = dir.join("declared.json");
+    std::fs::write(
+        &intent,
+        r#"{
+            "effective_date":"2026-01-15",
+            "idempotency_key":"declared-sale",
+            "description":"Declared reciprocal sale",
+            "intercompany_pairs":[
+                {"pair_key":"sale-activity","left_leg":1,"right_leg":2},
+                {"pair_key":"sale-balance","left_leg":0,"right_leg":3}
+            ],
+            "legs":[
+                {"side":"debit","account":"1100","amount":"100.00 USD","entity":"A"},
+                {"side":"credit","account":"4000","amount":"100.00 USD","entity":"A"},
+                {"side":"debit","account":"6000","amount":"100.00 USD","entity":"B"},
+                {"side":"credit","account":"2000","amount":"100.00 USD","entity":"B"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    ok(
+        &path,
+        &["post", "--intent", intent.to_str().unwrap(), "--evidence", &evidence],
+    );
+
+    // Pair declarations establish the population without account-name guesses
+    // or roles. The plan spelling and explicit procedure have identical data.
+    let clean = ok(&path, &["recon", "intercompany"]);
+    assert_eq!(number(data(&clean[0]), "version"), 3);
+    assert_eq!(number(data(&clean[0]), "finding_count"), 0);
+    let explicit = ok(&path, &["procedure", "run", "recon.intercompany"]);
+    assert_eq!(data(&clean[0]), data(&explicit[0]));
+    for (account, role) in [
+        ("1100", "intercompany"),
+        ("2000", "intercompany"),
+        ("4000", "intercompany_activity"),
+        ("6000", "intercompany_activity"),
+    ] {
+        ok(&path, &["chart", "role", account, role]);
+    }
+
+    let mut unrelated = Vec::new();
+    for (key, entity, debit, credit) in [
+        ("unrelated-a", "A", "1100", "3000"),
+        ("unrelated-b", "B", "1000", "2000"),
+    ] {
+        let file = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"effective_date":"2026-01-20","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"7.00 USD","entity":"{entity}"}},{{"side":"credit","account":"{credit}","amount":"7.00 USD","entity":"{entity}"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let posted = ok(
+            &path,
+            &["post", "--intent", file.to_str().unwrap(), "--evidence", &evidence],
+        );
+        unrelated.push(text(data(&posted[0]), "vid").to_string());
+    }
+    // These different postings cancel in the retained v2 aggregate algorithm.
+    let legacy = ok(&path, &["procedure", "run", "recon.intercompany@2"]);
+    assert_eq!(number(data(&legacy[0]), "finding_count"), 0);
+
+    let file = dir.join("intercompany.cert");
+    let certified = ok(
+        &path,
+        &[
+            "recon",
+            "intercompany",
+            "--effective-through",
+            "2026-01-31",
+            "--certificate-out",
+            file.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(certified.len(), 2);
+    let report = data(&certified[0]);
+    assert_eq!(number(report, "finding_count"), 2);
+    for finding in report.get("findings").and_then(Json::as_arr).unwrap() {
+        assert_eq!(
+            text(finding.get("statistic").unwrap(), "name"),
+            "intercompany_undeclared"
+        );
+        assert_eq!(number(finding.get("statistic").unwrap(), "value"), 700);
+    }
+    let retained = format!("C:{}", text(data(&certified[1]), "oid"));
+    let frontier = number(report, "known_at").to_string();
+    let replayed = ok(&path, &["replay", &retained]);
+    assert_eq!(data(&replayed[0]), report);
+
+    for entry in &unrelated {
+        ok(
+            &path,
+            &["reverse", entry, "--reason", "Duplicate", "--effective", "2026-02-15"],
+        );
+    }
+    let historical = ok(
+        &path,
+        &["recon", "intercompany", "--effective-through", "2026-01-31"],
+    );
+    assert_eq!(number(data(&historical[0]), "finding_count"), 2);
+    let current = ok(
+        &path,
+        &["recon", "intercompany", "--effective-through", "2026-02-28"],
+    );
+    assert_eq!(number(data(&current[0]), "finding_count"), 0);
+    let pinned = ok(
+        &path,
+        &[
+            "recon",
+            "intercompany",
+            "--as-known-at",
+            &frontier,
+            "--effective-through",
+            "2026-01-31",
+        ],
+    );
+    assert_eq!(data(&pinned[0]), report);
+    let replayed = ok(&path, &["replay", &retained]);
+    assert_eq!(data(&replayed[0]), report);
+
+    let before = ok(&path, &["book", "info"]);
+    for extra in [
+        vec!["--period", "FY2026-P01"],
+        vec!["--parent-known-at", "1"],
+        vec!["--dry-run"],
+    ] {
+        let mut args = vec!["recon", "intercompany"];
+        args.extend(extra);
+        let (exit, output, events) = call(&path, &args, None);
+        assert_eq!(exit, 2, "{output}");
+        assert_eq!(events.len(), 1, "{output}");
+        assert_eq!(text(&events[0], "event"), "error");
+    }
+    let (exit, output, events) = call(
+        &path,
+        &["recon", "intercompany", "--budget", "1", "--certify"],
+        None,
+    );
+    assert_eq!(exit, 3, "{output}");
+    assert_eq!(events.len(), 1, "{output}");
+    assert_eq!(text(&events[0], "event"), "error");
+    assert_eq!(ok(&path, &["book", "info"]), before);
+}
+
 #[path = "procedure_replay/extended.rs"]
 mod extended;
