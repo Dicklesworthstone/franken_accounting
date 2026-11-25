@@ -31,6 +31,8 @@
 //! with their effects. A retry authenticates the original control and claim;
 //! immutable records written before that protocol remain valid retry anchors.
 
+use std::collections::BTreeMap;
+
 use fa_intents::PostIntent;
 use fa_model::symbols::{label, property, relation};
 use fa_model::{
@@ -39,7 +41,9 @@ use fa_model::{
 };
 use fa_policy::{Capability, Denial, Intent, Op};
 use fa_time::DateDay;
-use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
+use fgdb::{
+    Database, EdgeRecord, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError,
+};
 use fgdb_types::context::PurposeContexts;
 use fgdb_types::{CanonicalScalar, CommitSeq, VId};
 
@@ -1447,10 +1451,26 @@ pub fn list_scenarios<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     book: &BookContext,
 ) -> Result<Vec<ScenarioView>, KernelError> {
+    let seq = db.frontier()?;
+    let rows = crate::op_witness::vertices_at(db, seq)?;
+    if !rows.iter().any(|row| row.labels.contains(&label::SCENARIO)) {
+        return Ok(Vec::new());
+    }
+    // Read the retained membership relation once for the entire listing.
+    // Repeating a whole-book edge scan for each scenario made ordinary
+    // counterfactual discovery grow with scenarios times journal size.
+    // Keep the native edge records: endpoint, relation and canonical identity
+    // checks below must not be replaced by an unchecked neighbour list.
+    let edges = crate::op_witness::edges_by_relation_at(db, relation::IN_CASE, seq)?;
+    let mut memberships = BTreeMap::<VId, Vec<&EdgeRecord>>::new();
+    for edge in &edges {
+        memberships.entry(edge.entry.dst).or_default().push(edge);
+    }
     let mut out = Vec::new();
-    for row in crate::op_witness::vertices(db)? {
+    for row in rows {
         if row.labels.contains(&label::SCENARIO) {
-            let view = view_of(db, &row)?;
+            let members = memberships.get(&row.vid).into_iter().flatten().copied();
+            let view = view_from_memberships(db, &row, seq, members)?;
             if view.body.book_id == book.book_id {
                 out.push(view);
             }
@@ -1464,17 +1484,27 @@ fn view_of<V: asupersync::fs::Vfs + Clone>(
     db: &Database<V>,
     row: &VertexRow,
 ) -> Result<ScenarioView, KernelError> {
+    let seq = db.frontier()?;
+    let edges = crate::op_witness::edges_by_relation_at(db, relation::IN_CASE, seq)?;
+    view_from_memberships(db, row, seq, &edges)
+}
+
+fn view_from_memberships<'a, V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    row: &VertexRow,
+    seq: CommitSeq,
+    members: impl IntoIterator<Item = &'a EdgeRecord>,
+) -> Result<ScenarioView, KernelError> {
     let scenario = row.vid;
     let body = scenario_row_body(row)?;
     let state = ScenarioState::from_scalar(prop(row, property::STATE)).ok_or_else(|| {
         KernelError::Corrupt(format!("scenario {:032x} state mirror", scenario.0))
     })?;
-    let seq = db.frontier()?;
     let mut intents = Vec::new();
     let mut assumptions = None;
     let mut opened_at = None;
     let mut discarded = None;
-    for edge in crate::op_witness::edges_at(db, seq)? {
+    for edge in members {
         let e = &edge.entry;
         if e.dst != scenario
             || e.relation != relation::IN_CASE

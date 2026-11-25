@@ -6,7 +6,7 @@ use fa_intents::PostIntent;
 use fa_journal::refusal::{Outcome, code};
 use fa_journal::scenario::{
     ScenarioFork, ScenarioRecorded, ScenarioRequest, ScenarioState, discard_scenario,
-    open_scenario, plan_into_scenario, read_scenario,
+    list_scenarios, open_scenario, plan_into_scenario, read_scenario,
 };
 use fa_model::symbols::label;
 
@@ -521,4 +521,127 @@ fn authentic_legacy_and_modern_scenario_retries_survive_compaction_and_reopen() 
         assert_eq!(h.db.vertex(claim).unwrap(), original_claim);
         assert_eq!(h.db.frontier().unwrap(), head);
     }
+}
+
+#[test]
+fn scenario_membership_reads_are_independent_of_unrelated_posting_edges() {
+    let mut h = harness();
+    let request = request(&h);
+    let planned = intent(&h, 125);
+    let opened = execute(&mut h, 0, &planned, &request).unwrap().unwrap();
+    let recorded = execute(&mut h, 1, &planned, &request).unwrap().unwrap();
+    let census = fa_journal::op_witness::begin();
+    let expected = read_scenario(&h.db, &h.book, NAME).unwrap().unwrap();
+    let original_work = census.finish();
+    assert_eq!(original_work.edge_scans, 1);
+    assert!(original_work.scanned_edges > 0);
+    assert_eq!(original_work.vertex_scans, 0);
+
+    for (batch_number, count) in [(1, 8), (2, 32)] {
+        let members = (0..count)
+            .map(|index| {
+                h.proposal(
+                    h.rent_legs(100),
+                    format!("unrelated-{batch_number}-{index}").as_bytes(),
+                    EntryClass::ORIGINAL,
+                )
+            })
+            .collect();
+        h.post_batch(h.batch(format!("unrelated-batch-{batch_number}").as_bytes(), members))
+            .unwrap();
+        let head = h.db.frontier().unwrap();
+        assert!(h.db.edges_at(head).unwrap().len() > original_work.scanned_edges as usize);
+
+        let census = fa_journal::op_witness::begin();
+        let actual = read_scenario(&h.db, &h.book, NAME).unwrap().unwrap();
+        let work = census.finish();
+        assert_eq!(work.edge_scans, 1);
+        assert_eq!(work.scanned_edges, original_work.scanned_edges);
+        assert_eq!(work.vertex_scans, 0);
+        assert_eq!(actual.body, expected.body);
+        assert_eq!(actual.state, ScenarioState::Open);
+        assert_eq!(actual.opened_at, opened.recorded_at);
+        assert_eq!(actual.assumptions, expected.assumptions);
+        assert_eq!(actual.intents.len(), 1);
+        assert_eq!(actual.intents[0].record, recorded.control_entry);
+        assert_eq!(actual.intents[0].recorded_at, recorded.recorded_at);
+        assert_eq!(
+            actual.intents[0].intent.canonical_bytes().unwrap(),
+            planned.canonical_bytes().unwrap()
+        );
+        assert!(actual.discarded.is_none());
+        assert_eq!(h.db.frontier().unwrap(), head);
+    }
+}
+
+#[test]
+fn scenario_listing_reads_memberships_once_and_keeps_order_and_corruption_checks() {
+    let mut h = harness();
+    let request = request(&h);
+    let ctx = h.ctx();
+    let mut records = Vec::new();
+    // Names deliberately sort differently from their opening sequence.
+    for name in ["z-last-name", "a-first-name", "m-middle-name"] {
+        let recorded = h
+            .runtime
+            .block_on(open_scenario(
+                &mut h.db,
+                &ctx,
+                &h.book,
+                name,
+                ScenarioFork::default(),
+                request.clone(),
+            ))
+            .unwrap()
+            .unwrap();
+        records.push((name, recorded));
+    }
+    h.runtime
+        .block_on(discard_scenario(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            records[1].0,
+            request,
+        ))
+        .unwrap()
+        .unwrap();
+
+    let census = fa_journal::op_witness::begin();
+    let listed = list_scenarios(&h.db, &h.book).unwrap();
+    let work = census.finish();
+    let relation_work = h
+        .db
+        .edges_by_relation_at(relation::IN_CASE, h.db.frontier().unwrap())
+        .unwrap();
+    assert_eq!(work.edge_scans, 1);
+    assert_eq!(work.scanned_edges as usize, relation_work.candidate_edges);
+    assert_eq!(work.vertex_scans, 1);
+    assert_eq!(listed.len(), records.len());
+    for (index, (view, (name, opened))) in listed.iter().zip(&records).enumerate() {
+        let single = read_scenario(&h.db, &h.book, name).unwrap().unwrap();
+        assert_eq!(view.body, single.body);
+        assert_eq!(view.body.name, *name);
+        assert_eq!(view.opened_at, opened.recorded_at);
+        assert_eq!(view.discarded, single.discarded);
+        assert_eq!(
+            view.state,
+            if index == 1 {
+                ScenarioState::Discarded
+            } else {
+                ScenarioState::Open
+            }
+        );
+    }
+
+    let mut damage = fgdb::WriteBatch::new(relation::IN_CASE);
+    damage.set_vertex_property(
+        records[2].1.control_entry,
+        property::FA_EFFECTIVE_DAY,
+        Some(CanonicalScalar::Int(1)),
+    );
+    h.write_raw(damage);
+    assert!(list_scenarios(&h.db, &h.book).is_err());
+    assert!(read_scenario(&h.db, &h.book, records[2].0).is_err());
+    assert!(read_scenario(&h.db, &h.book, records[0].0).is_ok());
 }
