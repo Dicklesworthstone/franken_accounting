@@ -1417,13 +1417,14 @@ summary = "Deterministic entity-resolution candidate generator over Party identi
 
 [[procedure]]
 id = "recon.intercompany"
-version = 2
+version = 3
 claim = "statistical"
 evidence = "FA-EVID-L41"
-tie_break = "account_vid"
+tie_break = "entry_vid"
 complexity = "O(legs log legs)"
 calibration = "uncalibrated"
-summary = "Exact intercompany reciprocal balance reconciliation over the accounts holding the `intercompany` account role (registries/account_roles.toml, assigned with fa chart role), per period and unit: a non-zero net reciprocal balance is a finding. Statistical until the kernel pairs intercompany legs at commit (FA-INV-13). Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens."
+effective_through = "optional"
+summary = "Native atomic intercompany declarations are checked across the full recorded prefix for reciprocal amounts and entities, unique original pair keys and exact reversal inheritance. Positive live legs on intercompany or intercompany_activity role accounts that lack a declared pair each produce a Critical finding; unrelated legs never cancel. Optional effective_through selects postings before reversal liveness. Declared pairs also enter the population without account roles. Refused when neither a selected declaration nor either role exists. Version 2's aggregate period/unit balance screen remains available only for retained replay. This checks declared native coverage, not cross-book matching, FX differences, consolidation or accounting intent."
 
 [[procedure]]
 id = "recon.lapping"

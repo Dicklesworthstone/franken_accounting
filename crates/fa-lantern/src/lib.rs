@@ -140,6 +140,7 @@ pub const ROLE_POPULATIONS: &[(&str, &str)] = &[
     ("jet.suspense_aging", "suspense"),
     ("jet.intercompany_unmatched", "intercompany"),
     ("recon.intercompany", "intercompany"),
+    ("recon.intercompany", "intercompany_activity"),
     ("recon.lapping", "receivable"),
     ("recon.lapping", "payable"),
     ("expense.capitalization", "fixed_asset"),
@@ -181,6 +182,15 @@ impl LanternError {
                     .into(),
             ),
             Self::BudgetExhausted { fix, .. } => Some(fix.clone()),
+            Self::RoleUnassigned { procedure, role }
+                if procedure == cutoff::ReconIntercompany::ID
+                    && role == "intercompany or intercompany_activity" =>
+            {
+                Some(
+                    "assign due-from/due-to accounts with fa chart role <account> intercompany, or revenue/expense accounts with fa chart role <account> intercompany_activity; native intercompany_pairs declarations on posting intents also supply the population"
+                        .into(),
+                )
+            }
             Self::RoleUnassigned { role, .. } => Some(format!(
                 "fa chart role <account> {role} assigns the role to each account it describes (fa chart roles lists what is assigned)"
             )),
@@ -1172,6 +1182,12 @@ pub fn bind_version(id: &str, version: u16) -> Result<Row, LanternError> {
         (cutoff::LookbackPreferences::ID, 3, 4) | (cutoff::LookbackFraudulentTransfer::ID, 1, 2)
     ) {
         row.version = version;
+        return Ok(row);
+    }
+    if id == cutoff::ReconIntercompany::ID && version == 2 && row.version == 3 {
+        row.version = 2;
+        row.effective_through = fa_registry::procedures::EffectiveThrough::NotTaken;
+        row.tie_break = fa_registry::procedures::TieBreak::AccountVid;
         return Ok(row);
     }
     if id == cutoff::ReconLapping::ID && matches!(version, 2 | 3) && row.version == 4 {

@@ -658,6 +658,36 @@ impl Snapshot {
             }
         }
         for e in &mut s.entries {
+            // Pair declarations follow the same monetary legs. Reversing
+            // only the vector would turn a valid declaration into a different
+            // economic pair. Invalid source bytes stay invalid in this probe.
+            let length = e.entry.proposal.legs.len();
+            if let Ok(Some(mut pairs)) = e.entry.proposal.intercompany_pairs() {
+                let mut valid = true;
+                for pair in &mut pairs.pairs {
+                    let remap = |ordinal: u16| {
+                        length
+                            .checked_sub(usize::from(ordinal) + 1)
+                            .and_then(|index| u16::try_from(index).ok())
+                    };
+                    if let (Some(left), Some(right)) =
+                        (remap(pair.right_leg), remap(pair.left_leg))
+                    {
+                        pair.left_leg = left;
+                        pair.right_leg = right;
+                    } else {
+                        valid = false;
+                    }
+                }
+                if valid
+                    && let Ok(bytes) = pairs.encode()
+                    && let Some((_, body)) = e.entry.proposal.extensions.iter_mut().find(
+                        |(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION,
+                    )
+                {
+                    *body = bytes;
+                }
+            }
             e.entry.proposal.legs.reverse();
             // A settlement follows its target leg through the permutation.
             // Moving only the source vector would silently apply it to a

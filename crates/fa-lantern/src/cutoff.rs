@@ -3,6 +3,7 @@
 
 mod attribution;
 mod investor_transfers;
+mod intercompany;
 mod reconciliation_arithmetic;
 mod register_claim;
 
@@ -98,21 +99,22 @@ impl Procedure for PeriodBoundary {
 
 /// `recon.intercompany` (plan §11.4, `FA-EVID-L41`, `claim = "statistical"`):
 /// exact intercompany reciprocal balance reconciliation over the accounts
-/// holding the `intercompany` role, per period and unit. A non-zero net is a
-/// finding; it is not an invariant violation until the kernel pairs
-/// intercompany legs at commit (FA-INV-13). Version 2 selects by role;
+/// holding a declared role. Version 3 validates the journal's atomic pair
+/// declarations and reports each uncovered live role leg independently.
+/// Version 2 retains the aggregate period/unit screen for historical replay;
 /// version 1 guessed from code and name tokens.
 pub struct ReconIntercompany {
     params: Params,
+    version: u16,
 }
-procedure_boilerplate!(ReconIntercompany, "recon.intercompany");
+procedure_boilerplate!(ReconIntercompany, "recon.intercompany", 3);
 
 impl Procedure for ReconIntercompany {
     fn id(&self) -> &'static str {
         Self::ID
     }
     fn version(&self) -> u16 {
-        2
+        self.version
     }
     fn params(&self) -> &Params {
         &self.params
@@ -123,7 +125,17 @@ impl Procedure for ReconIntercompany {
         book: &BookContext,
         work: &mut Meter<'_>,
     ) -> Result<Vec<Finding>, LanternError> {
-        let intercompany = snapshot.role_population(Self::ID)?;
+        if self.version == 3 {
+            return intercompany::run(snapshot, book, work);
+        }
+        // Preserve v2's original role and effective-date behavior.
+        let intercompany = snapshot.roles.accounts_with("intercompany");
+        if intercompany.is_empty() {
+            return Err(LanternError::RoleUnassigned {
+                procedure: Self::ID.into(),
+                role: "intercompany".into(),
+            });
+        }
         let mut live = snapshot.live_postings()?;
         live.sort_by_key(|e| e.vid);
 
@@ -184,6 +196,9 @@ impl Procedure for ReconIntercompany {
                     "intercompany reciprocal balance in period {period} unit {unit_id} is out of balance by signed net {net}"
                 ),
             ));
+        }
+        for finding in &mut out {
+            finding.version = self.version;
         }
         Ok(out)
     }

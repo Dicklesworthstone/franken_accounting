@@ -212,6 +212,7 @@ pub fn build_version(
         (PeriodEndTiming::ID, 1) => Ok(Box::new(PeriodEndTiming::with_version(params, 1))),
         (Layering::ID, 2) => Ok(Box::new(Layering::with_version(params, 2))),
         (PartyLayering::ID, 2) => Ok(Box::new(PartyLayering::with_version(params, 2))),
+        (ReconIntercompany::ID, 2) => Ok(Box::new(ReconIntercompany::with_version(params, 2))),
         (ReconLapping::ID, 2) => Ok(Box::new(ReconLapping::with_version(params, 2))),
         (ReconLapping::ID, 3) => Ok(Box::new(ReconLapping::with_version(params, 3))),
         (SolvencyCashFlowTest::ID, 5) => {

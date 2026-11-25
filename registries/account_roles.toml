@@ -88,7 +88,7 @@ consumers = ["payroll.ghost"]
 name = "intercompany_activity"
 account_types = ["Revenue", "Expense"]
 meaning = "An intercompany revenue or expense account: a charge, sale or interest between legal entities of the group, eliminated on consolidation against its reciprocal."
-consumers = []
+consumers = ["recon.intercompany"]
 verbs = ["consolidate"]
 
 [[role]]

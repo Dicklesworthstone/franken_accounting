@@ -74,6 +74,9 @@ mod calibration_tests;
 #[path = "lantern/roles.rs"]
 mod roles;
 
+#[path = "lantern/intercompany.rs"]
+mod intercompany;
+
 #[path = "lantern/jet.rs"]
 mod jet;
 
@@ -418,6 +421,10 @@ impl Harness {
 }
 
 fn harness() -> Harness {
+    harness_with_entities(Vec::new())
+}
+
+fn harness_with_entities(entities: Vec<fa_journal::genesis::LegalEntitySpec>) -> Harness {
     let runtime = RuntimeBuilder::new().build().expect("runtime");
     let root = runtime.request_cx_with_budget(Budget::INFINITE);
     let ctx = PurposeContexts::narrow_runtime_root(&root);
@@ -439,7 +446,7 @@ fn harness() -> Harness {
         base_unit: usd,
         calendar: calendar.clone(),
         time_zone_policy: None,
-        entities: Vec::new(),
+        entities,
         opening_date: None,
     };
     let symbols = SymbolTable::compiled();
@@ -3478,8 +3485,8 @@ fn fa_gen_labeled_scenario_corpora_calibrate_lantern_procedures() {
         ),
         (
             "recon.intercompany",
-            "intercompany",
-            "intercompany_imbalance",
+            "intercompany or intercompany_activity",
+            "intercompany_undeclared",
             1_200,
             2,
         ),

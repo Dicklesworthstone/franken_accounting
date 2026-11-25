@@ -22,6 +22,96 @@ const LAPPING_V4_COMPLEXITY: &str = "O((legs + parties) log (legs + parties) + l
 
 const SOLVENCY_V6_SUMMARY_SUFFIX: &str = " Version 6 also partitions the unscheduled screen by legal entity using the scheduled evaluator's normalization: unnamed legs share an unassigned scope when no entity is named, inherit the sole named entity, and are refused when multiple named entities make them ambiguous. Cash accounts net and floor at zero within each unit/entity; liability balances remain account-scoped and findings cite only their entity's contributing entries. Version 5's whole-book screen remains available for replay.";
 
+const INTERCOMPANY_V2_SUMMARY: &str = "Exact intercompany reciprocal balance reconciliation over the accounts holding the `intercompany` account role (registries/account_roles.toml, assigned with fa chart role), per period and unit: a non-zero net reciprocal balance is a finding. Statistical until the kernel pairs intercompany legs at commit (FA-INV-13). Refused when no account holds the role. Version 1 guessed the accounts from code and name tokens.";
+const INTERCOMPANY_V3_SUMMARY: &str = "Native atomic intercompany declarations are checked across the full recorded prefix for reciprocal amounts and entities, unique original pair keys and exact reversal inheritance. Positive live legs on intercompany or intercompany_activity role accounts that lack a declared pair each produce a Critical finding; unrelated legs never cancel. Optional effective_through selects postings before reversal liveness. Declared pairs also enter the population without account roles. Refused when neither a selected declaration nor either role exists. Version 2's aggregate period/unit balance screen remains available only for retained replay. This checks declared native coverage, not cross-book matching, FX differences, consolidation or accounting intent.";
+
+/// Reconstruct exactly the aggregate intercompany screen's published row.
+/// Other procedures and all unrelated registry fields remain committed.
+pub fn intercompany_v2_document(
+    mut doc: crate::toml::Document,
+) -> Result<crate::toml::Document, RegistryError> {
+    let rows = doc
+        .arrays
+        .get_mut("procedure")
+        .ok_or_else(|| invalid(R, "missing retained intercompany row"))?;
+    let mut matching = rows.iter_mut().filter(|row| {
+        row.get("id").and_then(crate::toml::Value::as_str) == Some("recon.intercompany")
+    });
+    let row = matching
+        .next()
+        .ok_or_else(|| invalid(R, "missing retained intercompany row"))?;
+    if matching.next().is_some()
+        || row.len() != 9
+        || row.get("version").and_then(crate::toml::Value::as_int) != Some(3)
+        || req_str(R, row, "effective_through")? != "optional"
+        || req_str(R, row, "claim")? != "statistical"
+        || req_str(R, row, "evidence")? != "FA-EVID-L41"
+        || req_str(R, row, "tie_break")? != "entry_vid"
+        || req_str(R, row, "complexity")? != "O(legs log legs)"
+        || req_str(R, row, "calibration")? != "uncalibrated"
+        || req_str(R, row, "summary")? != INTERCOMPANY_V3_SUMMARY
+    {
+        return Err(invalid(R, "unavailable declaration-aware intercompany revision"));
+    }
+    row.insert("version".into(), crate::toml::Value::Int(2));
+    row.remove("effective_through");
+    row.insert(
+        "tie_break".into(),
+        crate::toml::Value::Str("account_vid".into()),
+    );
+    row.insert(
+        "summary".into(),
+        crate::toml::Value::Str(INTERCOMPANY_V2_SUMMARY.into()),
+    );
+    Ok(doc)
+}
+
+/// Restore only the known intercompany block in a raw-text certificate epoch.
+/// The canonical inverse above independently checks the same transformation.
+pub fn intercompany_v2_registry_text(text: &str) -> Result<String, RegistryError> {
+    let expected = intercompany_v2_document(load(R, text)?)?.canonical_bytes();
+    let prefix = "[[procedure]]\nid = \"recon.intercompany\"\n";
+    if text.matches(prefix).count() != 1 {
+        return Err(invalid(R, "unavailable raw intercompany revision"));
+    }
+    let start = text
+        .find(prefix)
+        .ok_or_else(|| invalid(R, "missing raw intercompany row"))?;
+    let tail = &text[start + prefix.len()..];
+    let end = tail
+        .find("\n[[")
+        .map_or(text.len(), |offset| start + prefix.len() + offset);
+    let block = &text[start..end];
+    let summary = format!("summary = \"{INTERCOMPANY_V3_SUMMARY}\"\n");
+    for line in [
+        "version = 3\n",
+        "effective_through = \"optional\"\n",
+        "tie_break = \"entry_vid\"\n",
+        summary.as_str(),
+    ] {
+        if block.matches(line).count() != 1 {
+            return Err(invalid(R, "unavailable raw intercompany fields"));
+        }
+    }
+    let restored = block
+        .replacen("version = 3\n", "version = 2\n", 1)
+        .replacen("effective_through = \"optional\"\n", "", 1)
+        .replacen("tie_break = \"entry_vid\"\n", "tie_break = \"account_vid\"\n", 1)
+        .replacen(
+            &summary,
+            &format!("summary = \"{INTERCOMPANY_V2_SUMMARY}\"\n"),
+            1,
+        );
+    let retained = format!("{}{restored}{}", &text[..start], &text[end..]);
+    if load(R, &retained)?.canonical_bytes() != expected {
+        return Err(invalid(
+            R,
+            "retained raw and canonical intercompany registries disagree",
+        ));
+    }
+    Ok(retained)
+}
+
 /// Restore exactly the published whole-book cash-flow screen.
 pub fn solvency_v5_document(
     mut doc: crate::toml::Document,
@@ -1078,6 +1168,52 @@ mod tests {
         let unknown = PROCEDURES.replace(SOLVENCY_V6_SUMMARY_SUFFIX, " unknown entity law");
         assert!(solvency_v5_document(load(R, &unknown).unwrap()).is_err());
         assert!(solvency_v5_registry_text(&unknown).is_err());
+    }
+
+    #[test]
+    fn intercompany_v2_registry_restores_only_the_published_algorithm() {
+        let current = load(R, PROCEDURES).unwrap();
+        let previous = intercompany_v2_document(current.clone()).unwrap();
+        let raw = intercompany_v2_registry_text(PROCEDURES).unwrap();
+        assert_eq!(load(R, &raw).unwrap().canonical_bytes(), previous.canonical_bytes());
+        let old = Procedures::from_text(&raw).unwrap();
+        let row = old.get("recon.intercompany").unwrap();
+        assert_eq!(row.version, 2);
+        assert_eq!(row.effective_through, EffectiveThrough::NotTaken);
+        assert_eq!(row.summary, INTERCOMPANY_V2_SUMMARY);
+        for (current, previous) in current.arrays["procedure"]
+            .iter()
+            .zip(&previous.arrays["procedure"])
+        {
+            if current.get("id").and_then(crate::toml::Value::as_str)
+                != Some("recon.intercompany")
+            {
+                assert_eq!(current, previous, "unrelated algorithm meaning stays committed");
+            }
+        }
+        let layout = PROCEDURES.replace(
+            "[[procedure]]\nid = \"recon.intercompany\"",
+            "[[procedure]]\n# canonical layout change\nid = \"recon.intercompany\"",
+        );
+        assert_eq!(
+            intercompany_v2_document(load(R, &layout).unwrap()).unwrap().canonical_bytes(),
+            previous.canonical_bytes(),
+        );
+        assert!(intercompany_v2_registry_text(&layout).is_err());
+        let unrelated = PROCEDURES.replace("FA-EVID-L01", "FA-EVID-L99");
+        assert_ne!(
+            intercompany_v2_document(load(R, &unrelated).unwrap()).unwrap().canonical_bytes(),
+            previous.canonical_bytes(),
+        );
+        let future = PROCEDURES.replace(
+            "id = \"recon.intercompany\"\nversion = 3",
+            "id = \"recon.intercompany\"\nversion = 4",
+        );
+        assert!(intercompany_v2_document(load(R, &future).unwrap()).is_err());
+        assert!(intercompany_v2_registry_text(&future).is_err());
+        let unknown = PROCEDURES.replace(INTERCOMPANY_V3_SUMMARY, "unknown reciprocal rule");
+        assert!(intercompany_v2_document(load(R, &unknown).unwrap()).is_err());
+        assert!(intercompany_v2_registry_text(&unknown).is_err());
     }
 
     const MINIMAL: &str = r#"

@@ -49,7 +49,8 @@ pub const EXTENDED_CERTIFIABLE_PROCEDURES: &[(&str, u16)] = &[
     // fa-b6xs: reads live postings and the REA parties this closure binds.
     ("graph.party_concentration", 1),
     ("graph.identity_resolution", 1),
-    ("recon.intercompany", 2),
+    // Version 3 checks declared reciprocal coverage within the native prefix.
+    ("recon.intercompany", 3),
     // Version 4 indexes settlement credits and meters each search candidate.
     ("recon.lapping", 4),
     // Version 2 preserves each declared-entity cell and effective cutoff.
@@ -98,6 +99,7 @@ pub(super) fn supported(id: &str, version: u16) -> bool {
                 | ("lookback.preferences", 3)
                 | ("lookback.fraudulent_transfer", 1)
                 | ("recon.lapping", 2 | 3)
+                | ("recon.intercompany", 2)
                 | ("solvency.cash_flow_test", 5)
         )
 }

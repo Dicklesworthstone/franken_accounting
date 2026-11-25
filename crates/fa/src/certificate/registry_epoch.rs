@@ -123,10 +123,9 @@ fn document(name: &str, text: &str) -> Result<Document, Refusal> {
     Ok(doc)
 }
 
-/// Adding graph.kiting to the cash role's consumer list does not change a
-/// consolidation's account selection. Accept the exact previously published
-/// document as well as the current one; every role, mapping, meaning and other
-/// consumer remains committed and compared. No field is generally ignored.
+/// New procedure consumers do not change a consolidation's account selection.
+/// Accept only the exact published documents, reversing each known transition
+/// in order. Role meanings, mappings and every other consumer remain bound.
 fn supported_account_roles(archived: &Document) -> Result<bool, Refusal> {
     let mut previous = document(
         "account_roles",
@@ -135,30 +134,36 @@ fn supported_account_roles(archived: &Document) -> Result<bool, Refusal> {
     if archived == &previous {
         return Ok(true);
     }
-    let consumers = previous
-        .arrays
-        .get_mut("role")
-        .and_then(|roles| {
-            roles
-                .iter_mut()
-                .find(|role| role.get("name").and_then(Value::as_str) == Some("cash"))
-        })
-        .and_then(|cash| cash.get_mut("consumers"));
-    let Some(Value::Array(consumers)) = consumers else {
-        return Err(unavailable(
-            "the pre-kiting cash-role registry is unavailable",
-        ));
-    };
-    if consumers.pop() != Some(Value::Str("graph.kiting".into()))
-        || consumers
-            .iter()
-            .any(|value| value.as_str() == Some("graph.kiting"))
-    {
-        return Err(unavailable(
-            "the pre-kiting cash-role consumer epoch is unavailable",
-        ));
+    for (role, consumer) in [
+        ("intercompany_activity", "recon.intercompany"),
+        ("cash", "graph.kiting"),
+    ] {
+        let consumers = previous
+            .arrays
+            .get_mut("role")
+            .and_then(|roles| {
+                roles
+                    .iter_mut()
+                    .find(|row| row.get("name").and_then(Value::as_str) == Some(role))
+            })
+            .and_then(|row| row.get_mut("consumers"));
+        let Some(Value::Array(consumers)) = consumers else {
+            return Err(unavailable(format!(
+                "the retained {role} consumer registry is unavailable"
+            )));
+        };
+        if consumers.pop() != Some(Value::Str(consumer.into()))
+            || consumers.iter().any(|value| value.as_str() == Some(consumer))
+        {
+            return Err(unavailable(format!(
+                "the retained {role} consumer epoch is unavailable"
+            )));
+        }
+        if archived == &previous {
+            return Ok(true);
+        }
     }
-    Ok(archived == &previous)
+    Ok(false)
 }
 
 impl Epoch {
@@ -1096,6 +1101,28 @@ mod tests {
     }
 
     #[test]
+    fn consolidation_accepts_previous_intercompany_consumers_but_not_mixed_epochs() {
+        let source = include_str!("../../../../registries/account_roles.toml");
+        let new = "consumers = [\"recon.intercompany\"]\nverbs = [\"consolidate\"]";
+        assert_eq!(source.matches(new).count(), 1);
+        let previous = source.replacen(new, "consumers = []\nverbs = [\"consolidate\"]", 1);
+        assert!(supported_account_roles(&document("account_roles", &previous).unwrap()).unwrap());
+        // This combination was never published: the new intercompany consumer
+        // cannot be combined with the old cash consumer document.
+        let mixed = source.replacen(", \"graph.kiting\"", "", 1);
+        assert!(!supported_account_roles(&document("account_roles", &mixed).unwrap()).unwrap());
+        for (from, to) in [
+            ("name = \"intercompany_activity\"", "name = \"changed_activity\""),
+            ("account_types = [\"Revenue\", \"Expense\"]", "account_types = [\"Expense\"]"),
+            ("name = \"intercompany\"", "name = \"changed_balance\""),
+        ] {
+            assert!(previous.contains(from));
+            let changed = previous.replacen(from, to, 1);
+            assert!(!supported_account_roles(&document("account_roles", &changed).unwrap()).unwrap());
+        }
+    }
+
+    #[test]
     fn consolidation_epochs_accept_only_the_exact_pre_kiting_cash_consumer_document() {
         let book = Id128([0xc7; 16]);
         let units = fa_money::UnitRegistry::embedded().unwrap();
@@ -1113,6 +1140,13 @@ mod tests {
                 .iter_mut()
                 .find(|(name, _)| name == "account_roles")
                 .unwrap();
+            let intercompany = "consumers = [\"recon.intercompany\"]\nverbs = [\"consolidate\"]";
+            assert_eq!(roles.matches(intercompany).count(), 1);
+            *roles = roles.replacen(
+                intercompany,
+                "consumers = []\nverbs = [\"consolidate\"]",
+                1,
+            );
             assert_eq!(roles.matches(", \"graph.kiting\"").count(), 1);
             *roles = roles.replacen(", \"graph.kiting\"", "", 1);
             let original_roles = roles.clone();

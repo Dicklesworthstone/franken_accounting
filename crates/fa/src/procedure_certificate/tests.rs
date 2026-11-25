@@ -939,3 +939,6 @@ mod kiting_cases;
 
 #[path = "tests/offline.rs"]
 mod offline;
+
+#[path = "tests/intercompany.rs"]
+mod intercompany;

@@ -368,9 +368,40 @@ fn registry_digest() -> Result<[u8; 32], Refusal> {
     crate::certificate::canonical_closure(b"fa:procedure-registry:v2", PROCEDURE_REGISTRIES)
 }
 
-/// Adding a procedure does not rewrite any previously published registry
-/// epoch. The explicit suffix boundary retains even the old raw-text bytes.
-fn pre_kiting_registry_text() -> Result<&'static str, Refusal> {
+/// Preserve the immediately preceding full registry, including kiting. This
+/// exact inverse also precedes every older epoch reconstruction: changing one
+/// row must not silently rewrite certificates for unrelated procedures.
+fn pre_intercompany_registry_document() -> Result<Vec<u8>, Refusal> {
+    fa_registry::toml::parse(PROCEDURE_REGISTRIES[0].1)
+        .map_err(|error| invalid(format!("procedure registry: {error}")))
+        .and_then(|document| {
+            fa_registry::procedures::intercompany_v2_document(document)
+                .map(|document| document.canonical_bytes())
+                .map_err(|error| invalid(format!("retained intercompany registry: {error}")))
+        })
+}
+
+fn pre_intercompany_registry_text() -> Result<&'static str, Refusal> {
+    static TEXT: std::sync::OnceLock<Result<String, Refusal>> = std::sync::OnceLock::new();
+    TEXT.get_or_init(|| {
+        fa_registry::procedures::intercompany_v2_registry_text(PROCEDURE_REGISTRIES[0].1)
+            .map_err(|error| invalid(format!("retained raw intercompany registry: {error}")))
+    })
+    .as_ref()
+    .map(String::as_str)
+    .map_err(Clone::clone)
+}
+
+fn intercompany_v2_registry_digest() -> Result<[u8; 32], Refusal> {
+    canonical_procedure_closure(
+        &pre_intercompany_registry_document()?,
+        PROCEDURE_REGISTRIES[1].1,
+    )
+}
+
+/// The canonical path reads the current prefix and independently restores its
+/// old intercompany row. It does not depend on the strict raw-text inverse.
+fn pre_kiting_current_registry_text() -> Result<&'static str, Refusal> {
     const BOUNDARY: &str =
         "# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.\n";
     let text = PROCEDURE_REGISTRIES[0].1;
@@ -382,14 +413,32 @@ fn pre_kiting_registry_text() -> Result<&'static str, Refusal> {
         .ok_or_else(|| invalid("the pre-kiting procedure registry is unavailable"))
 }
 
+/// Adding a procedure does not rewrite any previously published registry
+/// epoch. The explicit suffix boundary retains even the old raw-text bytes.
+fn pre_kiting_registry_text() -> Result<&'static str, Refusal> {
+    const BOUNDARY: &str =
+        "# graph.kiting v1 registry epoch begins here; preserve the preceding raw closure.\n";
+    let text = pre_intercompany_registry_text()?;
+    if text.matches(BOUNDARY).count() != 1 {
+        return Err(invalid("the pre-kiting procedure registry is unavailable"));
+    }
+    text.split_once(BOUNDARY)
+        .map(|(previous, _)| previous)
+        .ok_or_else(|| invalid("the pre-kiting procedure registry is unavailable"))
+}
+
 fn pre_kiting_registry_document() -> Result<fa_registry::toml::Document, Refusal> {
-    fa_registry::toml::parse(pre_kiting_registry_text()?)
-        .map_err(|error| invalid(format!("pre-kiting procedure registry: {error}")))
+    let document = fa_registry::toml::parse(pre_kiting_current_registry_text()?)
+        .map_err(|error| invalid(format!("pre-kiting procedure registry: {error}")))?;
+    fa_registry::procedures::intercompany_v2_document(document)
+        .map_err(|error| invalid(format!("retained intercompany registry: {error}")))
 }
 
 fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
-    let jet = fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_registry_text()?)
-        .and_then(fa_registry::procedures::solvency_v5_document)
+    let jet =
+        fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_current_registry_text()?)
+            .and_then(fa_registry::procedures::intercompany_v2_document)
+            .and_then(fa_registry::procedures::solvency_v5_document)
         .and_then(fa_registry::procedures::lapping_v2_document)
         .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
     let layering = fa_registry::procedures::layering_v2_document(jet)
@@ -483,11 +532,22 @@ fn current_procedure_document() -> Result<Vec<u8>, Refusal> {
         .map_err(|error| invalid(format!("procedure registry: {error}")))
 }
 
-fn declares_kiting(registry: &[u8; 32]) -> Result<bool, Refusal> {
+fn declares_intercompany_v3(registry: &[u8; 32]) -> Result<bool, Refusal> {
     Ok(registry == &registry_digest()?
         || published_canonical(registry, &current_procedure_document()?)?
         || registry
             == &raw_procedure_closure(PROCEDURE_REGISTRIES[0].1, published_foundations()[0]))
+}
+
+fn declares_kiting(registry: &[u8; 32]) -> Result<bool, Refusal> {
+    Ok(declares_intercompany_v3(registry)?
+        || registry == &intercompany_v2_registry_digest()?
+        || published_canonical(registry, &pre_intercompany_registry_document()?)?
+        || registry
+            == &raw_procedure_closure(
+                pre_intercompany_registry_text()?,
+                published_foundations()[0],
+            ))
 }
 
 fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Refusal> {
@@ -506,6 +566,8 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
         registry_digest_with_procedures(pre_lapping_metering_registry_document()?.canonical_bytes())
     } else if procedure == "solvency.cash_flow_test" && version == 5 {
         registry_digest_with_procedures(pre_solvency_registry_document()?.canonical_bytes())
+    } else if procedure == "recon.intercompany" && version == 2 {
+        intercompany_v2_registry_digest()
     } else {
         registry_digest()
     }
@@ -513,11 +575,11 @@ fn registry_digest_for_run(procedure: &str, version: u16) -> Result<[u8; 32], Re
 
 fn layering_v2_registry_document(legacy_jet: bool) -> Result<Vec<u8>, Refusal> {
     let document = if legacy_jet {
-        fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_registry_text()?)
+        fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_current_registry_text()?)
+            .and_then(fa_registry::procedures::intercompany_v2_document)
             .map_err(|error| invalid(format!("retained JET/layering registry: {error}")))?
     } else {
-        fa_registry::toml::parse(pre_kiting_registry_text()?)
-            .map_err(|error| invalid(format!("retained layering registry: {error}")))?
+        pre_kiting_registry_document()?
     };
     fa_registry::procedures::solvency_v5_document(document)
         .and_then(fa_registry::procedures::lapping_v2_document)
@@ -724,6 +786,12 @@ fn canonical_registry_document(registry: &[u8; 32]) -> Result<Option<Vec<u8>>, R
     let current = current_procedure_document()?;
     if registry == &registry_digest()? || published_canonical(registry, &current)? {
         return Ok(Some(current));
+    }
+    let intercompany = pre_intercompany_registry_document()?;
+    if registry == &intercompany_v2_registry_digest()?
+        || published_canonical(registry, &intercompany)?
+    {
+        return Ok(Some(intercompany));
     }
     let previous = pre_kiting_registry_document()?.canonical_bytes();
     if registry == &canonical_procedure_closure(&previous, published_foundations()[0])? {
@@ -1423,6 +1491,11 @@ impl ProcedureCertificate {
             "lookback.fraudulent_transfer" => Some(fraud_version),
             "recon.lapping" => Some(lapping_version),
             "solvency.cash_flow_test" => Some(solvency_version),
+            "recon.intercompany" => Some(if declares_intercompany_v3(&self.registry)? {
+                3
+            } else {
+                2
+            }),
             _ => None,
         };
         if declared_version.is_some_and(|version| version != self.report.version) {
