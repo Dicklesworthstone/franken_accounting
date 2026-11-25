@@ -1107,6 +1107,7 @@ mod tests {
             case_member: Some(case),
             prior_period_adjustment: Some(prior),
             external_subledger: None,
+            intercompany_pairs: None,
             evidence: Vec::new(),
             principal: 0,
             origin: 0,

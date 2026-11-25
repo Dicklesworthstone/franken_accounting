@@ -1180,7 +1180,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     let selected = [
         ("jet.suspense_aging", "suspense"),
         ("jet.intercompany_unmatched", "intercompany"),
-        ("recon.intercompany", "intercompany"),
+        ("recon.intercompany", "intercompany or intercompany_activity"),
         ("recon.lapping", "receivable or payable"),
         ("expense.capitalization", "fixed_asset"),
         ("aging.inventory", "inventory"),
@@ -1225,7 +1225,7 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
         let version = match id {
             "graph.ponzi_motif" => 1,
             "lookback.preferences" | "recon.lapping" => 4,
-            "aging.inventory" | "jet.suspense_aging" => 3,
+            "aging.inventory" | "jet.suspense_aging" | "recon.intercompany" => 3,
             "solvency.cash_flow_test" => 6,
             "ponzi.net_investment" => 5,
             "distribution.rising_tide" | "distribution.pro_rata" => 4,

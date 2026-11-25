@@ -118,6 +118,7 @@ fn exact(selection: &statement::Selection) -> statement::VerifiedStatement {
         case_member: None,
         prior_period_adjustment: None,
         external_subledger: None,
+        intercompany_pairs: None,
         evidence: vec![],
         principal: 1,
         origin: 0,

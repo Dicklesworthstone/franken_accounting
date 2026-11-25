@@ -2456,6 +2456,13 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("source_document_truth", s("not_judged")),
         ]);
     }
+    if report.parameters.is_intercompany() {
+        summary.extend([
+            ("coverage_scope", s("native declared pairs and live intercompany role legs")),
+            ("entity_basis", s("authenticated literal leg dimensions")),
+            ("posting_admission", s("not_judged")),
+        ]);
+    }
     summary.extend([
         ("population", n(report.population)),
         ("live_entries", n(report.live_entries)),
@@ -2495,6 +2502,7 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
                 | crate::report::VerifiedProcedureStatistic::SubsequentEventAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::UnrecordedLiabilityAmount { .. }
                 | crate::report::VerifiedProcedureStatistic::CapitalizedExpense { .. }
+                | crate::report::VerifiedProcedureStatistic::IntercompanyUndeclared { .. }
                 | crate::report::VerifiedProcedureStatistic::StaleInventory { .. }
                 | crate::report::VerifiedProcedureStatistic::InsolvencyDeficit { .. }
                 | crate::report::VerifiedProcedureStatistic::InvestorPrincipal { .. }
@@ -2530,6 +2538,16 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
             ("population", n(finding.population)),
         ];
         match &finding.statistic {
+            crate::report::VerifiedProcedureStatistic::IntercompanyUndeclared {
+                account, ordinal, unit, period, ..
+            } => {
+                details.extend([
+                    ("account", s(format!("{account:032x}"))),
+                    ("ordinal", n(u64::from(*ordinal))),
+                    ("unit", n(u64::from(*unit))),
+                    ("period", period.as_deref().map_or(Json::Null, s)),
+                ]);
+            }
             crate::report::VerifiedProcedureStatistic::InvestorPrincipal {
                 party,
                 unit,
@@ -8108,6 +8126,22 @@ mod tests {
             json.contains("\"value\":\"3\""),
             "even small whole-unit amounts stay strings"
         );
+        run.procedure = "recon.intercompany".into();
+        run.version = 3;
+        run.parameters = VerifiedProcedureParameters::IntercompanyCoverage;
+        run.findings[0].entry = Some(11);
+        run.findings[0].severity = 4;
+        run.findings[0].statistic = VerifiedProcedureStatistic::IntercompanyUndeclared {
+            account: 10, ordinal: 256, unit: 0, amount: i128::MAX, scale: 2,
+            period: Some("FY2026-P01".into()),
+        };
+        let json = render(&run);
+        assert!(json.contains("\"statistic\":\"intercompany_undeclared\""));
+        assert!(json.contains("\"coverage_scope\":\"native declared pairs and live intercompany role legs\""));
+        assert!(json.contains("\"posting_admission\":\"not_judged\""));
+        assert!(json.contains("\"ordinal\":256"));
+        assert!(json.contains("\"period\":\"FY2026-P01\""));
+        assert!(json.contains(&format!("\"value\":\"{}\"", i128::MAX)));
     }
 
     #[test]

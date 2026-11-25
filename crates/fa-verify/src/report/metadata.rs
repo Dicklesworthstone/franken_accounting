@@ -3,7 +3,7 @@
 
 mod asset_cost;
 mod cash_policy;
-mod intercompany;
+pub(super) mod intercompany;
 #[cfg(test)]
 mod cutoff_tests;
 
@@ -41,6 +41,8 @@ pub(super) struct EntryInfo<'a> {
     /// Sparse extension 42 declarations. Functional replay verifies every
     /// explicit difference separately from Rate-valued realized FX.
     pub fx_settlement_terms: Option<&'a [u8]>,
+    /// Authenticated atomic-pair bytes, checked before procedure replay.
+    pub intercompany_pairs: Option<&'a [u8]>,
     /// Intrinsic native/carrying YearEndClose source basis, independently
     /// reproduced when functional replay relies on source-bound closing.
     pub year_end_close_basis: Option<&'a [u8]>,
@@ -366,6 +368,7 @@ fn entry_info_with_shape<'a>(
     let mut fx_revaluation_basis = None;
     let mut fx_settlement_basis = None;
     let mut fx_settlement_terms = None;
+    let mut intercompany_pairs = None;
     let mut base_application_terms = false;
     let mut year_end_close_basis = None;
     let mut obligation_maturity = None;
@@ -492,6 +495,7 @@ fn entry_info_with_shape<'a>(
                     ));
                 }
                 intercompany::validate(proposal, bytes)?;
+                intercompany_pairs = Some(bytes);
             }
             if tag == 31 {
                 let mut marker = Reader::new(bytes);
@@ -608,6 +612,7 @@ fn entry_info_with_shape<'a>(
         fx_revaluation_basis,
         fx_settlement_basis,
         fx_settlement_terms,
+        intercompany_pairs,
         year_end_close_basis,
         obligation_maturity,
         case_member,

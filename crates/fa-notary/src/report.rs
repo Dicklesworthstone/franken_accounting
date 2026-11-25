@@ -48,7 +48,7 @@ fn refused(message: impl Into<String>) -> Refusal {
         exit::REFUSAL,
         message,
         "plan §13.1–13.3 (report recomputation needs its complete authenticated closure)",
-        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
+        "use a native v1/v2 trial-balance, summary trial-balance, native-subledger reconciliation, v8 dimension-filtered trial-balance, v3 open-item or balance-explanation, v4 statement, v11/v12 custom statement, native statement-diff, v6/v7 one-book consolidation, JET round-amount/period-end v1/v2, post-closing or weekend v1, suspense aging and declared intercompany v3 (optional effective cutoff), expense capitalization v2, unusual-accounts v2, exact duplicates v1, round-amount density v1, Benford digit profiles v2 or one-account LIBR/FIFO/LIFO/pro-rata v2 procedure, effective-date aging, roll-forward, equity roll-forward or equity comparison, direct cash-flow or policy cash-flow certificate and a checkpoint covering its known-at and any retained time frontier; preserve the complete historical schema, registry and migration inputs",
     )
 }
 
@@ -593,6 +593,7 @@ fn procedure_certificate(certificate: &[u8]) -> bool {
                     | "jet.suspense_aging"
                     | "aging.inventory"
                     | "solvency.balance_sheet_test"
+                    | "recon.intercompany"
                     | "expense.capitalization"
                     | "jet.unusual_preparers"
                     | "jet.manual_vs_rule"

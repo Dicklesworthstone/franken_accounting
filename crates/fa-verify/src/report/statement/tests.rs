@@ -37,6 +37,7 @@ fn info(identity: u128, target: Option<(u128, [u8; 32], u8)>) -> metadata::Entry
         case_member: None,
         prior_period_adjustment: None,
         external_subledger: None,
+        intercompany_pairs: None,
         evidence: Vec::new(),
     }
 }

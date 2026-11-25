@@ -1149,6 +1149,7 @@ impl ProcedureCertificate {
                 | "jet.suspense_aging"
                 | "aging.inventory"
                 | "solvency.balance_sheet_test"
+                | "recon.intercompany"
                 | "expense.capitalization"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
@@ -1173,7 +1174,7 @@ impl ProcedureCertificate {
             || evidence != Some(self.report.evidence.as_str())
         {
             return Err(offline_unsupported(
-                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense and inventory aging v3, book-basis balance-sheet solvency v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense and inventory aging v3, book-basis balance-sheet solvency v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
+                "portable profiles are JET round-amount/period-end v1/v2, post-closing, weekend and preparer/manual-origin/round-reversal v1, suspense and inventory aging v3, book-basis balance-sheet solvency and declared native intercompany coverage v3, expense capitalization v2, period-boundary cutoff v1 and unrecorded-liability v2 with declared document periods, unusual-accounts v2, reversal patterns v2, subsequent events v3, open-item aging v1, exact duplicates and density/relative-size/threshold-splitting v1, graph structuring and two-through-eight-hop round trips v2, account and party circular flows v2 and layering v3, Benford digit profiles v2, posted-principal net investment v5, and LIBR/FIFO/LIFO/pro-rata v2 with their complete parameter inventories; round-amount/period-end v2, suspense and inventory aging v3, book-basis balance-sheet solvency and intercompany coverage v3 and net investment v5 permit an optional cutoff, aging v1 requires a cutoff, and tracing v2 requires a claim date and canonical account/source handles",
             ));
         }
         let jet = matches!(
@@ -1183,6 +1184,8 @@ impl ProcedureCertificate {
         if self.registry == current_jet_v1_digest()?
             && !portable_jet_v1(&self.report.procedure, self.report.version)
             || canonical_registry_document(&self.registry)?.is_none()
+            || self.report.procedure == "recon.intercompany"
+                && !declares_intercompany_v3(&self.registry)?
             || !registry_versions(&self.registry)?
                 .is_some_and(|versions| !jet || versions.0 == self.report.version)
         {

@@ -68,6 +68,7 @@ mod cutoff;
 mod different_dates;
 mod jet;
 mod journal_metadata;
+pub(super) mod intercompany;
 mod libr;
 mod number_analytics;
 mod ordered;
@@ -107,6 +108,8 @@ pub enum VerifiedProcedureParameters {
         max_age_days: u32,
     },
     ExpenseCapitalization,
+    /// Positive role-selected legs without a native declared reciprocal pair.
+    IntercompanyCoverage,
     InventoryAging {
         stale_days: u32,
     },
@@ -261,6 +264,7 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "jet.weekend",
             Self::SuspenseAging { .. } => "jet.suspense_aging",
             Self::ExpenseCapitalization => "expense.capitalization",
+            Self::IntercompanyCoverage => "recon.intercompany",
             Self::InventoryAging { .. } => "aging.inventory",
             Self::BalanceSheetSolvency { .. } => "solvency.balance_sheet_test",
             Self::PonziNetInvestment { .. } => "ponzi.net_investment",
@@ -302,6 +306,7 @@ impl VerifiedProcedureParameters {
             Self::Weekend => "FA-EVID-L04",
             Self::SuspenseAging { .. } => "FA-EVID-L28",
             Self::ExpenseCapitalization => "FA-EVID-L48",
+            Self::IntercompanyCoverage => "FA-EVID-L41",
             Self::InventoryAging { .. } => "FA-EVID-L49",
             Self::BalanceSheetSolvency { .. } => "FA-EVID-L52",
             Self::PonziNetInvestment { .. } => "FA-EVID-L56",
@@ -350,6 +355,7 @@ impl VerifiedProcedureParameters {
             Self::PostClosing
             | Self::Weekend
             | Self::ExpenseCapitalization
+            | Self::IntercompanyCoverage
             | Self::PeriodBoundary
             | Self::ReversalPatterns
             | Self::SameSameSame => Vec::new(),
@@ -567,6 +573,7 @@ impl VerifiedProcedureParameters {
             Self::PostClosing
             | Self::Weekend
             | Self::ExpenseCapitalization
+            | Self::IntercompanyCoverage
             | Self::PeriodBoundary
             | Self::ReversalPatterns
             | Self::SameSameSame => &[],
@@ -606,6 +613,7 @@ impl VerifiedProcedureParameters {
                 Self::SuspenseAging { .. }
                     | Self::InventoryAging { .. }
                     | Self::BalanceSheetSolvency { .. }
+                    | Self::IntercompanyCoverage
             ) && version == 3
             || matches!(self, Self::PonziNetInvestment { .. }) && version == 5
             || version == 2
@@ -688,6 +696,10 @@ impl VerifiedProcedureParameters {
         )
     }
 
+    pub(crate) fn is_intercompany(self) -> bool {
+        matches!(self, Self::IntercompanyCoverage)
+    }
+
     pub(crate) fn is_investor(self) -> bool {
         matches!(self, Self::PonziNetInvestment { .. })
     }
@@ -714,6 +726,7 @@ impl VerifiedProcedureParameters {
             Self::UnusualAccounts { .. } => "O(legs log legs + account_pairs log account_pairs)",
             Self::SameSameSame
             | Self::ExpenseCapitalization
+            | Self::IntercompanyCoverage
             | Self::InventoryAging { .. }
             | Self::BalanceSheetSolvency { .. }
             | Self::PonziNetInvestment { .. }
@@ -765,6 +778,15 @@ pub(super) struct Certificate<'a> {
 /// period end; they are not inferred from the producer's narrative.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifiedProcedureStatistic {
+    /// Exact positive original leg, with its declaration coverage still missing.
+    IntercompanyUndeclared {
+        account: u128,
+        ordinal: u16,
+        unit: u32,
+        amount: i128,
+        scale: u8,
+        period: Option<String>,
+    },
     /// Exact investor principal from actual cash and explicitly posted transfers.
     /// This is a mechanical amount, not a legal entitlement or fraud conclusion.
     InvestorPrincipal {
@@ -1040,6 +1062,7 @@ impl VerifiedProcedureStatistic {
                 }
             }
             Self::UnresolvedInvestorCash { .. } => "unresolved_attribution",
+            Self::IntercompanyUndeclared { .. } => "intercompany_undeclared",
             Self::AgedOpenAmount { name, .. } => name,
             Self::RoundLegs { .. } | Self::AccountRoundLegs { .. } => "round_legs",
             Self::DaysToPeriodEnd { .. } => "days_to_period_end",
@@ -1074,6 +1097,7 @@ impl VerifiedProcedureStatistic {
     pub(crate) fn value(&self) -> i128 {
         match self {
             Self::InvestorPrincipal { amount, .. }
+            | Self::IntercompanyUndeclared { amount, .. }
             | Self::UnresolvedInvestorCash { amount, .. }
             | Self::StaleInventory { amount, .. }
             | Self::InsolvencyDeficit { amount, .. } => *amount,
@@ -1121,6 +1145,7 @@ impl VerifiedProcedureStatistic {
             | Self::InvestorPrincipal { scale, .. }
             | Self::UnresolvedInvestorCash { scale, .. }
             | Self::CapitalizedExpense { scale, .. }
+            | Self::IntercompanyUndeclared { scale, .. }
             | Self::StaleInventory { scale, .. }
             | Self::InsolvencyDeficit { scale, .. }
             | Self::SubsequentEventAmount { scale, .. }
@@ -1175,6 +1200,24 @@ impl VerifiedProcedureFinding {
     /// ordered citation list. Other supported multi-finding profiles have a
     /// distinct first citation; its tag and little-endian identity suffice.
     fn citation_order(&self) -> Vec<Vec<u8>> {
+        if let VerifiedProcedureStatistic::IntercompanyUndeclared {
+            account, ordinal, period, ..
+        } = &self.statistic {
+            let Some(entry) = self.entry else { return Vec::new() };
+            let mut first = Writer::default();
+            first.u8(1).u128(entry);
+            let mut leg = Writer::default();
+            leg.u8(2).u128(entry).u16(*ordinal);
+            let mut account_cite = Writer::default();
+            account_cite.u8(3).u128(*account);
+            let mut cites = vec![first.buf, leg.buf, account_cite.buf];
+            if let Some(period) = period {
+                let mut cite = Writer::default();
+                cite.u8(4).bytes(period.as_bytes());
+                cites.push(cite.buf);
+            }
+            return cites;
+        }
         if let VerifiedProcedureStatistic::AgedOpenAmount { account, legs, .. }
         | VerifiedProcedureStatistic::StaleInventory { account, legs, .. } = &self.statistic
         {
@@ -1523,6 +1566,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         "jet.weekend" => ("FA-EVID-L04", None),
         "jet.suspense_aging" => ("FA-EVID-L28", Some(("max_age_days", u32::MAX))),
         "expense.capitalization" => ("FA-EVID-L48", None),
+        "recon.intercompany" => ("FA-EVID-L41", None),
         "aging.inventory" => ("FA-EVID-L49", Some(("stale_days", u32::MAX))),
         "solvency.balance_sheet_test" => ("FA-EVID-L52", Some(("fair_value_haircut_bps", 10_000))),
         "ponzi.net_investment" => ("FA-EVID-L56", Some(("cohort_window_days", u32::MAX))),
@@ -1570,6 +1614,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "expense.capitalization"
                 | "aging.inventory"
                 | "solvency.balance_sheet_test"
+                | "recon.intercompany"
                 | "jet.unusual_preparers"
                 | "jet.manual_vs_rule"
                 | "jet.large_round_reversals"
@@ -1599,6 +1644,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "jet.suspense_aging"
                 | "aging.inventory"
                 | "solvency.balance_sheet_test"
+                | "recon.intercompany"
                 | "graph.layering"
                 | "graph.party_layering"
         ) && version != 3)
@@ -1608,6 +1654,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
                 | "jet.suspense_aging"
                 | "aging.inventory"
                 | "solvency.balance_sheet_test"
+                | "recon.intercompany"
                 | "graph.layering"
                 | "graph.party_layering"
         ) && version == 3)
@@ -1810,6 +1857,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             VerifiedProcedureParameters::Weekend
         } else if id == "expense.capitalization" {
             VerifiedProcedureParameters::ExpenseCapitalization
+        } else if id == "recon.intercompany" {
+            VerifiedProcedureParameters::IntercompanyCoverage
         } else if id == "cutoff.period_boundary" {
             VerifiedProcedureParameters::PeriodBoundary
         } else {
@@ -1886,6 +1935,20 @@ fn finding(
         .u8(value.statistic.scale())
         .u64(value.population);
     match &value.statistic {
+        VerifiedProcedureStatistic::IntercompanyUndeclared {
+            account, ordinal, period, ..
+        } => {
+            let entry = value.entry.ok_or_else(|| {
+                failed("procedure_recomputation", "intercompany finding lacks its entry")
+            })?;
+            w.count(3 + usize::from(period.is_some()))
+                .u8(1).u128(entry)
+                .u8(2).u128(entry).u16(*ordinal)
+                .u8(3).u128(*account);
+            if let Some(period) = period {
+                w.u8(4).bytes(period.as_bytes());
+            }
+        }
         VerifiedProcedureStatistic::InvestorPrincipal {
             accounts, entries, ..
         }
@@ -2468,6 +2531,36 @@ pub(super) fn replay(
     Ok((verified, output))
 }
 
+/// The intercompany profile retains literal declaration and leg metadata
+/// independently of the general procedure input commitment.
+pub(super) fn replay_intercompany(
+    request: &Certificate<'_>,
+    book: [u8; 16],
+    known_at: u64,
+    entries: Vec<Entry>,
+    registry: &Registry,
+    context: &intercompany::Context,
+) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
+    if request.book != book || request.known_at != known_at
+        || !request.parameters.is_intercompany() || request.version != 3
+    {
+        return Err(failed(
+            "procedure_selection", "intercompany profile or native coordinates differ",
+        ));
+    }
+    let (verified, output) = recompute_with_intercompany(
+        book, known_at, request.version, request.effective_through,
+        request.parameters, entries, registry, Some(context),
+    )?;
+    if output != request.output {
+        return Err(failed(
+            "procedure_recomputation",
+            "intercompany population, work, findings, citations or decision card differ from independent replay",
+        ));
+    }
+    Ok((verified, output))
+}
+
 /// Reconstruct the duplicate procedure's correction relation from authenticated
 /// edges. The component inventory gives the native index's work independently:
 /// one visit per input, per edge, per node and per undirected adjacency, plus
@@ -2707,8 +2800,25 @@ fn recompute_version(
     version: u16,
     effective_through: Option<i32>,
     profile: VerifiedProcedureParameters,
+    entries: Vec<Entry>,
+    registry: &Registry,
+) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
+    recompute_with_intercompany(
+        book, known_at, version, effective_through, profile, entries, registry, None,
+    )
+}
+
+// Preserve the existing retained-profile test/replay signature while adding its optional source facts.
+#[allow(clippy::too_many_arguments)]
+fn recompute_with_intercompany(
+    book: [u8; 16],
+    known_at: u64,
+    version: u16,
+    effective_through: Option<i32>,
+    profile: VerifiedProcedureParameters,
     mut entries: Vec<Entry>,
     registry: &Registry,
+    intercompany: Option<&intercompany::Context>,
 ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
     replacement_history(&entries)?;
     entries.sort_unstable_by_key(|entry| entry.identity);
@@ -2755,6 +2865,7 @@ fn recompute_version(
         | VerifiedProcedureParameters::Weekend
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::IntercompanyCoverage
         | VerifiedProcedureParameters::InventoryAging { .. }
         | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
         | VerifiedProcedureParameters::PonziNetInvestment { .. }
@@ -2893,6 +3004,7 @@ fn recompute_version(
             | VerifiedProcedureParameters::Weekend
             | VerifiedProcedureParameters::SuspenseAging { .. }
             | VerifiedProcedureParameters::ExpenseCapitalization
+            | VerifiedProcedureParameters::IntercompanyCoverage
             | VerifiedProcedureParameters::InventoryAging { .. }
             | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
             | VerifiedProcedureParameters::PonziNetInvestment { .. }
@@ -2940,6 +3052,13 @@ fn recompute_version(
         (findings, live_legs, comparisons) = exact_duplicates(&entries, &grouped_population)?;
     } else if profile == VerifiedProcedureParameters::Weekend {
         findings = journal_metadata::weekend(&grouped_population)?;
+    } else if profile.is_intercompany() {
+        let context = intercompany.ok_or_else(|| {
+            failed("procedure_intercompany", "authenticated intercompany context is absent")
+        })?;
+        (findings, live_entries, live_legs, comparisons) = intercompany::replay(
+            &entries, &grouped_population, effective_through, registry, context,
+        )?;
     } else if profile.is_account_screen() {
         (findings, live_entries, live_legs, comparisons) = account_screens::replay(
             profile,
@@ -3045,6 +3164,7 @@ fn recompute_version(
         VerifiedProcedureParameters::FirstDigit { .. }
         | VerifiedProcedureParameters::SuspenseAging { .. }
         | VerifiedProcedureParameters::ExpenseCapitalization
+        | VerifiedProcedureParameters::IntercompanyCoverage
         | VerifiedProcedureParameters::InventoryAging { .. }
         | VerifiedProcedureParameters::BalanceSheetSolvency { .. }
         | VerifiedProcedureParameters::PonziNetInvestment { .. }
@@ -3223,6 +3343,38 @@ mod tests {
         let digest = framed_hash(b"fa:procedure-certificate-digest:v1", &certificate.buf);
         certificate.fixed(&digest);
         certificate.buf
+    }
+
+    #[test]
+    fn intercompany_questions_bind_v3_optional_cutoff_and_no_parameters_or_handles() {
+        for through in [None, Some(i32::MIN), Some(i32::MAX)] {
+            let bytes = balance_screen_question(
+                "recon.intercompany", "FA-EVID-L41", 3, through, &[], &[], true,
+            );
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(decoded.parameters, VerifiedProcedureParameters::IntercompanyCoverage);
+            assert_eq!(decoded.version, 3);
+            assert_eq!(decoded.effective_through, through);
+            assert!(decoded.parameters.supports_cutoff(3));
+            assert!(!decoded.parameters.supports_cutoff(2));
+        }
+        for version in [0, 1, 2, 4, 5, u16::MAX] {
+            let bytes = balance_screen_question(
+                "recon.intercompany", "FA-EVID-L41", version, None, &[], &[], true,
+            );
+            assert!(decode(&bytes).is_err(), "unsupported version {version}");
+        }
+        for (evidence, parameters, inputs, extended) in [
+            ("FA-EVID-L01", Vec::new(), Vec::new(), true),
+            ("FA-EVID-L41", vec![("window_days", 1)], Vec::new(), true),
+            ("FA-EVID-L41", Vec::new(), vec![("account", "00000000000000000000000000000001")], true),
+            ("FA-EVID-L41", Vec::new(), Vec::new(), false),
+        ] {
+            let bytes = balance_screen_question(
+                "recon.intercompany", evidence, 3, Some(10), &parameters, &inputs, extended,
+            );
+            assert!(decode(&bytes).is_err());
+        }
     }
 
     #[test]

@@ -14,12 +14,23 @@ fn invalid(message: &'static str) -> ReportError {
     failed("intercompany_pairs", message)
 }
 
-pub(super) fn validate(proposal: &[u8], bytes: &[u8]) -> Result<(), ReportError> {
-    let (legs, details) = proposal_legs_and_details(proposal)?;
-    validate_pairs(bytes, &legs, &details)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::report) struct Pair {
+    pub key: String,
+    pub left: usize,
+    pub right: usize,
 }
 
-fn validate_pairs(bytes: &[u8], legs: &[Leg], details: &[LegDetails]) -> Result<(), ReportError> {
+pub(super) fn validate(proposal: &[u8], bytes: &[u8]) -> Result<(), ReportError> {
+    let (legs, details) = proposal_legs_and_details(proposal)?;
+    validate_pairs(bytes, &legs, &details).map(|_| ())
+}
+
+pub(in crate::report) fn validate_pairs(
+    bytes: &[u8],
+    legs: &[Leg],
+    details: &[LegDetails],
+) -> Result<Vec<Pair>, ReportError> {
     if bytes.len() > 65_536 || legs.len() != details.len() {
         return Err(invalid("intercompany declaration exceeds its bound or has incomplete legs"));
     }
@@ -40,12 +51,16 @@ fn validate_pairs(bytes: &[u8], legs: &[Leg], details: &[LegDetails]) -> Result<
                 "native intercompany entries require one unit, nonnegative amounts and no FX valuation",
             ));
         }
-        let Some((_, entity)) = detail.dimensions.iter().find(|(dimension, _)| *dimension == 1)
-        else {
-            return Err(invalid("every intercompany entry leg must name its legal entity"));
+        let mut dimensions = detail.dimensions.iter()
+            .filter(|(kind, _)| *kind == 1).map(|(_, value)| *value);
+        let entity = match (dimensions.next(), dimensions.next()) {
+            (Some(entity), None) => entity,
+            _ => return Err(invalid(
+                "every intercompany entry leg must name exactly one legal entity",
+            )),
         };
-        entities.push(*entity);
-        let totals = totals.entry(*entity).or_default();
+        entities.push(entity);
+        let totals = totals.entry(entity).or_default();
         let total = if leg.debit { &mut totals.0 } else { &mut totals.1 };
         *total = total
             .checked_add(leg.mantissa)
@@ -56,6 +71,7 @@ fn validate_pairs(bytes: &[u8], legs: &[Leg], details: &[LegDetails]) -> Result<
     }
     let mut previous = None;
     let mut used = BTreeSet::new();
+    let mut pairs = Vec::with_capacity(count);
     for _ in 0..count {
         let key = text(&mut r, 64, "intercompany.pair_key")?;
         let left = usize::from(r.u16("intercompany.left_leg")?);
@@ -80,9 +96,10 @@ fn validate_pairs(bytes: &[u8], legs: &[Leg], details: &[LegDetails]) -> Result<
                 "reciprocal pairs require distinct accounts and entities, equal positive native amounts and opposite sides",
             ));
         }
+        pairs.push(Pair { key: key.into(), left, right });
     }
     r.finish("intercompany pairs")?;
-    Ok(())
+    Ok(pairs)
 }
 
 #[cfg(test)]
@@ -148,6 +165,9 @@ mod tests {
         ] {
             assert!(validate_pairs(&encoded(&pairs), &legs, &details).is_err());
         }
+        let mut ambiguous = details.clone();
+        ambiguous[0].dimensions.push((1, 30));
+        assert!(validate_pairs(&bytes, &legs, &ambiguous).is_err());
         let mut foreign = legs.clone();
         foreign[3].unit = 1;
         assert!(validate_pairs(&bytes, &foreign, &details).is_err());

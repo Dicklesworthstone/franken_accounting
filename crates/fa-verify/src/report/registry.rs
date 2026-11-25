@@ -554,6 +554,7 @@ pub(super) fn verify_procedure(
         || profile.is_balance_screen()
         || profile.is_temporal_graph()
         || profile.is_investor()
+        || profile.is_intercompany()
         || matches!(
             profile,
             super::procedure::VerifiedProcedureParameters::RoundAmountDensity { .. }

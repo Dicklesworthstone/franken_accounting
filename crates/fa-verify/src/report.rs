@@ -2414,6 +2414,8 @@ fn verify_report_with_subledger_inputs(
             } else {
                 BTreeMap::new()
             };
+            let mut intercompany = request.parameters.is_intercompany()
+                .then(procedure::intercompany::Context::default);
             let mut tracing =
                 request
                     .parameters
@@ -2551,6 +2553,24 @@ fn verify_report_with_subledger_inputs(
                                 .collect(),
                         );
                     }
+                    if let Some(context) = &mut intercompany {
+                        let period = if legs[index].is_empty() {
+                            String::new()
+                        } else {
+                            let effective = envelopes[index].effective_day.ok_or_else(|| {
+                                failed("procedure_period", "intercompany posting has no effective date")
+                            })?;
+                            schema.entry_period(info, effective)?
+                        };
+                        let period_declared = schema.period_state(&period).is_some();
+                        context.capture(
+                            info.identity,
+                            info.intercompany_pairs,
+                            details.clone(),
+                            period,
+                            period_declared,
+                        )?;
+                    }
                     if let Some(context) = &mut tracing {
                         if let Some(parties) = &mut context.paid {
                             parties.legs.insert(
@@ -2622,6 +2642,7 @@ fn verify_report_with_subledger_inputs(
                 || request.parameters.is_balance_screen()
                 || request.parameters.is_temporal_graph()
                 || request.parameters.is_investor()
+                || request.parameters.is_intercompany()
                 || matches!(
                     request.parameters,
                     procedure::VerifiedProcedureParameters::UnusualAccounts { .. }
@@ -2641,6 +2662,7 @@ fn verify_report_with_subledger_inputs(
             if request.parameters.is_account_screen()
                 || request.parameters.is_balance_screen()
                 || request.parameters.is_investor()
+                || request.parameters.is_intercompany()
             {
                 let chart = metadata::declared_chart(
                     envelopes
@@ -2708,8 +2730,13 @@ fn verify_report_with_subledger_inputs(
                     None => open_items.items.clone(),
                 });
             }
-            let (verified, output) =
-                procedure::replay(request, cert.book, cert.known_at, entries, definitions)?;
+            let (verified, output) = if let Some(context) = &intercompany {
+                procedure::replay_intercompany(
+                    request, cert.book, cert.known_at, entries, definitions, context,
+                )?
+            } else {
+                procedure::replay(request, cert.book, cert.known_at, entries, definitions)?
+            };
             (Some(verified), output)
         } else {
             (None, output)
