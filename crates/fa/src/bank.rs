@@ -2,7 +2,10 @@
 //!
 //! An intake is one ordinary, atomic Docket import: the original statement,
 //! canonical BankLine documents, and a versioned manifest binding the parser
-//! and the selected cash account. Matching reopens that retained closure and
+//! and the selected bank or credit-card account. Signed statement balances
+//! and journal balances both use debits minus credits, including negative
+//! liability balances; no normal-balance sign conversion is applied.
+//! Matching reopens that retained closure and
 //! verifies it against a fresh parse before reading the immutable journal.
 //! Teller's pinned deterministic fallback produces reproducible proposals.
 //! Exact confirmations retain the original source and actual cash-leg identity
@@ -16,7 +19,9 @@ use fa_journal::custody::CustodyBody;
 use fa_journal::evidence::Document;
 use fa_journal::refusal::{Refusal, code, exit};
 use fa_journal::{DocumentRead, ImportRecorded, KernelError, RunReceipt, UnitPolicy};
-use fa_model::{AccountType, EntryClass, IntakeSource, Oid, domain_digest};
+#[cfg(test)]
+use fa_model::AccountType;
+use fa_model::{EntryClass, IntakeSource, Oid, domain_digest};
 use fa_money::{Side, UnitId};
 use fa_policy::{Capability, Op, Profile, Reach};
 use fa_registers::reconciliation::{
@@ -471,14 +476,14 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 return Ok(Err(Refusal::new(code::UNKNOWN_ACCOUNT, exit::REFUSAL,
                     format!("bank account {:032x} does not exist at the selected coordinate", account.0),
                     "plan §9.5 (an explicit bank-to-GL account mapping)",
-                    "use a debit-normal asset leaf from fa chart list --json")));
+                    "use a debit-normal Asset or credit-normal Liability leaf from fa chart list --json")));
             };
             if !row.labels.contains(&fa_model::symbols::label::ACCOUNT) {
                 return Ok(Err(intake_error("the bank mapping does not name an Account")));
             }
             let account = fa_journal::rows::AccountRow::decode(&row)?;
-            if !account.is_leaf || account.normal_balance != 0 || account.account_type != AccountType::ASSET.0 {
-                return Ok(Err(intake_error("bank matching currently requires a debit-normal Asset leaf (cash); liability and credit-card account sign policies are not admitted")));
+            if !fa_journal::bank::admits_statement_account(&account) {
+                return Ok(Err(intake_error("bank matching requires a debit-normal Asset or credit-normal Liability leaf; statement balances stay signed as debits minus credits")));
             }
             if !book.units.get(unit).is_some_and(|unit| matches!(unit.kind, fa_money::UnitKind::Currency { .. })) {
                 return Ok(Err(intake_error("the statement must use a registered currency unit")));
@@ -488,7 +493,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     return Ok(Err(Refusal::new(code::UNIT_POLICY, exit::REFUSAL,
                         "the bank statement currency differs from the mapped account's fixed unit",
                         "plan §5.2; §9.5 (no implicit bank-statement FX conversion)",
-                        "select the cash account for this statement's currency")));
+                        "select the bank or credit-card account for this statement's currency")));
                 }
                 _ => {}
             }

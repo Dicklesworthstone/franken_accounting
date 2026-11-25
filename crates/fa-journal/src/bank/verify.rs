@@ -2,10 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
-use fa_model::{
-    AccountType, ControlPayload, Entry, EntryClass, EntryRef, Id128, Oid, entry_mirrors,
-    leg_mirrors,
-};
+use fa_model::{ControlPayload, Entry, EntryClass, EntryRef, Id128, Oid, entry_mirrors, leg_mirrors};
 use fa_money::{Amount, Side, UnitKind};
 use fa_policy::{BenefitInterval, DecisionCandidate, DecisionFeature};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -243,9 +240,7 @@ pub(super) fn current_entry<V: Vfs + Clone>(
         return Ok(Err(invalid("the bank mapping no longer names an Account")));
     }
     let account = AccountRow::decode(&account_row)?;
-    if !account.is_leaf
-        || account.normal_balance != 0
-        || account.account_type != AccountType::ASSET.0
+    if !super::admits_statement_account(&account)
         || !book
             .units
             .get(leg.amount.unit)
@@ -253,7 +248,7 @@ pub(super) fn current_entry<V: Vfs + Clone>(
         || matches!(account.unit_policy, UnitPolicy::Single(unit) if unit != leg.amount.unit)
     {
         return Ok(Err(invalid(
-            "bank confirmation requires a debit-normal Asset leaf in the statement's exact currency",
+            "bank confirmation requires a debit-normal Asset or credit-normal Liability leaf in the statement's exact currency",
         )));
     }
     Ok(Ok(()))

@@ -12,10 +12,15 @@
 //! transaction. An immutable Unmatch releases those claims in the history fold;
 //! later confirmations use independent line and cash-leg generations. Original
 //! v1.0 records, claims and source edges remain unchanged.
+//!
+//! Statement accounts include deposit Assets and credit-card or credit-line
+//! Liabilities. The existing cash-leg and cash-balance wire names retain their
+//! signed debit-minus-credit meaning for both; debt is negative and a payment
+//! increases the balance. No chart normal side flips the source's signs.
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, relation};
-use fa_model::{EntryRef, Id128, Oid, domain_digest};
+use fa_model::{AccountType, EntryRef, Id128, Oid, domain_digest};
 use fa_policy::{Capability, DecisionCard, Op, Profile, Reach};
 use fgdb::{Database, WriteBatch, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
@@ -25,7 +30,7 @@ use crate::evidence::{Document, document_vid};
 use crate::genesis::BookContext;
 use crate::import::{BankImportManifest, BankImportWitness};
 use crate::refusal::{KernelError, Outcome, Refusal, code, exit};
-use crate::rows::{book_root, edge_id, leg_vid, reversal_vid};
+use crate::rows::{AccountRow, book_root, edge_id, leg_vid, reversal_vid};
 
 mod lifecycle;
 mod reconciliation;
@@ -55,6 +60,24 @@ pub use reconciliation::{
 };
 pub use wire::BankMatchConfirmation;
 use wire::{BankLine, claim_props, match_props};
+
+/// Whether an account's chart shape admits bank-statement reconciliation.
+///
+/// Debit-normal Asset leaves hold deposits; credit-normal Liability leaves
+/// hold card or credit-line debt. Both retain the same signed statement law:
+/// balances are debits minus credits, so a liability owed is negative, a
+/// charge decreases the balance and a payment increases it. Normal balance
+/// never flips a retained source amount or a journal leg's direction.
+///
+/// This is only the chart-shape check. Callers also admit current authority,
+/// the Account label and the statement's exact registered currency.
+#[must_use]
+pub fn admits_statement_account(account: &AccountRow) -> bool {
+    account.is_leaf
+        && ((account.account_type == AccountType::ASSET.0 && account.normal_balance == 0)
+            || (account.account_type == AccountType::LIABILITY.0
+                && account.normal_balance == 1))
+}
 
 /// Exact reference to one immutable native confirmation or correction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -625,4 +648,45 @@ pub async fn read_bank_match_claims<V: Vfs + Clone>(
         )));
     }
     verify::claims_at(db, cx, book, at)
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    use crate::genesis::UnitPolicy;
+    use fa_money::UnitId;
+
+    #[test]
+    fn statement_accounts_preserve_their_declared_asset_or_liability_normal_side() {
+        for (account_type, normal_balance, is_leaf, admitted) in [
+            (AccountType::ASSET.0, 0, true, true),
+            (AccountType::LIABILITY.0, 1, true, true),
+            (AccountType::ASSET.0, 1, true, false),
+            (AccountType::LIABILITY.0, 0, true, false),
+            (AccountType::ASSET.0, 0, false, false),
+            (AccountType::LIABILITY.0, 1, false, false),
+            (AccountType::EXPENSE.0, 0, true, false),
+            (AccountType::REVENUE.0, 1, true, false),
+            (AccountType::EQUITY.0, 1, true, false),
+            (AccountType::LIABILITY.0, 2, true, false),
+            (u8::MAX, 1, true, false),
+        ] {
+            let account = AccountRow {
+                vid: VId(1),
+                code: "statement".into(),
+                name: "Statement account".into(),
+                account_type,
+                normal_balance,
+                is_leaf,
+                unit_policy: UnitPolicy::Single(UnitId(1)),
+                limit: None,
+                created_at: CommitSeq(1),
+            };
+            assert_eq!(
+                admits_statement_account(&account),
+                admitted,
+                "type={account_type}, normal={normal_balance}, leaf={is_leaf}"
+            );
+        }
+    }
 }

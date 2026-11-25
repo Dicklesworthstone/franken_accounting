@@ -451,3 +451,57 @@ fn reconciled_v3_layouts_are_independently_decoded_with_and_without_predecessors
     declare_layout(&mut oversized, &vec![0; 16 * 1024 + 1]);
     assert!(oversized.verify().is_err());
 }
+
+#[test]
+fn reconciled_inclusion_preserves_signed_debt_and_credit_balances() {
+    // These independently framed records prove signed-wire compatibility,
+    // not the existence or eligibility of the native bank-account history.
+    for closing in [-42_500_i128, 10_000] {
+        let mut fixture = Fixture::new(false);
+        let mut manifest = Writer::default();
+        manifest
+            .fixed(b"FA-BANK-IMPORT")
+            .u16(1)
+            .u16(0)
+            .fixed(&BOOK)
+            .u128(19)
+            .u8(4)
+            .u16(2)
+            .fixed(&STATEMENT)
+            .fixed(&[0x23; 32])
+            .u32(1)
+            .u64(7)
+            .i32(20_500)
+            .i128(-50_000)
+            .i128(closing)
+            .count(2)
+            .fixed(&[0x31; 32])
+            .fixed(&[0x32; 32]);
+        fixture.manifest = manifest.buf;
+        fixture.cash = closing;
+        fixture.rebind_manifest();
+        for adjusted in [false, true] {
+            let mut claim = fixture.clone();
+            if adjusted {
+                claim.claim_tag = 11;
+                // A posted payment and a charge still outstanding on the
+                // statement retain their opposite original ledger signs.
+                claim.cash += 52_500;
+                claim.outstanding =
+                    vec![(200, [0x61; 32], 0, 57_500), (201, [0x62; 32], 1, -5_000)];
+            }
+            let (record, split) = claim.record();
+            let envelope = claim.verify().unwrap();
+            assert!(check_record(&envelope, &record, split).unwrap().is_empty());
+
+            claim.cash = -claim.cash;
+            assert!(matches!(
+                claim.verify(),
+                Err(RecordError::Decode(DecodeError {
+                    what: "reconciled.exact_close" | "reconciled.adjusted_close",
+                    ..
+                }))
+            ));
+        }
+    }
+}

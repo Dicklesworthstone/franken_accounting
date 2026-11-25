@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
-use fa_model::{
-    AccountType, ControlPayload, EntryClass, EntryRef, Id128, Oid, Writer, domain_digest,
-};
+use fa_model::{ControlPayload, EntryClass, EntryRef, Id128, Oid, Writer, domain_digest};
 use fa_money::{Side, UnitId, UnitKind};
 use fa_policy::Capability;
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -152,9 +150,7 @@ fn cash_fold<V: Vfs + Clone>(
     };
     let account = AccountRow::decode(&account_row)?;
     if !account_row.labels.contains(&label::ACCOUNT)
-        || !account.is_leaf
-        || account.normal_balance != 0
-        || account.account_type != AccountType::ASSET.0
+        || !super::admits_statement_account(&account)
         || !book
             .units
             .get(manifest.unit)
@@ -162,7 +158,7 @@ fn cash_fold<V: Vfs + Clone>(
         || matches!(account.unit_policy, UnitPolicy::Single(unit) if unit != manifest.unit)
     {
         return Ok(Err(invalid(
-            "exact bank closing requires a debit-normal Asset leaf in the statement currency",
+            "exact bank closing requires a debit-normal Asset or credit-normal Liability leaf in the statement currency",
         )));
     }
     let mut rows = crate::op_witness::vertices_at(db, at)?;

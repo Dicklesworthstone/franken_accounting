@@ -21,6 +21,9 @@ mod kiting;
 #[path = "bank/close_run.rs"]
 mod close_run;
 
+#[path = "bank/credit_card.rs"]
+mod credit_card;
+
 fn data(value: &Json) -> &Json {
     value.get("data").expect("robot data")
 }
