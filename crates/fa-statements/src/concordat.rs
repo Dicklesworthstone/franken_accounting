@@ -305,6 +305,11 @@ impl IntercompanyPairKind {
 }
 
 /// Declared reciprocal intercompany relationship between two legal entities/books.
+///
+/// Each endpoint consumes the entity's entire account net in every reporting unit.
+/// An `(entity, account)` endpoint therefore belongs to at most one pair, even when
+/// its current balance is zero. Individual transactions on the same account cannot
+/// be represented as separate aggregate pair specifications.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntercompanyPairSpec {
     pub pair_code: String,
@@ -1008,6 +1013,8 @@ pub fn reconcile_book_to_book(input: &BookToBookInput) -> Result<BookToBookBridg
 ///
 /// Every reciprocal pair must either net to zero (`entity_a_net + entity_b_net == 0`) or
 /// carry an explicit difference leg on its declared `difference_account` within `max_fx_residual`.
+/// Each entity/account endpoint must be exclusive to one pair, since matching consumes
+/// its whole net in every requested unit rather than an individual transaction amount.
 pub fn match_intercompany_pairs(
     members: &[EntityMemberInput],
     pairs: &[IntercompanyPairSpec],
@@ -1054,12 +1061,10 @@ pub fn match_intercompany_pairs(
         }
     }
 
-    let mut sorted_units = units.to_vec();
-    sorted_units.sort_unstable();
-    sorted_units.dedup();
-
-    let mut matched = Vec::new();
-    for spec in sorted_pairs {
+    // Validate ownership before matching amounts: an absent or currently zero
+    // balance does not make an aggregate endpoint safe to assign twice.
+    let mut endpoint_owners = BTreeMap::new();
+    for spec in &sorted_pairs {
         if spec.pair_code.trim().is_empty() {
             return Err(ConcordatError::Input(
                 "intercompany pair_code must be non-empty".into(),
@@ -1083,6 +1088,30 @@ pub fn match_intercompany_pairs(
                 spec.pair_code
             )));
         }
+        let mut endpoints = [
+            (spec.entity_a, spec.account_a),
+            (spec.entity_b, spec.account_b),
+        ];
+        endpoints.sort_unstable();
+        for (entity_id, account_id) in endpoints {
+            if let Some(owner) =
+                endpoint_owners.insert((entity_id, account_id), spec.pair_code.as_str())
+            {
+                return Err(ConcordatError::Input(format!(
+                    "intercompany account {account_id:032x} for entity {} is assigned to both pair `{owner}` and `{}`; each entity/account endpoint may belong to only one aggregate pair",
+                    entity_id.to_hex(),
+                    spec.pair_code
+                )));
+            }
+        }
+    }
+
+    let mut sorted_units = units.to_vec();
+    sorted_units.sort_unstable();
+    sorted_units.dedup();
+
+    let mut matched = Vec::new();
+    for spec in sorted_pairs {
         for &unit_id in &sorted_units {
             let a_net = member_nets
                 .get(&(spec.entity_a, spec.account_a, unit_id))
@@ -2275,6 +2304,183 @@ mod tests {
             account(5400, "5400", "Intercompany FX Difference", 5),
             account(5900, "5900", "Net Income Attributable to NCI", 5),
         ]
+    }
+
+    fn disjoint_intercompany_pairs_input() -> ConsolidationInput {
+        let member = |id, balances| EntityMemberInput {
+            entity_id: Id128([id; 16]),
+            book_id: Id128([0x10; 16]),
+            known_at: 42,
+            balances,
+        };
+        let members = vec![
+            member(1, vec![bal(1300, 1, 100, 0), bal(1000, 1, 0, 100)]),
+            member(2, vec![bal(1000, 1, 100, 0), bal(2300, 1, 0, 100)]),
+            member(3, vec![bal(1000, 1, 100, 0), bal(2300, 1, 0, 100)]),
+            member(4, vec![bal(1300, 1, 100, 0), bal(1000, 1, 0, 100)]),
+        ];
+        let pair = |code: &str, a, b| IntercompanyPairSpec {
+            pair_code: code.into(),
+            kind: IntercompanyPairKind::ReciprocalReceivablePayable,
+            entity_a: Id128([a; 16]),
+            account_a: 1300,
+            entity_b: Id128([b; 16]),
+            account_b: 2300,
+            difference_account: None,
+            max_fx_residual: 0,
+        };
+        ConsolidationInput {
+            consolidation_book_id: Id128([0x20; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 42,
+            period: "FY2026-P03".into(),
+            effective_through: DateDay(90),
+            accounts: consolidation_chart(),
+            units: vec![1],
+            members: members.clone(),
+            intercompany_pairs: vec![pair("pair-a", 1, 2), pair("pair-b", 4, 3)],
+            intercompany_accounts: vec![],
+            ownership: vec![],
+            income: IncomeInput {
+                periods: vec!["FY2026-P03".into()],
+                effective_from: DateDay(60),
+                members,
+            },
+        }
+    }
+
+    #[test]
+    fn aggregate_intercompany_pair_endpoints_are_exclusive_even_when_zero() {
+        for balance_mode in ["nonzero", "zero", "absent"] {
+            let mut input = disjoint_intercompany_pairs_input();
+            for member in &mut input.members {
+                match balance_mode {
+                    "zero" => {
+                        for balance in &mut member.balances {
+                            balance.debits = 0;
+                            balance.credits = 0;
+                        }
+                    }
+                    "absent" => member.balances.clear(),
+                    _ => {}
+                }
+            }
+            let mut permuted_members = input.members.clone();
+            permuted_members.reverse();
+            for member in &mut permuted_members {
+                member.balances.reverse();
+            }
+
+            for reuse_a in [true, false] {
+                let first = &input.intercompany_pairs[0];
+                let (entity, account) = if reuse_a {
+                    (first.entity_a, first.account_a)
+                } else {
+                    (first.entity_b, first.account_b)
+                };
+                let expected = ConcordatError::Input(format!(
+                    "intercompany account {account:032x} for entity {} is assigned to both pair `pair-a` and `pair-b`; each entity/account endpoint may belong to only one aggregate pair",
+                    entity.to_hex()
+                ));
+                for reverse_first in [false, true] {
+                    for reverse_second in [false, true] {
+                        let mut pairs = input.intercompany_pairs.clone();
+                        if reuse_a {
+                            pairs[1].entity_a = entity;
+                            pairs[1].account_a = account;
+                        } else {
+                            pairs[1].entity_b = entity;
+                            pairs[1].account_b = account;
+                        }
+                        for (pair, reverse) in
+                            pairs.iter_mut().zip([reverse_first, reverse_second])
+                        {
+                            if reverse {
+                                std::mem::swap(&mut pair.entity_a, &mut pair.entity_b);
+                                std::mem::swap(&mut pair.account_a, &mut pair.account_b);
+                            }
+                        }
+                        assert_eq!(
+                            match_intercompany_pairs(&input.members, &pairs, &[1]),
+                            Err(expected.clone()),
+                            "{balance_mode}, reuse_a={reuse_a}, reversed={reverse_first}/{reverse_second}"
+                        );
+                        pairs.reverse();
+                        assert_eq!(
+                            match_intercompany_pairs(&permuted_members, &pairs, &[1]),
+                            Err(expected.clone()),
+                            "permuting input must preserve the endpoint conflict"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn consolidation_rejects_reused_pair_endpoint_masked_by_another_entity() {
+        let input = disjoint_intercompany_pairs_input();
+
+        // A and D each hold a receivable of 100; B and C each owe 100. Shared
+        // chart account IDs are valid when the entity/account cells are distinct.
+        let run = consolidate(&input).expect("disjoint pairs on a shared chart");
+        assert_eq!(run.matched_pairs.len(), 2);
+        assert_eq!(run.eliminations.len(), 2);
+        assert!(run.eliminations.iter().all(EliminationEntry::is_balanced));
+        let mut legs: Vec<_> = run
+            .eliminations
+            .iter()
+            .flat_map(|entry| &entry.legs)
+            .map(|leg| {
+                (
+                    leg.entity_id,
+                    leg.account_id,
+                    leg.unit_id,
+                    leg.debits,
+                    leg.credits,
+                )
+            })
+            .collect();
+        legs.sort_unstable();
+        assert_eq!(
+            legs,
+            vec![
+                (Id128([1; 16]), 1300, 1, 0, 100),
+                (Id128([2; 16]), 2300, 1, 100, 0),
+                (Id128([3; 16]), 2300, 1, 100, 0),
+                (Id128([4; 16]), 1300, 1, 0, 100),
+            ]
+        );
+        assert!(
+            totals_with(&input.members, &run.eliminations)
+                .unwrap()
+                .values()
+                .all(|(debits, credits)| debits == credits)
+        );
+
+        // Replacing D with A eliminates A twice and ignores D. The account-level
+        // totals still net to zero, so the final aggregate zero check alone
+        // cannot detect the incorrect source attribution.
+        let mut reused = input.clone();
+        reused.intercompany_pairs[1].entity_a = Id128([1; 16]);
+        let expected = ConcordatError::Input(format!(
+            "intercompany account {:032x} for entity {} is assigned to both pair `pair-a` and `pair-b`; each entity/account endpoint may belong to only one aggregate pair",
+            1300,
+            Id128([1; 16]).to_hex()
+        ));
+        assert_eq!(consolidate(&reused).unwrap_err(), expected);
+
+        let mut permuted = input;
+        permuted.intercompany_pairs.reverse();
+        permuted.members.reverse();
+        permuted.income.members.reverse();
+        for member in &mut permuted.members {
+            member.balances.reverse();
+        }
+        assert_eq!(
+            run.canonical_bytes().unwrap(),
+            consolidate(&permuted).unwrap().canonical_bytes().unwrap()
+        );
     }
 
     #[test]
