@@ -1775,6 +1775,202 @@ fn balances_of(totals: Totals) -> Vec<AccountBalance> {
 ///    Statement (activity plus its eliminations) via `evaluate`, and proves consolidated equity
 ///    conservation (`FA-INV-13.core`).
 pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, ConcordatError> {
+    consolidate_inner(input, None)
+}
+
+/// Consolidate immutable declared pair contributions rather than consuming
+/// each endpoint's entire account balance. Several economic pairs may share
+/// an endpoint; each key appears once in each selected population. The caller
+/// folds original and reversal legs independently into cumulative `stock_pairs`
+/// and period `income_pairs`, preserving later-period reversal activity.
+///
+/// The native profile admits exact reciprocal amounts without an inferred FX
+/// difference. Role-selected group accounts consume only the residual after
+/// these contributions, so a declared pair is never eliminated a second time.
+/// Aggregate pair specifications belong to [`consolidate`] and cannot be mixed
+/// into this profile. The unchanged output encoding is selected by the report
+/// certificate's versioned computation contract.
+pub fn consolidate_declared(
+    input: &ConsolidationInput,
+    stock_pairs: &[MatchedIntercompanyPair],
+    income_pairs: &[MatchedIntercompanyPair],
+) -> Result<ConsolidationRun, ConcordatError> {
+    if !input.intercompany_pairs.is_empty() {
+        return Err(ConcordatError::Input(
+            "aggregate pair specifications cannot accompany declared pair contributions".into(),
+        ));
+    }
+    if stock_pairs.len() > MAX_IC_PAIRS || income_pairs.len() > MAX_IC_PAIRS {
+        return Err(ConcordatError::Input(
+            "declared intercompany pairs exceed bound".into(),
+        ));
+    }
+    if stock_pairs.is_empty() && income_pairs.is_empty() {
+        return consolidate(input);
+    }
+    let by_key: BTreeMap<_, _> = stock_pairs
+        .iter()
+        .map(|pair| (pair.pair_code.as_str(), pair))
+        .collect();
+    for pair in income_pairs {
+        let same_endpoints = by_key.get(pair.pair_code.as_str()).is_some_and(|stock| {
+            stock.kind == pair.kind
+                && stock.unit_id == pair.unit_id
+                && stock.entity_a == pair.entity_a
+                && stock.account_a == pair.account_a
+                && stock.entity_b == pair.entity_b
+                && stock.account_b == pair.account_b
+        });
+        if !same_endpoints {
+            return Err(ConcordatError::Input(format!(
+                "income pair `{}` lacks the same immutable endpoints in cumulative stock",
+                pair.pair_code
+            )));
+        }
+        if pair.kind != IntercompanyPairKind::ReciprocalRevenueExpense {
+            return Err(ConcordatError::Input(format!(
+                "income pair `{}` is not a revenue/expense pair",
+                pair.pair_code
+            )));
+        }
+    }
+    consolidate_inner(input, Some((stock_pairs, income_pairs)))
+}
+
+/// Validate the selected amounts against the member population, retaining
+/// exact endpoint identity without requiring exclusive aggregate accounts.
+fn declared_pairs(
+    members: &[EntityMemberInput],
+    pairs: &[MatchedIntercompanyPair],
+    accounts: &BTreeMap<u128, &Account>,
+    units: &[u32],
+) -> Result<Vec<MatchedIntercompanyPair>, ConcordatError> {
+    let entities: BTreeSet<_> = members.iter().map(|member| member.entity_id).collect();
+    if entities.len() != members.len() {
+        return Err(ConcordatError::Input(
+            "duplicate member entity in declared consolidation".into(),
+        ));
+    }
+    let gross: BTreeMap<_, _> = members
+        .iter()
+        .flat_map(|member| {
+            member.balances.iter().map(move |balance| {
+                (
+                    (member.entity_id, balance.account_id, balance.unit_id),
+                    (balance.debits, balance.credits),
+                )
+            })
+        })
+        .collect();
+    let mut consumed: BTreeMap<(Id128, u128, u32), (i128, i128)> = BTreeMap::new();
+    let mut keys = BTreeSet::new();
+    for pair in pairs {
+        if pair.pair_code.trim().is_empty()
+            || pair.pair_code.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
+            || !keys.insert(pair.pair_code.as_str())
+            || pair.entity_a == pair.entity_b
+            || pair.account_a == pair.account_b
+            || !entities.contains(&pair.entity_a)
+            || !entities.contains(&pair.entity_b)
+            || !units.contains(&pair.unit_id)
+            || pair.difference_leg.is_some()
+            || pair.entity_a_net.checked_add(pair.entity_b_net) != Some(0)
+            || pair.entity_a_net == i128::MIN
+            || pair.entity_b_net == i128::MIN
+        {
+            return Err(ConcordatError::Input(format!(
+                "declared pair `{}` requires a unique bounded key, distinct group entities and accounts, a declared unit and exact opposite signed amounts without an FX difference",
+                pair.pair_code
+            )));
+        }
+        leaf_account(accounts, pair.account_a, "declared intercompany")?;
+        leaf_account(accounts, pair.account_b, "declared intercompany")?;
+        let kinds = (
+            accounts[&pair.account_a].account_type,
+            accounts[&pair.account_b].account_type,
+        );
+        let category_matches = match pair.kind {
+            IntercompanyPairKind::ReciprocalReceivablePayable => {
+                matches!(kinds, (1, 2) | (2, 1))
+            }
+            IntercompanyPairKind::ReciprocalRevenueExpense => {
+                matches!(kinds, (4, 5) | (5, 4))
+            }
+        };
+        if !category_matches {
+            return Err(ConcordatError::Input(format!(
+                "declared pair `{}` requires reciprocal Asset/Liability or Revenue/Expense accounts matching its pair kind",
+                pair.pair_code
+            )));
+        }
+        for (entity, account_id, net) in [
+            (pair.entity_a, pair.account_a, pair.entity_a_net),
+            (pair.entity_b, pair.account_b, pair.entity_b_net),
+        ] {
+            let totals = consumed
+                .entry((entity, account_id, pair.unit_id))
+                .or_default();
+            let slot = if net >= 0 { &mut totals.0 } else { &mut totals.1 };
+            *slot = slot
+                .checked_add(net.checked_abs().ok_or(ConcordatError::Overflow(
+                    "declared pair contribution magnitude",
+                ))?)
+                .ok_or(ConcordatError::Overflow("declared pair contributions"))?;
+        }
+    }
+    for (key, (debits, credits)) in consumed {
+        let available = gross.get(&key).copied().unwrap_or_default();
+        if debits > available.0 || credits > available.1 {
+            return Err(ConcordatError::Input(format!(
+                "declared pair contributions exceed the selected member population for entity {} account {:032x} unit {}",
+                key.0.to_hex(), key.1, key.2
+            )));
+        }
+    }
+    let mut sorted: Vec<_> = pairs
+        .iter()
+        .filter(|pair| pair.entity_a_net != 0)
+        .cloned()
+        .collect();
+    sorted.sort_by(|left, right| left.pair_code.cmp(&right.pair_code));
+    Ok(sorted)
+}
+
+fn residual_pair_nets(
+    nets: &BTreeMap<(Id128, u128, u32), i128>,
+    pairs: &[MatchedIntercompanyPair],
+) -> Result<BTreeMap<(Id128, u128, u32), i128>, ConcordatError> {
+    let mut residual = nets.clone();
+    for pair in pairs {
+        for (entity, account, net) in [
+            (pair.entity_a, pair.account_a, pair.entity_a_net),
+            (pair.entity_b, pair.account_b, pair.entity_b_net),
+        ] {
+            let slot = residual.entry((entity, account, pair.unit_id)).or_default();
+            *slot = slot
+                .checked_sub(net)
+                .ok_or(ConcordatError::Overflow("declared pair residual"))?;
+        }
+    }
+    Ok(residual)
+}
+
+fn declared_pair_elimination(
+    pair: &MatchedIntercompanyPair,
+    accounts: &BTreeMap<u128, &Account>,
+) -> Result<EliminationEntry, ConcordatError> {
+    let mut entry = pair_elimination(pair, accounts)?;
+    // A caller's key "GROUP" must not collide with the residual group entry.
+    entry.code = format!("ELIM-IC-DECLARED-{}-U{}", pair.pair_code, pair.unit_id);
+    Ok(entry)
+}
+
+type DeclaredPairInputs<'a> = (&'a [MatchedIntercompanyPair], &'a [MatchedIntercompanyPair]);
+
+fn consolidate_inner(
+    input: &ConsolidationInput,
+    declared: Option<DeclaredPairInputs<'_>>,
+) -> Result<ConsolidationRun, ConcordatError> {
     if input.members.is_empty() || input.members.len() > MAX_ENTITIES {
         return Err(ConcordatError::Input(
             "consolidation requires 1..=1024 member entities".into(),
@@ -1800,9 +1996,11 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         ));
     }
 
-    let matched_pairs =
-        match_intercompany_pairs(&input.members, &input.intercompany_pairs, &units)?;
     let member_nets = nets_of(&input.members, &accounts, &units, "the stock")?;
+    let matched_pairs = match declared {
+        Some((stock, _)) => declared_pairs(&input.members, stock, &accounts, &units)?,
+        None => match_intercompany_pairs(&input.members, &input.intercompany_pairs, &units)?,
+    };
     let known_entities: BTreeSet<Id128> = input.members.iter().map(|m| m.entity_id).collect();
 
     let group_accounts: BTreeSet<u128> = input.intercompany_accounts.iter().copied().collect();
@@ -1842,11 +2040,20 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
     // The balance sheet's eliminations, from the members' stock.
     let mut eliminations = Vec::new();
     for pair in &matched_pairs {
-        eliminations.push(pair_elimination(pair, &accounts)?);
+        eliminations.push(if declared.is_some() {
+            declared_pair_elimination(pair, &accounts)?
+        } else {
+            pair_elimination(pair, &accounts)?
+        });
     }
+    let group_residual = if declared.is_some() {
+        Some(residual_pair_nets(&member_nets, &matched_pairs)?)
+    } else {
+        None
+    };
     for &unit_id in &units {
         eliminations.extend(group_elimination(
-            &member_nets,
+            group_residual.as_ref().unwrap_or(&member_nets),
             &group_accounts,
             &accounts,
             unit_id,
@@ -2029,13 +2236,14 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         }
     }
 
-    // Every matched and group intercompany account nets to zero in the
-    // consolidated stock.
+    // Aggregate endpoints and role accounts net to zero. Individually
+    // declared transactions may share ordinary accounts with external balances.
     let consolidated_totals = totals_with(&input.members, &eliminations)?;
     eliminated_to_zero(
         &consolidated_totals,
         matched_pairs
             .iter()
+            .filter(|_| declared.is_none())
             .flat_map(|p| [(p.account_a, p.unit_id), (p.account_b, p.unit_id)])
             .chain(
                 group_accounts
@@ -2064,14 +2272,26 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         .filter(|p| p.kind == IntercompanyPairKind::ReciprocalRevenueExpense)
         .cloned()
         .collect();
-    let income_matched = match_intercompany_pairs(&income.members, &income_pairs, &units)?;
+    let income_matched = match declared {
+        Some((_, pairs)) => declared_pairs(&income.members, pairs, &accounts, &units)?,
+        None => match_intercompany_pairs(&income.members, &income_pairs, &units)?,
+    };
     let mut income_eliminations = Vec::new();
     for pair in &income_matched {
-        income_eliminations.push(pair_elimination(pair, &accounts)?);
+        income_eliminations.push(if declared.is_some() {
+            declared_pair_elimination(pair, &accounts)?
+        } else {
+            pair_elimination(pair, &accounts)?
+        });
     }
+    let income_group_residual = if declared.is_some() {
+        Some(residual_pair_nets(&income_nets, &income_matched)?)
+    } else {
+        None
+    };
     for &unit_id in &units {
         income_eliminations.extend(group_elimination(
-            &income_nets,
+            income_group_residual.as_ref().unwrap_or(&income_nets),
             &group_accounts,
             &accounts,
             unit_id,
@@ -2111,6 +2331,7 @@ pub fn consolidate(input: &ConsolidationInput) -> Result<ConsolidationRun, Conco
         &income_totals,
         income_matched
             .iter()
+            .filter(|_| declared.is_none())
             .flat_map(|p| [(p.account_a, p.unit_id), (p.account_b, p.unit_id)])
             .chain(
                 group_accounts
@@ -2347,6 +2568,192 @@ mod tests {
                 members,
             },
         }
+    }
+
+    fn declared_pair(code: &str, a: u8, b: u8, amount: i128) -> MatchedIntercompanyPair {
+        MatchedIntercompanyPair {
+            pair_code: code.into(),
+            kind: IntercompanyPairKind::ReciprocalReceivablePayable,
+            unit_id: 1,
+            entity_a: Id128([a; 16]),
+            account_a: 1300,
+            entity_a_net: amount,
+            entity_b: Id128([b; 16]),
+            account_b: 2300,
+            entity_b_net: amount.checked_neg().unwrap(),
+            difference_leg: None,
+        }
+    }
+
+    #[test]
+    fn declared_pairs_share_endpoints_and_role_residuals_are_eliminated_once() {
+        let mut input = disjoint_intercompany_pairs_input();
+        input.intercompany_pairs.clear();
+        input.intercompany_accounts = vec![1300, 2300];
+        input.members.truncate(3);
+        input.members[0].balances = vec![bal(1300, 1, 250, 0), bal(1000, 1, 0, 250)];
+        input.members[1].balances = vec![bal(1000, 1, 150, 0), bal(2300, 1, 0, 150)];
+        input.income.members = input.members.clone();
+        let mut pairs = vec![
+            declared_pair("first", 1, 2, 100),
+            declared_pair("GROUP", 1, 3, 100),
+        ];
+        let run = consolidate_declared(&input, &pairs, &[]).unwrap();
+        assert_eq!(run.matched_pairs.len(), 2);
+        assert_eq!(run.eliminations.len(), 3);
+        assert!(run.eliminations.iter().all(EliminationEntry::is_balanced));
+        let residual = run
+            .eliminations
+            .iter()
+            .find(|entry| entry.code == "ELIM-IC-GROUP-U1")
+            .unwrap();
+        assert_eq!(residual.legs.len(), 2);
+        assert_eq!(residual.legs[0].credits, 50);
+        assert_eq!(residual.legs[1].debits, 50);
+        assert!(
+            run.eliminations
+                .iter()
+                .any(|entry| entry.code == "ELIM-IC-DECLARED-GROUP-U1")
+        );
+        assert_eq!(
+            run.eliminations
+                .iter()
+                .flat_map(|entry| &entry.legs)
+                .filter(|leg| leg.account_id == 1300)
+                .map(|leg| leg.credits)
+                .sum::<i128>(),
+            250,
+        );
+        assert!(
+            totals_with(&input.members, &run.eliminations)
+                .unwrap()
+                .values()
+                .all(|(debits, credits)| debits == credits)
+        );
+        pairs.reverse();
+        input.members.reverse();
+        input.income.members.reverse();
+        assert_eq!(
+            run.canonical_bytes().unwrap(),
+            consolidate_declared(&input, &pairs, &[])
+                .unwrap()
+                .canonical_bytes()
+                .unwrap()
+        );
+
+        // Ordinary account activity remains when only individual transactions
+        // are declared. Whole-account zeroing would erase this external balance.
+        input.intercompany_accounts.clear();
+        let partial = consolidate_declared(&input, &pairs, &[]).unwrap();
+        assert_eq!(partial.eliminations.len(), 2);
+        let totals = totals_with(&input.members, &partial.eliminations).unwrap();
+        assert_eq!(totals[&(1300, 1)], (250, 200));
+        assert_eq!(totals[&(2300, 1)], (200, 250));
+
+        // Leg ordinal orientation changes identity presentation, not amounts.
+        for pair in &mut pairs {
+            std::mem::swap(&mut pair.entity_a, &mut pair.entity_b);
+            std::mem::swap(&mut pair.account_a, &mut pair.account_b);
+            std::mem::swap(&mut pair.entity_a_net, &mut pair.entity_b_net);
+        }
+        let oriented = consolidate_declared(&input, &pairs, &[]).unwrap();
+        assert_eq!(oriented.balance_sheet, partial.balance_sheet);
+        assert_eq!(oriented.income_statement, partial.income_statement);
+        assert_eq!(
+            totals_with(&input.members, &oriented.eliminations).unwrap(),
+            totals
+        );
+    }
+
+    #[test]
+    fn declared_pairs_refuse_reused_keys_forged_amounts_categories_and_income_endpoints() {
+        let mut input = disjoint_intercompany_pairs_input();
+        input.intercompany_pairs.clear();
+        let original = declared_pair("one", 1, 2, 100);
+        assert!(
+            consolidate_declared(&input, &[original.clone(), original.clone()], &[]).is_err()
+        );
+        for plant in 0..12 {
+            let mut pair = original.clone();
+            match plant {
+                0 => {
+                    pair.entity_a_net = 101;
+                    pair.entity_b_net = -101;
+                }
+                1 => pair.entity_b_net = -99,
+                2 => pair.difference_leg = Some((5400, 1)),
+                3 => pair.account_b = 4300,
+                4 => pair.entity_b = Id128([99; 16]),
+                5 => pair.unit_id = 99,
+                6 => pair.account_b = 1000,
+                7 => pair.account_a = 2000,
+                8 => pair.kind = IntercompanyPairKind::ReciprocalRevenueExpense,
+                9 => pair.pair_code = " ".into(),
+                10 => pair.entity_b = pair.entity_a,
+                _ => {
+                    pair.entity_a_net = i128::MIN;
+                    pair.entity_b_net = i128::MAX;
+                }
+            }
+            assert!(
+                consolidate_declared(&input, &[pair], &[]).is_err(),
+                "plant {plant}"
+            );
+        }
+        let mut second = original.clone();
+        second.pair_code = "different-key-same-population".into();
+        assert!(
+            consolidate_declared(&input, &[original.clone(), second], &[]).is_err(),
+            "two unique keys cannot consume the same 100-unit population twice"
+        );
+        let mut income = original.clone();
+        income.kind = IntercompanyPairKind::ReciprocalRevenueExpense;
+        income.account_a = 4300;
+        income.account_b = 5300;
+        assert!(consolidate_declared(&input, &[original], &[income]).is_err());
+        let aggregate = disjoint_intercompany_pairs_input();
+        assert!(
+            consolidate_declared(&aggregate, &[], &[]).is_err(),
+            "aggregate pair specifications cannot slip into the declared profile"
+        );
+    }
+
+    #[test]
+    fn declared_income_reversal_survives_zero_cumulative_pair_stock() {
+        let mut input = disjoint_intercompany_pairs_input();
+        input.intercompany_pairs.clear();
+        input.members.truncate(2);
+        input.members[0].balances = vec![bal(4300, 1, 80, 80), bal(1000, 1, 80, 80)];
+        input.members[1].balances = vec![bal(5300, 1, 80, 80), bal(1000, 1, 80, 80)];
+        input.income.members = input.members.clone();
+        input.income.members[0].balances = vec![bal(4300, 1, 80, 0), bal(1000, 1, 0, 80)];
+        input.income.members[1].balances = vec![bal(5300, 1, 0, 80), bal(1000, 1, 80, 0)];
+        let stock = MatchedIntercompanyPair {
+            pair_code: "prior-period-fee".into(),
+            kind: IntercompanyPairKind::ReciprocalRevenueExpense,
+            unit_id: 1,
+            entity_a: Id128([1; 16]),
+            account_a: 4300,
+            entity_a_net: 0,
+            entity_b: Id128([2; 16]),
+            account_b: 5300,
+            entity_b_net: 0,
+            difference_leg: None,
+        };
+        let income = MatchedIntercompanyPair {
+            entity_a_net: 80,
+            entity_b_net: -80,
+            ..stock.clone()
+        };
+        let run = consolidate_declared(&input, &[stock], &[income]).unwrap();
+        assert!(run.matched_pairs.is_empty());
+        assert!(run.eliminations.is_empty());
+        assert_eq!(run.income_eliminations.len(), 1);
+        assert_eq!(run.income_eliminations[0].legs[0].credits, 80);
+        assert_eq!(run.income_eliminations[0].legs[1].debits, 80);
+        let totals = totals_with(&input.income.members, &run.income_eliminations).unwrap();
+        assert_eq!(totals[&(4300, 1)], (80, 80));
+        assert_eq!(totals[&(5300, 1)], (80, 80));
     }
 
     #[test]
