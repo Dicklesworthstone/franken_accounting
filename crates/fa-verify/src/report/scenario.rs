@@ -441,6 +441,7 @@ pub fn verify_scenario_math_expected(
         expected,
         &prefix.envelopes,
         &records,
+        &historical.schema,
         &mut planner_declarations,
     )?;
     history::seq_map(map, &cert, expected, &prefix.envelopes)?;
@@ -525,9 +526,8 @@ fn recompute(
                 "assumed posting identity is already present at the fork or in an earlier Plan",
             ));
         }
-        let period = schema.entry_period(&assumption.info, assumption.day)?;
         let selected = cutoff.map_or_else(
-            || expected.periods.binary_search(&period).is_ok(),
+            || expected.periods.binary_search(&assumption.period).is_ok(),
             |through| assumption.day <= through,
         );
         for leg in &assumption.legs {

@@ -268,6 +268,36 @@ fn verify(
 }
 
 #[test]
+fn signed_scenario_checks_declared_planner_scope_even_outside_report_period() {
+    let mut f = Fixture::new();
+    f.open();
+    let planner = cap(&["post"])
+        .for_books(&[BOOK])
+        .unwrap()
+        .for_classes(&[EntryClass::ORIGINAL, EntryClass::SCENARIO_CONTROL])
+        .unwrap();
+    let commitment = planner.commitment().unwrap();
+    let proposal = f.proposal("feb-assumption", day(2, 5), "6000", "1000", f.usd, 40);
+    let intent = fa_intents::PostIntent::new(proposal, Vec::new()).unwrap();
+    f.book
+        .run_in_scenario(planner, NAME, intent)
+        .unwrap()
+        .unwrap();
+    let certified = f.certify(true);
+    let expected = question(&certified.report);
+    let produced = f.produce(&certified.certificate);
+    let key = f.book.checkpoint_public_key();
+    drop(f);
+    let verified = verify(&produced, key, &expected, certified.certificate.digest());
+    assert!(verified.rows.is_empty());
+    assert_eq!(verified.planner_declarations.len(), 1);
+    let declaration = &verified.planner_declarations[0];
+    assert_eq!(declaration.capability_commitment, commitment);
+    assert_eq!(declaration.checked_effect_scopes, ["books", "classes"]);
+    assert_eq!(verified.historical_admission, "not_judged");
+}
+
+#[test]
 fn signed_additive_scenario_replays_all_gross_columns_units_and_pinned_plans_without_book() {
     let mut f = Fixture::new();
     f.open();

@@ -14,6 +14,7 @@ use crate::report::{ReportError, metadata, text};
 pub(super) struct AssumedEntry<'a> {
     pub info: metadata::EntryInfo<'a>,
     pub day: i32,
+    pub period: String,
     pub legs: Vec<Leg>,
     key: &'a [u8],
 }
@@ -161,6 +162,7 @@ pub(super) fn plans<'a>(
     expected: &ScenarioExpectation,
     envelopes: &[LeafEnvelope],
     records: &[(usize, &'a [u8])],
+    fork_schema: &metadata::Schema,
     declarations: &mut Vec<super::ScenarioPlannerDeclaration>,
 ) -> Result<Vec<AssumedEntry<'a>>, ReportError> {
     let expected_id = identity(
@@ -273,13 +275,19 @@ pub(super) fn plans<'a>(
                 let intent = r.bytes(MAX_RECORD_BYTES, "scenario_plan.intent")?;
                 let capability = r.bytes(64 * 1024, "scenario_plan.historical_capability")?;
                 r.finish("scenario Plan")?;
-                let assumption = assumed_entry(intent, expected, owner)?;
+                let assumption = assumed_entry(intent, expected, owner, fork_schema)?;
                 declarations.push(super::planner::check(
                     capability,
                     owner,
                     record_id,
                     envelope.commit_seq,
-                    &assumption.legs,
+                    &super::planner::Effect {
+                        book: expected.book_id,
+                        day: assumption.day,
+                        period: &assumption.period,
+                        legs: &assumption.legs,
+                        schema: fork_schema,
+                    },
                 )?);
                 if record.key != control_key(record.object, 1, assumption.key).as_slice() {
                     return Err(failed(
@@ -323,6 +331,7 @@ fn assumed_entry<'a>(
     bytes: &'a [u8],
     expected: &ScenarioExpectation,
     owner: u128,
+    fork_schema: &metadata::Schema,
 ) -> Result<AssumedEntry<'a>, ReportError> {
     let mut intent = Reader::new(bytes);
     if &intent.fixed::<10>("intent.magic")? != b"FA-INTENT\0"
@@ -511,9 +520,11 @@ fn assumed_entry<'a>(
         ));
     }
     let info = metadata::entry_info(proposal, &envelope)?;
+    let period = fork_schema.entry_period(&info, day)?;
     Ok(AssumedEntry {
         info,
         day,
+        period,
         legs,
         key,
     })

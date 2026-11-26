@@ -1,11 +1,12 @@
 //! Static declarations in a journaled Plan's retained capability (plan §14.2).
 //! The checkpoint authenticates these bytes, not issuance, revocation or SoD.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{ReportError, failed, framed};
 use crate::codec::Reader;
 use crate::envelope::Leg;
+use crate::report::{metadata::Schema, text};
 
 /// A Plan's declared holder, posting operation and per-leg ceilings were
 /// consistent with its assumed entry. The remaining authorization predicates
@@ -17,6 +18,138 @@ pub struct ScenarioPlannerDeclaration {
     pub holder: u128,
     pub issuer: u128,
     pub capability_commitment: [u8; 32],
+    /// Declared scope caveats independently checked against the assumed effects.
+    pub checked_effect_scopes: Vec<&'static str>,
+}
+
+/// Original entries in this portable method always address trunk. The chart
+/// and calendar come from replay of the signed fork prefix.
+pub(super) struct Effect<'a> {
+    pub book: [u8; 16],
+    pub day: i32,
+    pub period: &'a str,
+    pub legs: &'a [Leg],
+    pub schema: &'a Schema,
+}
+
+fn scope_error(detail: &str) -> ReportError {
+    failed("scenario_planner_scope", detail)
+}
+
+/// Capability set payloads are nonempty and strictly increasing on the wire.
+fn ordered_set<'a, T: Ord>(
+    reader: &mut Reader<'a>,
+    maximum: usize,
+    width: usize,
+    mut element: impl FnMut(&mut Reader<'a>) -> Result<T, ReportError>,
+) -> Result<BTreeSet<T>, ReportError> {
+    let count = reader.count(maximum, width, "scope.items")?;
+    if count == 0 {
+        return Err(scope_error("empty capability scope"));
+    }
+    let mut values = BTreeSet::new();
+    for _ in 0..count {
+        let item = element(reader)?;
+        if values.last().is_some_and(|last| last >= &item) {
+            return Err(scope_error("capability scope is not strictly ascending"));
+        }
+        values.insert(item);
+    }
+    Ok(values)
+}
+
+fn code<'a>(reader: &mut Reader<'a>) -> Result<&'a str, ReportError> {
+    let value = text(reader, 64, "scope.code")?;
+    if value.is_empty() {
+        return Err(scope_error("empty account or period code"));
+    }
+    Ok(value)
+}
+
+/// Match exact account codes and their descendants in the authenticated
+/// chart. Shared ancestors need only be walked once per declaration.
+fn check_accounts(effect: &Effect<'_>, roots: &BTreeSet<&str>) -> Result<(), ReportError> {
+    let mut admitted = BTreeSet::new();
+    for leg in effect.legs {
+        let mut id = leg.account;
+        let mut path = BTreeSet::new();
+        while !admitted.contains(&id) {
+            let account = effect.schema.accounts.get(&id)
+                .ok_or_else(|| scope_error("account is missing from fork chart"))?;
+            if !path.insert(id) {
+                return Err(scope_error("cycle in account scope ancestry"));
+            }
+            if roots.contains(account.code.as_str()) {
+                break;
+            }
+            id = *effect.schema.parents.get(&id)
+                .ok_or_else(|| scope_error("assumed leg lies outside declared account roots"))?;
+        }
+        admitted.extend(path);
+    }
+    Ok(())
+}
+
+fn check_effect_scope(
+    tag: u8,
+    bytes: &[u8],
+    effect: &Effect<'_>,
+) -> Result<Option<&'static str>, ReportError> {
+    let mut r = Reader::new(bytes);
+    let name = match tag {
+        1 => {
+            let books = ordered_set(&mut r, 256, 16, |r| Ok(r.fixed::<16>("scope.book")?))?;
+            if !books.contains(&effect.book) {
+                return Err(scope_error("assumed entry belongs to an unlisted book"));
+            }
+            "books"
+        }
+        3 => {
+            check_accounts(effect, &ordered_set(&mut r, 64, 4, code)?)?;
+            "accounts"
+        }
+        4 => {
+            if !ordered_set(&mut r, 256, 4, code)?.contains(effect.period) {
+                return Err(scope_error("assumed entry belongs to an unlisted period"));
+            }
+            "periods"
+        }
+        5 => {
+            if effect.day > r.i32("scope.effective_through")? {
+                return Err(scope_error("assumed effective date exceeds declared bound"));
+            }
+            "effective"
+        }
+        6 => {
+            // Posting plans observe the head. A read pinned at, or before,
+            // any known-at sequence cannot authorize that observation.
+            return Err(scope_error("known-at-pinned capability cannot plan a posting"));
+        }
+        7 => {
+            if r.fixed::<16>("scope.branch")? != [0; 16] {
+                return Err(scope_error("declared branch differs from assumed trunk entry"));
+            }
+            "branch"
+        }
+        13 => {
+            let classes = ordered_set(&mut r, 64, 2, |r| {
+                let class = r.u16("scope.class")?;
+                if !(1..=31).contains(&class) {
+                    return Err(scope_error("unsupported entry class scope"));
+                }
+                Ok(class)
+            })?;
+            if !classes.contains(&1) {
+                return Err(scope_error("assumed Original is outside declared classes"));
+            }
+            "classes"
+        }
+        // Other caveats require additional evidence or concern a different
+        // operation. Their retained bytes remain bound to the commitment.
+        _ => return Ok(None),
+    };
+    r.finish("planner scope")?;
+    Ok(Some(name))
 }
 
 pub(super) fn check(
@@ -24,7 +157,7 @@ pub(super) fn check(
     owner: u128,
     plan_record: u128,
     recorded_at: u64,
-    legs: &[Leg],
+    effect: &Effect<'_>,
 ) -> Result<ScenarioPlannerDeclaration, ReportError> {
     let refuse = |detail| failed("scenario_planner_declaration", detail);
     let mut r = Reader::new(bytes);
@@ -70,7 +203,7 @@ pub(super) fn check(
         ceilings.insert(unit, maximum);
     }
     if !ceilings.is_empty()
-        && legs.iter().any(|leg| {
+        && effect.legs.iter().any(|leg| {
             ceilings
                 .get(&leg.unit)
                 .is_none_or(|maximum| leg.mantissa > *maximum)
@@ -84,6 +217,7 @@ pub(super) fn check(
         r.u64("capability.expires_at")?;
     }
     let issuer = r.u128("capability.issuer")?;
+    let mut checked_effect_scopes = Vec::new();
     if version == 2 {
         let count = r.count(16, 5, "capability.caveats")?;
         if count == 0 {
@@ -95,9 +229,10 @@ pub(super) fn check(
             if tag <= previous || tag > 13 {
                 return Err(refuse("unsupported or unordered planner caveat"));
             }
-            // Caveat bodies are authenticated by the commitment, but are
-            // deliberately not interpreted as proof of historical admission.
-            r.bytes(8192, "capability.caveat.payload")?;
+            let payload = r.bytes(8192, "capability.caveat.payload")?;
+            if let Some(name) = check_effect_scope(tag, payload, effect)? {
+                checked_effect_scopes.push(name);
+            }
             previous = tag;
         }
     }
@@ -108,6 +243,7 @@ pub(super) fn check(
         holder,
         issuer,
         capability_commitment: framed(b"fa:capability:v1", &[bytes]),
+        checked_effect_scopes,
     })
 }
 
@@ -145,9 +281,20 @@ mod tests {
             mantissa: 87,
         };
         let legs = [leg, leg];
+        let effect = Effect {
+            book: [17; 16],
+            day: 100,
+            period: "FY2026-P01",
+            legs: &legs,
+            schema: &Schema::default(),
+        };
         for version_two in [false, true] {
             let bytes = capability(7, &[0, 1], &[(2, 87)], version_two);
-            let verified = check(&bytes, 7, 8, 10, &legs).unwrap();
+            let verified = check(&bytes, 7, 8, 10, &effect).unwrap();
+            assert_eq!(
+                verified.checked_effect_scopes.contains(&"effective"),
+                version_two
+            );
             assert_eq!(
                 (
                     verified.holder,
@@ -166,14 +313,96 @@ mod tests {
                 capability(7, &[1], &[(2, 87), (2, 88)], version_two),
             ] {
                 assert_eq!(
-                    check(&invalid, 7, 8, 10, &legs).unwrap_err().predicate,
+                    check(&invalid, 7, 8, 10, &effect).unwrap_err().predicate,
                     "scenario_planner_declaration"
                 );
             }
-            assert!(check(&bytes[..bytes.len() - 1], 7, 8, 10, &legs).is_err());
+            assert!(check(&bytes[..bytes.len() - 1], 7, 8, 10, &effect).is_err());
             let mut trailing = bytes;
             trailing.push(0);
-            assert!(check(&trailing, 7, 8, 10, &legs).is_err());
+            assert!(check(&trailing, 7, 8, 10, &effect).is_err());
+        }
+    }
+
+    #[test]
+    fn declared_scope_binds_every_assumed_leg_and_the_exact_fork_coordinates() {
+        use crate::report::metadata::Account;
+
+        let mut schema = Schema::default();
+        for (id, code, is_leaf) in [(1, "Assets", false), (2, "Cash", true), (3, "AssetSales", true)] {
+            schema.accounts.insert(id, Account {
+                code: code.into(),
+                name: code.into(),
+                account_type: 1,
+                normal_balance: 0,
+                is_leaf,
+                unit_policy: -1,
+                limit: None,
+                created_at: 1,
+            });
+        }
+        schema.parents.insert(2, 1);
+        let cash = Leg {
+            account: 2,
+            unit: 1,
+            debit: true,
+            mantissa: 20,
+        };
+        let legs = [cash, Leg { account: 3, debit: false, ..cash }];
+        let effect = Effect {
+            book: [9; 16],
+            day: 31,
+            period: "January",
+            legs: &legs,
+            schema: &schema,
+        };
+        let codes = |items: &[&str]| {
+            let mut w = Writer::default();
+            w.count(items.len());
+            for item in items {
+                w.bytes(item.as_bytes());
+            }
+            w.buf
+        };
+        let mut books = Writer::default();
+        books.count(1).fixed(&effect.book);
+        let mut classes = Writer::default();
+        classes.count(2).u16(1).u16(26);
+        for (tag, valid) in [
+            (1, books.buf),
+            (3, codes(&["AssetSales", "Assets"])),
+            (4, codes(&["January"])),
+            (5, 31i32.to_le_bytes().to_vec()),
+            (7, vec![0; 16]),
+            (13, classes.buf),
+        ] {
+            assert!(check_effect_scope(tag, &valid, &effect).unwrap().is_some());
+            let mut trailing = valid;
+            trailing.push(0);
+            assert!(check_effect_scope(tag, &trailing, &effect).is_err());
+        }
+        let mut other_book = Writer::default();
+        other_book.count(1).fixed(&[8; 16]);
+        let mut only_control = Writer::default();
+        only_control.count(1).u16(26);
+        for (tag, invalid) in [
+            (1, other_book.buf),
+            (3, codes(&["Assets"])), // The opposite leg needs a separate root.
+            (3, codes(&["Asset"])), // No account-code prefix matching.
+            (3, codes(&["Cash", "Cash"])),
+            (3, codes(&["Cash", "AssetSales"])),
+            (4, codes(&["February"])),
+            (4, codes(&[])),
+            (4, codes(&[""])),
+            (5, 30i32.to_le_bytes().to_vec()),
+            (6, u64::MAX.to_le_bytes().to_vec()),
+            (7, vec![1; 16]),
+            (13, only_control.buf),
+        ] {
+            assert_eq!(
+                check_effect_scope(tag, &invalid, &effect).unwrap_err().predicate,
+                "scenario_planner_scope"
+            );
         }
     }
 }
