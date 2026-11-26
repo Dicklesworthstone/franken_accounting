@@ -558,8 +558,12 @@ releases retain their party attribution. A mismatch produces verification exit 8
 Creation requires whole-book read and schema-change authority; inspection and
 verification require whole-book read authority. The same commands are registered
 in the on-demand `fa.subledger` MCP cluster, with launch authority enforced.
-This native reconciliation does not retain a report certificate or validate
-external summary-feed detail digests; those remain open work under `fa-03s`.
+`--certify` retains a native subledger certificate that `fa replay` reproduces.
+External summary legs are derived from retained, independently reviewed detail:
+`fa subledger verify-feed` recomputes one reviewed batch against its exact
+source, and `fa subledger reconcile-feed` compares all matched batches with the
+complete control account. Neither route asserts that the upstream feed delivered
+its complete population.
 
 ### ADS export columns and text versions
 
