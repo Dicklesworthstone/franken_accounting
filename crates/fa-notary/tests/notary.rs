@@ -5476,8 +5476,21 @@ fn carried_checkpoint_reads_stay_flat_with_depth_and_refuse_a_changed_ancestor()
     let mut reads = Vec::new();
     let mut first_state = None;
     for index in 0..7u8 {
-        h.post(h.rent, 100, &[b'd', index]);
-        literal.post(literal.rent, 100, &[b'd', index]);
+        // Exercise posted, time-only and empty suffixes against a separate
+        // book that re-derives the signed fields from the whole journal.
+        let (entries, scope_rebuilds) = match index {
+            2 | 5 => {
+                h.tick(100 + u64::from(index), index == 2);
+                literal.tick(100 + u64::from(index), index == 2);
+                (1, 0)
+            }
+            3 | 6 => (0, 0),
+            _ => {
+                h.post(h.rent, 100, &[b'd', index]);
+                literal.post(literal.rent, 100, &[b'd', index]);
+                (1, 1)
+            }
+        };
         let meter = fa_journal::op_witness::begin();
         let (outcome, work) = h
             .runtime
@@ -5499,9 +5512,12 @@ fn carried_checkpoint_reads_stay_flat_with_depth_and_refuse_a_changed_ancestor()
         let reference = reference.expect("literal checkpoint");
         assert_eq!(checkpoint.stored.bytes, reference.stored.bytes);
         assert_eq!(checkpoint.checkpoint.bytes, reference.checkpoint.bytes);
+        assert_eq!(checkpoint.leaf_kinds, reference.leaf_kinds);
+        assert_eq!(work.publication_scope_rebuilds, scope_rebuilds);
         if index == 0 {
             first_state = Some(checkpoint.stored.vid);
         } else {
+            assert_eq!(work.publication_time_entries, entries);
             assert_eq!(work.journal_full_reads, 0, "{work:?}");
             assert_eq!(census.vertex_scans, 0, "{census:?}");
             reads.push(census.point_reads);

@@ -349,25 +349,76 @@ fn chain_commitment<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
-/// The latest TimeEvidence actually contained in this retained prefix. The
-/// signed reference is the complete Entry envelope's content digest, not its
-/// mutable root mirror or a caller-supplied clock reading. An uncorroborated
-/// observation remains uncorroborated in that authenticated payload; it must
-/// not be silently replaced by an older, more favorable observation. Every
-/// time candidate must be valid: a newer tick cannot hide a malformed earlier
-/// one, and a TimeTick payload under another class must never be skipped.
-fn prefix_time_evidence(journal: &Journal) -> Result<Option<Oid>, KernelError> {
-    let mut latest = None;
-    for leaf in journal
-        .leaves
-        .iter()
-        .filter(|leaf| leaf.envelope.is_entry())
-    {
-        if let Some(oid) = leaf_time_evidence(journal, leaf)? {
-            latest = Some(oid);
+/// Derived facts about the verified leaves of the last publication. Reuse
+/// requires the same marker and an audited suffix, just like the carried tree.
+#[derive(Clone, Copy, Debug)]
+struct PrefixSummary {
+    leaves: usize,
+    kinds: LeafKinds,
+    scope_root: Digest,
+    latest_time: Option<Oid>,
+}
+
+impl PrefixSummary {
+    fn derive(
+        journal: &Journal,
+        previous: Option<Self>,
+        bind_time: bool,
+        work: &mut AccumulatorReadWork,
+    ) -> Result<Self, KernelError> {
+        let suffix = &journal.leaves[previous.map_or(0, |p| p.leaves)..];
+        let mut kinds = previous.map_or_else(LeafKinds::default, |p| p.kinds);
+        let mut latest_time = previous.and_then(|p| p.latest_time);
+        let mut new_scope_tuples = false;
+        for leaf in suffix {
+            kinds.observe(&leaf.envelope);
+            new_scope_tuples |=
+                leaf.envelope.effective_day.is_some() && !leaf.envelope.account_vids.is_empty();
+            // Inspect every new entry: a TimeTick under the wrong class must
+            // not be skipped, and a later valid tick cannot mask a bad one.
+            if bind_time && leaf.envelope.is_entry() {
+                work.publication_time_entries += 1;
+                if let Some(oid) = leaf_time_evidence(journal, leaf)? {
+                    latest_time = Some(oid);
+                }
+            }
         }
+        let scope_root = match previous {
+            Some(p) if !new_scope_tuples => p.scope_root,
+            _ => {
+                work.publication_scope_rebuilds += 1;
+                ScopeIndex::of(journal).root()
+            }
+        };
+        Ok(Self {
+            leaves: journal.leaves.len(),
+            kinds,
+            scope_root,
+            latest_time,
+        })
     }
-    Ok(latest)
+
+    fn checkpoint<V: asupersync::fs::Vfs + Clone>(
+        &self,
+        db: &Database<V>,
+        ctx: &PurposeContexts,
+        book: &BookContext,
+        journal: &Journal,
+        state_oid: &Oid,
+        signer: &dyn CheckpointSigner,
+    ) -> Result<TransparencyCheckpoint, KernelError> {
+        sign_checkpoint(
+            CheckpointBody {
+                statement: journal.statement(),
+                state_oid: *state_oid,
+                scope_index_root: self.scope_root,
+                substrate_chain_commitment: chain_commitment(db, ctx, book, journal.through_seq)?,
+                witness_policy_oid: None,
+                time_evidence_oid: self.latest_time,
+            },
+            signer,
+        )
+    }
 }
 
 fn leaf_time_evidence(journal: &Journal, leaf: &Leaf) -> Result<Option<Oid>, KernelError> {
@@ -431,19 +482,13 @@ fn expected_checkpoint<V: asupersync::fs::Vfs + Clone>(
     bind_time_evidence: bool,
     signer: &dyn CheckpointSigner,
 ) -> Result<TransparencyCheckpoint, KernelError> {
-    let body = CheckpointBody {
-        statement: journal.statement(),
-        state_oid: *state_oid,
-        scope_index_root: ScopeIndex::of(journal).root(),
-        substrate_chain_commitment: chain_commitment(db, ctx, book, journal.through_seq)?,
-        witness_policy_oid: None,
-        time_evidence_oid: if bind_time_evidence {
-            prefix_time_evidence(journal)?
-        } else {
-            None
-        },
-    };
-    sign_checkpoint(body, signer)
+    PrefixSummary::derive(
+        journal,
+        None,
+        bind_time_evidence,
+        &mut AccumulatorReadWork::default(),
+    )?
+    .checkpoint(db, ctx, book, journal, state_oid, signer)
 }
 
 fn sign_checkpoint(
@@ -725,6 +770,7 @@ struct CarriedState {
     signer_public_key: [u8; 32],
     journal: Journal,
     protected: BTreeSet<VId>,
+    summary: PrefixSummary,
 }
 
 /// Recompute the accumulator over the whole journal at the head and journal
@@ -793,12 +839,12 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
     book: &BookContext,
     signer: &dyn CheckpointSigner,
     stored_prev: &StoredState,
-    carried: &CarriedState,
+    mut carried: CarriedState,
     through: CommitSeq,
     boundary: CommitSeq,
     access_boundary: CommitSeq,
     work: &mut AccumulatorReadWork,
-) -> Result<Option<(Journal, BTreeSet<VId>)>, KernelError> {
+) -> Result<Option<CarriedState>, KernelError> {
     let prev = &stored_prev.state;
     if carried.book_id != book.book_id
         || carried.state_oid != stored_prev.oid
@@ -907,7 +953,7 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
     if cursor != through {
         return Ok(None);
     }
-    let mut journal = carried.journal.clone();
+    let journal = &mut carried.journal;
     if journal.extend_with_records(through, new_records).is_err() {
         return Ok(None);
     }
@@ -916,9 +962,8 @@ fn extend_carried_journal<V: asupersync::fs::Vfs + Clone>(
     {
         return Ok(None);
     }
-    let mut protected = carried.protected.clone();
-    protected.extend(new_protected);
-    Ok(Some((journal, protected)))
+    carried.protected.extend(new_protected);
+    Ok(Some(carried))
 }
 
 async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
@@ -981,9 +1026,10 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
     };
     let boundary = chained_boundary(prev.as_ref().map(|p| &p.state));
     let access_boundary = chained_access_boundary(prev.as_ref().map(|p| &p.state));
-    let carried_hit = if let (Some(stored_prev), Some(memo_ref)) = (prev.as_ref(), memo.as_deref())
-        && let Some(carried) = memo_ref.state.as_ref()
-    {
+    // Consume the disposable memo. On any failure the next call rebuilds; a
+    // partially extended journal is never installed or exposed to readers.
+    let previous_memo = memo.as_deref_mut().and_then(|m| m.state.take());
+    let carried_hit = if let (Some(stored_prev), Some(carried)) = (prev.as_ref(), previous_memo) {
         match extend_carried_journal(
             db,
             ctx,
@@ -1007,13 +1053,10 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
         None
     };
 
-    let (journal, protected) = if let Some((journal, protected)) = carried_hit {
+    let (journal, protected, previous_summary) = if let Some(carried) = carried_hit {
         work.shared_prefixes = work.shared_prefixes.saturating_add(1);
-        (journal, protected)
+        (carried.journal, carried.protected, Some(carried.summary))
     } else {
-        if let Some(m) = memo.as_deref_mut() {
-            m.state = None;
-        }
         let mut jwork = JournalReadWork {
             full_reads: 1,
             ..JournalReadWork::default()
@@ -1164,7 +1207,7 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
                 }
             }
         }
-        (journal, protected)
+        (journal, protected, None)
     };
     let prev_oid = prev.map(|p| p.oid);
 
@@ -1208,7 +1251,8 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
     }
 
     // The signed checkpoint beside the state, in the same transaction.
-    let cp = expected_checkpoint(db, ctx, book, &journal, &oid, true, signer)?;
+    let summary = PrefixSummary::derive(&journal, previous_summary, true, &mut work)?;
+    let cp = summary.checkpoint(db, ctx, book, &journal, &oid, signer)?;
     let cp_bytes = cp.canonical_bytes().map_err(fa_model::EntryError::Encode)?;
     let cp_oid = checkpoint_oid(&cp_bytes);
     let cvid = checkpoint_vid(&oid);
@@ -1237,7 +1281,6 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
     txn.write_ordered(db, vec![batch, checkpoints])?;
     match txn.commit(db, &ctx.commit()).await {
         Ok(seq) => {
-            let leaf_kinds = journal.leaf_kinds();
             if let Some(memo) = memo {
                 // This commit already succeeded. Without a retained marker for
                 // its immediate successor to the verified prefix, leave the next
@@ -1257,6 +1300,7 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
                                 signer_public_key: signer.public_key(),
                                 journal,
                                 protected,
+                                summary,
                             }
                         })
                 } else {
@@ -1278,7 +1322,7 @@ async fn checkpoint_inner<V: asupersync::fs::Vfs + Clone>(
                         checkpoint: cp,
                         bytes: cp_bytes,
                     },
-                    leaf_kinds,
+                    leaf_kinds: summary.kinds,
                 }),
                 work,
             ))
@@ -1425,6 +1469,10 @@ pub struct AccumulatorReadWork {
     pub journal_records_decoded: usize,
     pub immutability_point_reads: usize,
     pub delta_rows_examined: usize,
+    /// Entry payloads authenticated for TimeEvidence in the new signed body.
+    pub publication_time_entries: usize,
+    /// Full scope-index constructions for the new signed body.
+    pub publication_scope_rebuilds: usize,
     /// States successfully recomputed over borrowed slices of one journal.
     pub shared_prefixes: usize,
     /// States processed by the original per-prefix verifier.
