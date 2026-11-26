@@ -9,6 +9,17 @@
 //! account contains only external feeds or that the source system supplied
 //! every transaction. Source identifiers are opaque digests, not personal data.
 
+pub mod manifest;
+
+pub use manifest::{
+    EXTERNAL_FEED_MANIFEST_FORMAT, EXTERNAL_FEED_MANIFEST_MIME,
+    EXTERNAL_FEED_MANIFEST_REPORT_FORMAT, ExternalFeedManifest, ExternalFeedManifestChild,
+    ExternalFeedManifestDigestMismatch, ExternalFeedManifestObservedChild,
+    ExternalFeedManifestStatus, ExternalFeedManifestTotal, ExternalFeedManifestTotalComparison,
+    ExternalFeedManifestVerification, MAX_EXTERNAL_MANIFEST_BYTES, MAX_EXTERNAL_MANIFEST_CHILDREN,
+    MAX_EXTERNAL_MANIFEST_REPORT_BYTES, MAX_EXTERNAL_MANIFEST_TOTALS,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
