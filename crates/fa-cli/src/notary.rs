@@ -1299,12 +1299,17 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 report,
                 Some(&digest),
             )?,
-            (ReportOutput::Consolidation(report), ReportSelection::Consolidation { .. }) => {
+            (
+                ReportOutput::Consolidation(report),
+                ReportSelection::Consolidation { .. }
+                | ReportSelection::DeclaredConsolidation { .. },
+            ) => {
                 crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
             }
             (
                 ReportOutput::FunctionalConsolidation(report),
-                ReportSelection::FunctionalConsolidation { .. },
+                ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DeclaredFunctionalConsolidation { .. },
             ) => crate::consolidate::render_functional_consolidation(
                 &ctx.out,
                 &book,
@@ -1720,7 +1725,9 @@ pub(crate) fn certificate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             ctx.out.effective(periods_selector(&selection.periods));
         }
         ReportSelection::Consolidation { period }
-        | ReportSelection::FunctionalConsolidation { period } => {
+        | ReportSelection::FunctionalConsolidation { period }
+        | ReportSelection::DeclaredConsolidation { period }
+        | ReportSelection::DeclaredFunctionalConsolidation { period } => {
             ctx.out.effective(format!("period:{period}"));
         }
     }

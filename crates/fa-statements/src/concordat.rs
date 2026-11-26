@@ -1910,7 +1910,11 @@ fn declared_pairs(
             let totals = consumed
                 .entry((entity, account_id, pair.unit_id))
                 .or_default();
-            let slot = if net >= 0 { &mut totals.0 } else { &mut totals.1 };
+            let slot = if net >= 0 {
+                &mut totals.0
+            } else {
+                &mut totals.1
+            };
             *slot = slot
                 .checked_add(net.checked_abs().ok_or(ConcordatError::Overflow(
                     "declared pair contribution magnitude",
@@ -1923,7 +1927,9 @@ fn declared_pairs(
         if debits > available.0 || credits > available.1 {
             return Err(ConcordatError::Input(format!(
                 "declared pair contributions exceed the selected member population for entity {} account {:032x} unit {}",
-                key.0.to_hex(), key.1, key.2
+                key.0.to_hex(),
+                key.1,
+                key.2
             )));
         }
     }
@@ -2670,9 +2676,7 @@ mod tests {
         let mut input = disjoint_intercompany_pairs_input();
         input.intercompany_pairs.clear();
         let original = declared_pair("one", 1, 2, 100);
-        assert!(
-            consolidate_declared(&input, &[original.clone(), original.clone()], &[]).is_err()
-        );
+        assert!(consolidate_declared(&input, &[original.clone(), original.clone()], &[]).is_err());
         for plant in 0..12 {
             let mut pair = original.clone();
             match plant {

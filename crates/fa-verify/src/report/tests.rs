@@ -272,6 +272,7 @@ fn bundle_with_input_values(
         | Selection::CustomStatement(_)
         | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
+        | Selection::DeclaredConsolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
@@ -314,6 +315,7 @@ fn bundle_with_input_values(
         | Selection::CustomStatement(_)
         | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
+        | Selection::DeclaredConsolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
             panic!("use the report-family fixture")
@@ -837,6 +839,120 @@ fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
             .predicate,
         "supported_report"
     );
+}
+
+
+// This certificate fixture covers framing and method selection only. Its
+// opaque native inputs and output are not journal proofs or financial reports.
+fn consolidation_parser_certificate(version: u8, selector: u8, output_format: &[u8]) -> Vec<u8> {
+    let format = format!("fa:report-certificate:v{version}");
+    let native_inputs = if matches!(version, 7 | 15) { 8 } else { 7 };
+    let output = b"parser-only consolidation output";
+    let mut writer = Writer::default();
+    writer
+        .fixed(format.as_bytes())
+        .bytes(b"fa-fold-over-prefix")
+        .bytes(b"embedded-owner")
+        .bytes(output_format)
+        .fixed(&BOOK)
+        .fixed(&[0; 16])
+        .u64(7)
+        .u8(selector)
+        .bytes(b"FY2026-P01")
+        .fixed(&[0; 32])
+        .fixed(&[1; 32])
+        .u64(0)
+        .count(native_inputs);
+    for _ in 0..native_inputs {
+        writer.bytes(b"parser-only native input");
+    }
+    writer
+        .bytes(output)
+        .fixed(&hash_parts(b"fa:report-output:v1", &[output]))
+        .u8(0);
+    let digest = hash_parts(format.as_bytes(), &[&writer.buf]);
+    writer.fixed(&digest);
+    writer.buf
+}
+
+#[test]
+fn consolidation_certificate_parser_pins_legacy_and_declared_method_tags() {
+    for (version, selector, functional, declared, output_format) in [
+        (6, 4, false, false, b"fa:consolidation:v1".as_slice()),
+        (7, 5, true, false, b"fa:functional-consolidation:v1".as_slice()),
+        (14, 12, false, true, b"fa:consolidation:v1".as_slice()),
+        (15, 13, true, true, b"fa:functional-consolidation:v1".as_slice()),
+    ] {
+        let bytes = consolidation_parser_certificate(version, selector, output_format);
+        let parsed = certificate(&bytes).unwrap();
+        assert_eq!(parsed.functional, functional);
+        assert_eq!(parsed.known_at, 7);
+        assert!(parsed.time_selection.is_none());
+        match (&parsed.selection, declared) {
+            (Selection::Consolidation(period), false)
+            | (Selection::DeclaredConsolidation(period), true) => {
+                assert_eq!(period, "FY2026-P01");
+            }
+            _ => panic!("version {version} was interpreted as another consolidation method"),
+        }
+        // These malformed artifacts have freshly recomputed commitments.
+        // Refusal must come from the version/selector contract, not hashing.
+        for other_selector in [4, 5, 12, 13] {
+            if other_selector == selector {
+                continue;
+            }
+            let crossed = consolidation_parser_certificate(version, other_selector, output_format);
+            let error = certificate(&crossed)
+                .err()
+                .expect("a version must refuse another method's selector");
+            assert_eq!(error.predicate, "supported_report");
+        }
+        let wrong_output: &[u8] = if functional {
+            b"fa:consolidation:v1"
+        } else {
+            b"fa:functional-consolidation:v1"
+        };
+        let crossed = consolidation_parser_certificate(version, selector, wrong_output);
+        let error = certificate(&crossed)
+            .err()
+            .expect("the valuation basis must match the output format");
+        assert_eq!(error.predicate, "supported_report");
+    }
+}
+
+#[test]
+fn consolidation_certificate_method_versions_bind_their_exact_digest_domain() {
+    for (legacy_version, legacy_selector, version, selector, output_format) in [
+        (6, 4, 14, 12, b"fa:consolidation:v1".as_slice()),
+        (7, 5, 15, 13, b"fa:functional-consolidation:v1".as_slice()),
+    ] {
+        let legacy = consolidation_parser_certificate(legacy_version, legacy_selector, output_format);
+        let declared = consolidation_parser_certificate(version, selector, output_format);
+        let legacy_certificate = certificate(&legacy).unwrap();
+        let declared_certificate = certificate(&declared).unwrap();
+        assert_eq!(legacy_certificate.output, declared_certificate.output);
+        assert_ne!(legacy_certificate.digest, declared_certificate.digest);
+
+        // The framing and selector now select the declared method, but the
+        // original artifact's unchanged commitment cannot authenticate it.
+        let body_len = declared.len() - 32;
+        let mut swapped = declared.clone();
+        swapped[body_len..].copy_from_slice(&legacy_certificate.digest);
+        let error = certificate(&swapped)
+            .err()
+            .expect("changing method version requires a new commitment");
+        assert_eq!(error.predicate, "certificate_digest");
+
+        // Even hashing the complete new body under the old format's domain
+        // fails: both the retained body and its version domain are bound.
+        let legacy_format = format!("fa:report-certificate:v{legacy_version}");
+        let wrong_domain = hash_parts(legacy_format.as_bytes(), &[&declared[..body_len]]);
+        swapped[body_len..].copy_from_slice(&wrong_domain);
+        let error = certificate(&swapped)
+            .err()
+            .expect("the new format cannot use the legacy digest domain");
+        assert_eq!(error.predicate, "certificate_digest");
+    }
 }
 
 #[path = "tests/dimension.rs"]

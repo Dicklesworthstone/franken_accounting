@@ -1,9 +1,9 @@
 //! `fa consolidate --period <code> [--as-known-at HEAD|<seq>|<RFC3339>]`
 //! (plan §12.3): the consolidated balance sheet and income statement of a
 //! multi-entity book's legal entities, with every elimination derived from
-//! the journaled `OWNS` edges and the account roles, the noncontrolling
-//! interest, and the proof that consolidated equity equals the members'
-//! equity plus the eliminations and the NCI. Nothing is posted.
+//! journaled intercompany declarations, `OWNS` edges and account roles, the
+//! noncontrolling interest, and the proof that consolidated equity equals the
+//! members' equity plus the eliminations and the NCI. Nothing is posted.
 //!
 //! It reads every entity's stock, so it is admitted as a whole-book read
 //! before anything is observed: a token carrying any scope caveat is
@@ -82,7 +82,7 @@ pub(crate) fn consolidate_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail
             // Admission precedes loading, and the requested prefix (not merely
             // HEAD) decides whether cold retained native history is required.
             book.prepare_report_history(who, &capability, known_at)??;
-            let selection = fa::ReportSelection::Consolidation {
+            let selection = fa::ReportSelection::DeclaredConsolidation {
                 period: period.clone(),
             };
             book.read_scope(who, &capability)??

@@ -5,9 +5,9 @@
 use fa::{Book, BookKeys, Entropy, ReportCertificate, ReportOutput, ReportSelection};
 use fa_journal::{AccountSpec, BookSpec, PostRequest, UnitPolicy};
 use fa_model::{
-    AccountType, EntryClass, EntryOrigin, EntryPayload, EvidenceRef, Id128, LEGAL_ENTITY_DIMENSION,
-    LegPayload, Oid, OwnershipPct, RelationshipKind, RelationshipSpec, account_vid,
-    entity_value_vid, legal_entity_vid,
+    AccountType, EntryClass, EntryOrigin, EntryPayload, EntryRef, EvidenceRef, Id128,
+    LEGAL_ENTITY_DIMENSION, LegPayload, Oid, OwnershipPct, RelationshipKind, RelationshipSpec,
+    Supersession, SupersessionKind, account_vid, entity_value_vid, legal_entity_vid,
 };
 use fa_money::{Amount, RoundingLaw, Side, UnitId, UnitRegistry};
 use fa_policy::Capability;
@@ -73,11 +73,14 @@ impl Group {
         let mut accounts: Vec<_> = [
             ("1000", "Cash", AccountType::ASSET),
             ("1300", "Due from group", AccountType::ASSET),
+            ("1400", "Trade receivables", AccountType::ASSET),
             ("1500", "Subsidiary investment", AccountType::ASSET),
             ("2300", "Due to group", AccountType::LIABILITY),
+            ("2400", "Trade payables", AccountType::LIABILITY),
             ("3000", "Share capital", AccountType::EQUITY),
             ("3200", "Minority equity", AccountType::EQUITY),
             ("4000", "Sales", AccountType::REVENUE),
+            ("5000", "Services purchased", AccountType::EXPENSE),
             ("5900", "Minority share of income", AccountType::EXPENSE),
         ]
         .into_iter()
@@ -311,6 +314,112 @@ impl Group {
             .unwrap();
     }
 
+    fn paired(
+        &mut self,
+        key: &str,
+        accounts: [&str; 4],
+        amount: i128,
+        revenue_expense: bool,
+        effective_date: DateDay,
+    ) -> (EntryRef, EntryPayload) {
+        let book_id = self.book.context().book_id;
+        let legs: Vec<_> = accounts
+            .into_iter()
+            .zip(["P", "P", "S", "S"])
+            .zip([Side::Debit, Side::Credit, Side::Debit, Side::Credit])
+            .map(|((account, entity), side)| {
+                let mut leg = LegPayload::simple(
+                    side,
+                    account_vid(book_id, account),
+                    Amount::new(self.usd, amount),
+                );
+                leg.dimension_set =
+                    vec![(LEGAL_ENTITY_DIMENSION, entity_value_vid(book_id, entity))];
+                leg
+            })
+            .collect();
+        let mut proposal = EntryPayload {
+            schema_minor: fa_model::entry::SCHEMA_MINOR,
+            book_id,
+            branch_id: Id128::TRUNK,
+            class: EntryClass::ORIGINAL,
+            effective_date,
+            document_date: None,
+            description: self.book.seal_text(key).unwrap(),
+            effective_period: None,
+            unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
+            legs,
+            control: None,
+            base_totals: None,
+            idempotency_key: key.as_bytes().to_vec(),
+            origin: EntryOrigin::Intent {
+                intent_oid: self.evidence.document_oid,
+                intent_kind: 1,
+            },
+            principal_ref: PRINCIPAL,
+            session_ref: None,
+            evidence: vec![self.evidence],
+            supersession: Vec::new(),
+            pending: None,
+            external_ids: Vec::new(),
+            extensions: Vec::new(),
+            tags: Vec::new(),
+        };
+        proposal
+            .set_intercompany_pairs(&fa_model::IntercompanyPairs {
+                pairs: vec![fa_model::IntercompanyPair {
+                    pair_key: key.into(),
+                    left_leg: if revenue_expense { 1 } else { 0 },
+                    right_leg: if revenue_expense { 2 } else { 3 },
+                }],
+            })
+            .unwrap();
+        let posted = self
+            .book
+            .post(PostRequest {
+                proposal: proposal.clone(),
+                approvals: Vec::new(),
+                capability: capability(&["read", "post"]),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap();
+        (posted.entry_ref(), proposal)
+    }
+
+    fn reverse_pair(
+        &mut self,
+        key: &str,
+        target: EntryRef,
+        original: &EntryPayload,
+        effective_date: DateDay,
+    ) {
+        let mut proposal = original.clone();
+        proposal.class = EntryClass::REVERSAL;
+        proposal.effective_date = effective_date;
+        proposal.description = self.book.seal_text(key).unwrap();
+        proposal.idempotency_key = key.as_bytes().to_vec();
+        proposal.supersession = vec![Supersession {
+            target,
+            kind: SupersessionKind::Reverses,
+            reason_code: 1,
+        }];
+        for leg in &mut proposal.legs {
+            leg.side = leg.side.flipped();
+            leg.settles.clear();
+        }
+        proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
+        self.book
+            .post(PostRequest {
+                proposal,
+                approvals: Vec::new(),
+                capability: capability(&["read", "post"]),
+                plan_certificate: None,
+            })
+            .unwrap()
+            .unwrap();
+    }
+
     fn checkpoint(&mut self) {
         let runtime = asupersync::runtime::RuntimeBuilder::new().build().unwrap();
         let root = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
@@ -417,8 +526,10 @@ fn assert_portable(book: &mut Book, certificate: &ReportCertificate, rate: Optio
     assert!(command.stderr.is_empty());
     let json = &command.stdout;
     let functional = match &certificate.selection {
-        ReportSelection::Consolidation { .. } => false,
-        ReportSelection::FunctionalConsolidation { .. } => true,
+        ReportSelection::Consolidation { .. }
+        | ReportSelection::DeclaredConsolidation { .. } => false,
+        ReportSelection::FunctionalConsolidation { .. }
+        | ReportSelection::DeclaredFunctionalConsolidation { .. } => true,
         _ => panic!("expected a group certificate"),
     };
     let (mode, basis, total_equity, nci_equity, controlling_equity, income) = if functional {
@@ -875,4 +986,354 @@ fn tiered_group_native_and_functional_reports_replay_and_verify_offline_after_so
             .is_err()
         );
     }
+}
+
+
+fn assert_declared_portable(book: &mut Book, certificate: &ReportCertificate) {
+    let replayed = book.replay_report(certificate).unwrap().unwrap();
+    assert_eq!(replayed.canonical_bytes().unwrap(), certificate.output);
+    let before = book.head().unwrap();
+    let produced = book
+        .produce_report_bundle(
+            PRINCIPAL,
+            &capability(&["read", "produce"]),
+            None,
+            certificate,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let verified = fa_verify::report::verify_report_expected(
+        &produced.bundle.bytes,
+        &[book.checkpoint_public_key()],
+        None,
+        Some(&produced.receipt),
+        Some(&certificate.digest),
+    )
+    .unwrap();
+    assert_eq!(verified.output, certificate.output);
+    assert_eq!(verified.output_digest, certificate.output_digest);
+    assert_eq!(verified.known_at, certificate.known_at.0);
+    assert!(verified.consolidation.is_some());
+    assert_eq!(book.head().unwrap(), before);
+}
+
+#[test]
+fn declared_group_pairs_share_ordinary_accounts_and_leave_role_residuals_once() {
+    let mut group = Group::new(0xc9);
+    let reader = capability(&["read"]);
+    let producer = capability(&["read", "produce"]);
+    for (key, amount) in [("first-trade", 700), ("second-trade", 1_100)] {
+        group.paired(
+            key,
+            ["1400", "1000", "1000", "2400"],
+            amount,
+            false,
+            day(15),
+        );
+    }
+    group.paired(
+        "declared-role-advance",
+        ["1300", "1000", "1000", "2300"],
+        100,
+        false,
+        day(15),
+    );
+    group.transfer("external-receivable", "P", "1400", "1000", group.usd, 200);
+    group.transfer("external-payable", "S", "1000", "2400", group.usd, 200);
+    let pin = group.book.head().unwrap();
+    let public = group.book.consolidation(PERIOD, Some(pin), &reader).unwrap().unwrap();
+    let certified = group
+        .book
+        .certify_report(
+            ReportSelection::DeclaredConsolidation {
+                period: PERIOD.into(),
+            },
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    let ReportOutput::Consolidation(declared) = &certified.report else {
+        panic!("declared native consolidation");
+    };
+    assert_eq!(&public.run, &declared.run);
+    assert_eq!(declared.run.matched_pairs.len(), 3);
+    let book_id = group.book.context().book_id;
+    let ordinary = account_vid(book_id, "1400").0;
+    let role = account_vid(book_id, "1300").0;
+    let declared_credit = |account| {
+        declared
+            .run
+            .eliminations
+            .iter()
+            .filter(|entry| entry.code.starts_with("ELIM-IC-DECLARED-"))
+            .flat_map(|entry| &entry.legs)
+            .filter(|leg| leg.account_id == account)
+            .map(|leg| leg.credits)
+            .sum::<i128>()
+    };
+    assert_eq!(declared_credit(ordinary), 1_800);
+    assert_eq!(declared_credit(role), 100);
+    let residual = declared
+        .run
+        .eliminations
+        .iter()
+        .find(|entry| entry.code == format!("ELIM-IC-GROUP-U{}", group.usd.0))
+        .unwrap();
+    assert_eq!(
+        residual
+            .legs
+            .iter()
+            .filter(|leg| leg.account_id == role)
+            .map(|leg| leg.credits)
+            .sum::<i128>(),
+        100_000,
+        "the role eliminates only its undeclared remainder"
+    );
+    let legacy = group
+        .book
+        .certify_report(
+            ReportSelection::Consolidation {
+                period: PERIOD.into(),
+            },
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    let ReportOutput::Consolidation(legacy_group) = &legacy.report else {
+        panic!("legacy native consolidation");
+    };
+    assert!(legacy_group.run.matched_pairs.is_empty());
+    assert_eq!(
+        line(&legacy_group.run.balance_sheet, group.usd, "assets")
+            - line(&declared.run.balance_sheet, group.usd, "assets"),
+        1_800,
+        "only the two ordinary-account declarations reduce assets"
+    );
+    assert_eq!(
+        line(&declared.run.balance_sheet, group.usd, "liabilities"),
+        200,
+        "ordinary external balances remain after their declared subset is eliminated"
+    );
+    assert_eq!(line(&declared.run.balance_sheet, group.usd, "balance_check"), 0);
+
+    let functional = group
+        .book
+        .certify_functional_consolidation(PRINCIPAL, &producer, PERIOD, Some(pin))
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &functional.certificate.selection,
+        ReportSelection::DeclaredFunctionalConsolidation { .. }
+    ));
+    let ReportOutput::FunctionalConsolidation(functional_group) = &functional.report else {
+        panic!("declared functional consolidation");
+    };
+    assert_eq!(functional_group.group.run.matched_pairs, declared.run.matched_pairs);
+    assert_eq!(
+        group
+            .book
+            .functional_consolidation(PRINCIPAL, &reader, PERIOD, Some(pin))
+            .unwrap()
+            .unwrap()
+            .group
+            .run,
+        functional_group.group.run
+    );
+    let legacy_functional = group
+        .book
+        .certify_report(
+            ReportSelection::FunctionalConsolidation {
+                period: PERIOD.into(),
+            },
+            Some(pin),
+        )
+        .unwrap()
+        .unwrap();
+    let ReportOutput::FunctionalConsolidation(legacy_functional_group) = &legacy_functional.report
+    else {
+        panic!("legacy functional consolidation");
+    };
+    assert!(legacy_functional_group.group.run.matched_pairs.is_empty());
+    for result in [&legacy, &legacy_functional, &certified, &functional] {
+        group
+            .book
+            .retain_certificate(PRINCIPAL, &producer, &result.certificate)
+            .unwrap()
+            .unwrap();
+    }
+    group.transfer("later-external-sale", "S", "1000", "4000", group.usd, 37);
+    group.checkpoint();
+    for result in [&legacy, &legacy_functional, &certified, &functional] {
+        assert_declared_portable(&mut group.book, &result.certificate);
+    }
+}
+
+#[test]
+fn declared_income_reversal_keeps_january_history_and_february_activity() {
+    let mut group = Group::new(0xca);
+    let producer = capability(&["read", "produce"]);
+    let reader = capability(&["read"]);
+    let (target, original) = group.paired(
+        "january-service",
+        ["1000", "4000", "5000", "1000"],
+        800,
+        true,
+        day(15),
+    );
+    let january = group
+        .book
+        .certify_report(
+            ReportSelection::DeclaredConsolidation {
+                period: PERIOD.into(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    group
+        .book
+        .transition_period(
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"open-february",
+            &capability(&["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    group.reverse_pair(
+        "february-service-reversal",
+        target,
+        &original,
+        DateDay::from_ymd(2026, 2, 15).unwrap(),
+    );
+    let ReportOutput::Consolidation(original_january) = &january.report else {
+        panic!("January native report");
+    };
+    let current_january = group.book.consolidation(PERIOD, None, &reader).unwrap().unwrap();
+    assert_eq!(current_january.run.matched_pairs, original_january.run.matched_pairs);
+    assert_eq!(
+        current_january.run.income_eliminations,
+        original_january.run.income_eliminations,
+        "a later-effective reversal must not remove January's declaration"
+    );
+    let february = group
+        .book
+        .certify_report(
+            ReportSelection::DeclaredConsolidation {
+                period: "FY2026-P02".into(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let functional = group
+        .book
+        .certify_functional_consolidation(PRINCIPAL, &producer, "FY2026-P02", None)
+        .unwrap()
+        .unwrap();
+    for result in [&february, &functional] {
+        let run = match &result.report {
+            ReportOutput::Consolidation(group) => &group.run,
+            ReportOutput::FunctionalConsolidation(group) => &group.group.run,
+            _ => panic!("February group report"),
+        };
+        assert!(run.matched_pairs.is_empty(), "the cumulative pair stock is zero");
+        assert!(
+            run.eliminations.iter().all(|entry| !entry.code.starts_with("ELIM-IC-DECLARED-"))
+        );
+        let income: Vec<_> = run
+            .income_eliminations
+            .iter()
+            .filter(|entry| entry.code.starts_with("ELIM-IC-DECLARED-"))
+            .collect();
+        assert_eq!(income.len(), 1);
+        let revenue = account_vid(group.book.context().book_id, "4000").0;
+        let expense = account_vid(group.book.context().book_id, "5000").0;
+        assert!(income[0].legs.iter().any(|leg| {
+            leg.account_id == revenue && leg.debits == 0 && leg.credits == 800
+        }));
+        assert!(income[0].legs.iter().any(|leg| {
+            leg.account_id == expense && leg.debits == 800 && leg.credits == 0
+        }));
+        // The group's reciprocal income is eliminated, while the subsidiary's
+        // reported reversal earnings still allocate 20% (160) to its minority.
+        assert_eq!(line(&run.income_statement, group.usd, "net_income"), -160);
+        assert_eq!(line(&run.balance_sheet, group.usd, "balance_check"), 0);
+    }
+    for result in [&january, &february, &functional] {
+        group
+            .book
+            .retain_certificate(PRINCIPAL, &producer, &result.certificate)
+            .unwrap()
+            .unwrap();
+    }
+    group.checkpoint();
+    for result in [&january, &february, &functional] {
+        assert_declared_portable(&mut group.book, &result.certificate);
+    }
+}
+
+#[test]
+fn unsupported_pair_categories_refuse_only_when_the_declaration_is_effective() {
+    let mut group = Group::new(0xcb);
+    group
+        .book
+        .transition_period(
+            "FY2026-P02",
+            PeriodTransition::Open,
+            PRINCIPAL,
+            1,
+            b"open-future-pair-period",
+            &capability(&["close"]),
+        )
+        .unwrap()
+        .unwrap();
+    group.paired(
+        "future-asset-transfer",
+        ["1400", "1000", "1000", "1500"],
+        800,
+        false,
+        DateDay::from_ymd(2026, 2, 15).unwrap(),
+    );
+    let january = group
+        .book
+        .certify_report(
+            ReportSelection::DeclaredConsolidation {
+                period: PERIOD.into(),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let ReportOutput::Consolidation(january_group) = &january.report else {
+        panic!("January group report");
+    };
+    assert!(january_group.run.matched_pairs.is_empty());
+    for selection in [
+        ReportSelection::DeclaredConsolidation {
+            period: "FY2026-P02".into(),
+        },
+        ReportSelection::DeclaredFunctionalConsolidation {
+            period: "FY2026-P02".into(),
+        },
+    ] {
+        assert_eq!(
+            group.book.certify_report(selection, None).unwrap().unwrap_err().code,
+            "FA-REF-194"
+        );
+    }
+    group
+        .book
+        .retain_certificate(
+            PRINCIPAL,
+            &capability(&["read", "produce"]),
+            &january.certificate,
+        )
+        .unwrap()
+        .unwrap();
+    group.checkpoint();
+    assert_declared_portable(&mut group.book, &january.certificate);
 }

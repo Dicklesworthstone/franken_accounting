@@ -4,9 +4,12 @@
 //! is a group: every leg names its entity and the balance law holds per
 //! `(unit, legal_entity)`. Its members are those entities, its ownership
 //! graph is the journaled `OWNS` edges between them active on the period's
-//! last day, and the accounts consolidation reads are named by account role
-//! (`registries/account_roles.toml` rows that list `consolidate`), never by
-//! code or name. Each member's posted stock through that day is the input to
+//! last day. Immutable intercompany declarations identify the exact reciprocal
+//! contributions to eliminate, including multiple pairs sharing an account.
+//! Account roles (`registries/account_roles.toml` rows listing `consolidate`)
+//! identify ownership accounts and any remaining intercompany balance; declared
+//! contributions are removed before those residual roles are eliminated.
+//! Each member's posted stock through that day is the input to
 //! fa-statements' Concordat, which derives every elimination, the
 //! noncontrolling interest and the consolidated statements, and proves
 //! consolidated equity against the members' equity, the eliminations and the
@@ -23,11 +26,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_journal::KernelError;
-use fa_journal::genesis::{BookContext, UnitPolicy};
+use fa_journal::genesis::{BookContext, BookSpec, UnitPolicy};
 use fa_journal::refusal::{Refusal, exit};
 use fa_journal::rows::{AccountRow, PeriodRow, bytes};
 use fa_model::symbols::{label, property};
-use fa_model::{Id128, RelationshipKind, Writer, legal_entity_vid, period_vid};
+use fa_model::{
+    EntryClass, EntryOrigin, Id128, LEGAL_ENTITY_DIMENSION, RelationshipKind,
+    SupersessionKind, Writer, entity_value_vid, legal_entity_vid, period_vid,
+};
 use fa_money::UnitId;
 use fa_money::rounding::RoundingLaw;
 use fa_policy::Capability;
@@ -38,7 +44,9 @@ pub use fa_statements::concordat::{
     reconcile_book_to_book,
 };
 use fa_statements::concordat::{
-    ConcordatError, ConsolidationInput, EntityMemberInput, IncomeInput, OwnershipSpec, consolidate,
+    ConcordatError, ConsolidationInput, EntityMemberInput, IncomeInput,
+    IntercompanyPairKind, MatchedIntercompanyPair, OwnershipSpec, consolidate,
+    consolidate_declared,
 };
 use fa_statements::{Account, AccountBalance};
 use fa_time::DateDay;
@@ -240,7 +248,7 @@ pub(crate) fn consolidate_at<V: Vfs + Clone>(
     period: &str,
     at: CommitSeq,
 ) -> Outcome<Consolidation> {
-    Ok(consolidate_at_basis(db, book, period, at, false)?.map(|(_, group)| group))
+    Ok(consolidate_at_basis(db, book, period, at, false, false)?.map(|(_, group)| group))
 }
 
 pub(crate) fn consolidate_functional_at<V: Vfs + Clone>(
@@ -249,8 +257,295 @@ pub(crate) fn consolidate_functional_at<V: Vfs + Clone>(
     period: &str,
     at: CommitSeq,
 ) -> Outcome<FunctionalConsolidation> {
-    Ok(consolidate_at_basis(db, book, period, at, true)?
+    Ok(consolidate_at_basis(db, book, period, at, true, false)?
         .map(|(base_unit, group)| FunctionalConsolidation { base_unit, group }))
+}
+
+pub(crate) fn declared_consolidation_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+) -> Outcome<Consolidation> {
+    Ok(consolidate_at_basis(db, book, period, at, false, true)?.map(|(_, group)| group))
+}
+
+pub(crate) fn declared_functional_consolidation_at<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    period: &str,
+    at: CommitSeq,
+) -> Outcome<FunctionalConsolidation> {
+    Ok(consolidate_at_basis(db, book, period, at, true, true)?
+        .map(|(base_unit, group)| FunctionalConsolidation { base_unit, group }))
+}
+
+fn invalid_pair_history(message: impl Into<String>) -> BookError {
+    KernelError::Corrupt(format!(
+        "consolidation intercompany declaration history: {}",
+        message.into()
+    ))
+    .into()
+}
+
+fn pair_extension_bytes(proposal: &fa_model::EntryPayload) -> Option<&[u8]> {
+    proposal
+        .extensions
+        .iter()
+        .find(|(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION)
+        .map(|(_, bytes)| bytes.as_slice())
+}
+
+fn paired_entity(
+    leg: &fa_model::LegPayload,
+    entities: &BTreeMap<VId, Id128>,
+) -> Result<Id128, BookError> {
+    let mut declared = leg
+        .dimension_set
+        .iter()
+        .filter(|(kind, _)| *kind == LEGAL_ENTITY_DIMENSION)
+        .map(|(_, value)| value);
+    match (declared.next(), declared.next()) {
+        (Some(value), None) => entities
+            .get(value)
+            .copied()
+            .ok_or_else(|| invalid_pair_history("paired leg names an undeclared entity")),
+        _ => Err(invalid_pair_history(
+            "paired leg requires exactly one legal entity",
+        )),
+    }
+}
+
+fn accumulate_pair(
+    selected: &mut BTreeMap<String, MatchedIntercompanyPair>,
+    pair: &MatchedIntercompanyPair,
+) -> Result<(), BookError> {
+    let accumulated = selected
+        .entry(pair.pair_code.clone())
+        .or_insert_with(|| MatchedIntercompanyPair {
+            entity_a_net: 0,
+            entity_b_net: 0,
+            ..pair.clone()
+        });
+    if accumulated.kind != pair.kind
+        || accumulated.unit_id != pair.unit_id
+        || accumulated.entity_a != pair.entity_a
+        || accumulated.account_a != pair.account_a
+        || accumulated.entity_b != pair.entity_b
+        || accumulated.account_b != pair.account_b
+    {
+        return Err(invalid_pair_history(
+            "an immutable pair key changed its endpoints or accounting category",
+        ));
+    }
+    accumulated.entity_a_net = accumulated
+        .entity_a_net
+        .checked_add(pair.entity_a_net)
+        .ok_or_else(|| invalid_pair_history("declared pair stock overflow"))?;
+    accumulated.entity_b_net = accumulated
+        .entity_b_net
+        .checked_add(pair.entity_b_net)
+        .ok_or_else(|| invalid_pair_history("declared pair stock overflow"))?;
+    Ok(())
+}
+
+/// Derive each pair's contribution from its original immutable leg ordinals.
+/// Validate the whole retained declaration history before selecting amounts:
+/// reversing a pair never frees its key, and a later-effective reversal does
+/// not erase an earlier stock. Income includes the actual period's reversal
+/// movement even when its cumulative pair balance is zero.
+fn declared_pair_inputs<V: Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    spec: &BookSpec,
+    chart: &[Account],
+    period: &str,
+    through: DateDay,
+    at: CommitSeq,
+) -> Outcome<(Vec<MatchedIntercompanyPair>, Vec<MatchedIntercompanyPair>)> {
+    let entries = fa_registers::entries_at(db, book, at).map_err(BookError::from)?;
+    let by_vid: BTreeMap<_, _> = entries
+        .iter()
+        .map(|(vid, entry, recorded)| (*vid, (entry, *recorded)))
+        .collect();
+    if by_vid.len() != entries.len() {
+        return Err(invalid_pair_history("duplicate entry identity"));
+    }
+    let entities: BTreeMap<_, _> = spec
+        .entities
+        .iter()
+        .map(|entity| {
+            (
+                entity_value_vid(book.book_id, &entity.code),
+                entity_id(book, &entity.code),
+            )
+        })
+        .collect();
+    let accounts: BTreeMap<_, _> = chart.iter().map(|account| (account.id, account)).collect();
+    let mut reversed_by = BTreeMap::new();
+    for (vid, entry, _) in &entries {
+        if entry.proposal.class == EntryClass::REVERSAL {
+            for supersession in &entry.proposal.supersession {
+                if supersession.kind == SupersessionKind::Reverses
+                    && reversed_by.insert(supersession.target.vid, *vid).is_some()
+                {
+                    return Err(invalid_pair_history("an entry is reversed more than once"));
+                }
+            }
+        }
+    }
+    let mut liveness = fa_registers::open_items::ReversalLiveness::new(&reversed_by);
+    let mut keys = BTreeSet::new();
+    let mut stock = BTreeMap::new();
+    let mut income = BTreeMap::new();
+    for (vid, entry, recorded_at) in &entries {
+        // Cycle detection does not select rows; both monetary sides of each
+        // reversal still contribute under their own effective coordinates.
+        liveness.is_live(*vid).map_err(BookError::from)?;
+        let proposal = &entry.proposal;
+        let pairs = proposal
+            .intercompany_pairs()
+            .map_err(|error| invalid_pair_history(error.to_string()))?;
+        if proposal.class == EntryClass::REVERSAL {
+            let [supersession] = proposal.supersession.as_slice() else {
+                return Err(invalid_pair_history("a reversal requires one immutable target"));
+            };
+            if supersession.kind != SupersessionKind::Reverses {
+                return Err(invalid_pair_history("a reversal must reverse its target"));
+            }
+            let (target, target_at) = by_vid
+                .get(&supersession.target.vid)
+                .ok_or_else(|| invalid_pair_history("reversal target is absent"))?;
+            if pairs.is_some() || pair_extension_bytes(&target.proposal).is_some() {
+                if supersession.target.vid == *vid
+                    || target_at > recorded_at
+                    || target.entry_digest != supersession.target.entry_digest
+                    || pair_extension_bytes(&target.proposal) != pair_extension_bytes(proposal)
+                    || target.proposal.legs.len() != proposal.legs.len()
+                    || target.proposal.legs.iter().zip(&proposal.legs).any(|(a, b)| {
+                        a.account_ref != b.account_ref
+                            || a.amount != b.amount
+                            || a.base_amount != b.base_amount
+                            || a.dimension_set != b.dimension_set
+                            || a.side.flipped() != b.side
+                    })
+                {
+                    return Err(invalid_pair_history(
+                        "pair reversal is not its immutable target's exact side-swap",
+                    ));
+                }
+            }
+        }
+        let Some(pairs) = pairs else {
+            continue;
+        };
+        pairs
+            .validate_shape(proposal.legs.len())
+            .map_err(|error| invalid_pair_history(error.to_string()))?;
+        if proposal.schema_minor < fa_model::entry::INTERCOMPANY_PAIRS_SCHEMA_MINOR
+            || !matches!(
+                proposal.class,
+                EntryClass::ORIGINAL | EntryClass::ADJUSTING | EntryClass::REVERSAL
+            )
+            || (proposal.class != EntryClass::REVERSAL
+                && !matches!(&proposal.origin, EntryOrigin::Intent { .. }))
+            || proposal.base_totals.is_some()
+            || proposal.legs.iter().any(|leg| {
+                leg.amount.unit != spec.base_unit
+                    || leg.base_amount.is_some()
+                    || leg.amount.mantissa < 0
+            })
+        {
+            return Err(invalid_pair_history("unsupported native pair proposal"));
+        }
+        let mut totals: BTreeMap<Id128, (i128, i128)> = BTreeMap::new();
+        for leg in &proposal.legs {
+            let total = totals.entry(paired_entity(leg, &entities)?).or_default();
+            let slot = match leg.side {
+                fa_money::Side::Debit => &mut total.0,
+                fa_money::Side::Credit => &mut total.1,
+            };
+            *slot = slot
+                .checked_add(leg.amount.mantissa)
+                .ok_or_else(|| invalid_pair_history("paired entry entity amount overflow"))?;
+        }
+        if totals.values().any(|(debits, credits)| debits != credits) {
+            return Err(invalid_pair_history("paired entry does not balance per entity"));
+        }
+        for pair in pairs.pairs {
+            let left = &proposal.legs[usize::from(pair.left_leg)];
+            let right = &proposal.legs[usize::from(pair.right_leg)];
+            let entity_a = paired_entity(left, &entities)?;
+            let entity_b = paired_entity(right, &entities)?;
+            if left.amount.mantissa <= 0
+                || left.amount != right.amount
+                || left.side == right.side
+                || left.account_ref == right.account_ref
+                || entity_a == entity_b
+                || (proposal.class != EntryClass::REVERSAL && !keys.insert(pair.pair_key.clone()))
+            {
+                return Err(invalid_pair_history(
+                    "pair requires one unused key and equal reciprocal legs on distinct entities and accounts",
+                ));
+            }
+            // A future-effective declaration cannot change an earlier stock
+            // or its income. Still validate its immutable key and history above.
+            if proposal.effective_date > through {
+                continue;
+            }
+            let account_type = |id| {
+                accounts
+                    .get(&id)
+                    .filter(|account| account.is_leaf)
+                    .map(|account| account.account_type)
+                    .ok_or_else(|| invalid_pair_history("paired account is absent or not a leaf"))
+            };
+            let kinds = (
+                account_type(left.account_ref.0)?,
+                account_type(right.account_ref.0)?,
+            );
+            let kind = match kinds {
+                (1, 2) | (2, 1) => IntercompanyPairKind::ReciprocalReceivablePayable,
+                (4, 5) | (5, 4) => IntercompanyPairKind::ReciprocalRevenueExpense,
+                _ => {
+                    return Ok(Err(refusal(
+                        format!(
+                            "declared pair `{}` does not pair reciprocal Asset/Liability or Revenue/Expense accounts",
+                            pair.pair_key
+                        ),
+                        "declare reciprocal asset/liability or revenue/expense pairs separately; inventory-profit, capital and cross-category elimination require an explicit accounting law",
+                    )));
+                }
+            };
+            let signed = |leg: &fa_model::LegPayload| match leg.side {
+                fa_money::Side::Debit => Ok(leg.amount.mantissa),
+                fa_money::Side::Credit => leg
+                    .amount
+                    .mantissa
+                    .checked_neg()
+                    .ok_or_else(|| invalid_pair_history("paired amount cannot be negated")),
+            };
+            let contribution = MatchedIntercompanyPair {
+                pair_code: pair.pair_key,
+                kind,
+                unit_id: spec.base_unit.0,
+                entity_a,
+                account_a: left.account_ref.0,
+                entity_a_net: signed(left)?,
+                entity_b,
+                account_b: right.account_ref.0,
+                entity_b_net: signed(right)?,
+                difference_leg: None,
+            };
+            accumulate_pair(&mut stock, &contribution)?;
+            if kind == IntercompanyPairKind::ReciprocalRevenueExpense
+                && fa_registers::entry_period(book, entry).map_err(BookError::from)? == period
+            {
+                accumulate_pair(&mut income, &contribution)?;
+            }
+        }
+    }
+    Ok(Ok((stock.into_values().collect(), income.into_values().collect())))
 }
 
 fn consolidate_at_basis<V: Vfs + Clone>(
@@ -259,6 +554,7 @@ fn consolidate_at_basis<V: Vfs + Clone>(
     period: &str,
     at: CommitSeq,
     functional: bool,
+    declared: bool,
 ) -> Outcome<(UnitId, Consolidation)> {
     crate::certificate::context_at(db, book, at)?;
     let spec = fa_journal::genesis::read_book_spec_at(db, at)?.ok_or(BookError::NoBook)?;
@@ -663,6 +959,14 @@ fn consolidate_at_basis<V: Vfs + Clone>(
             rounding_law: CONSOLIDATION_ROUNDING,
         });
     }
+    let declared_inputs = if declared {
+        match declared_pair_inputs(db, book, &spec, &chart, period, through, at)? {
+            Ok(inputs) => Some(inputs),
+            Err(refusal) => return Ok(Err(refusal)),
+        }
+    } else {
+        None
+    };
     let input = ConsolidationInput {
         consolidation_book_id: book.book_id,
         branch_id: Id128::TRUNK,
@@ -703,7 +1007,11 @@ fn consolidate_at_basis<V: Vfs + Clone>(
                 .collect(),
         },
     };
-    let run = match consolidate(&input) {
+    let evaluated = match declared_inputs {
+        Some((stock, income)) => consolidate_declared(&input, &stock, &income),
+        None => consolidate(&input),
+    };
+    let run = match evaluated {
         Ok(run) => run,
         Err(error) => {
             return Ok(Err(concordat_refusal(
@@ -796,7 +1104,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 Ok(at) => at,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            consolidate_at(db, book, period, at)
+            declared_consolidation_at(db, book, period, at)
         })
     }
 
@@ -824,7 +1132,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             if let Err(refusal) = crate::certificate::verify_functional_sources(db, cx, book, at)? {
                 return Ok(Err(refusal));
             }
-            consolidate_functional_at(db, book, period, at)
+            declared_functional_consolidation_at(db, book, period, at)
         })?;
         if let Err(refusal) =
             self.admit_functional_report(cx, principal, capability, Some(at), false)?
@@ -854,7 +1162,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         };
         let result = self.certify_report(
             cx,
-            crate::ReportSelection::FunctionalConsolidation {
+            crate::ReportSelection::DeclaredFunctionalConsolidation {
                 period: period.to_string(),
             },
             Some(at),

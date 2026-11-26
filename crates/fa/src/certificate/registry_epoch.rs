@@ -13,7 +13,7 @@
 //! a changed pin is permitted only after all native read certificates still
 //! replay and the complete historical accounting fold reproduces the output.
 //! One-book consolidation additionally retains account-role and rounding
-//! sources, plus FX laws for functional v7. Those arithmetic and role meanings
+//! sources, plus FX laws for functional v7/v15. Those arithmetic and role meanings
 //! must match this interpreter exactly; archiving never activates old policy.
 //! Custom statements preserve their presentation-rounding law; their functional
 //! profile shares the exact FX and rounding closure of functional statements
@@ -109,6 +109,8 @@ pub(crate) fn supports(selection: &ReportSelection) -> bool {
             | ReportSelection::ExplainBalance { .. }
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
+            | ReportSelection::DeclaredConsolidation { .. }
+            | ReportSelection::DeclaredFunctionalConsolidation { .. }
     )
 }
 
@@ -218,6 +220,8 @@ impl Epoch {
                 | ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DeclaredConsolidation { .. }
+                | ReportSelection::DeclaredFunctionalConsolidation { .. }
         ) {
             return Self::current(book_id);
         }
@@ -1031,7 +1035,13 @@ mod tests {
         let functional = ReportSelection::FunctionalConsolidation {
             period: "FY2026-P01".into(),
         };
-        for selection in [&native, &functional] {
+        let declared = ReportSelection::DeclaredConsolidation {
+            period: "FY2026-P01".into(),
+        };
+        let declared_functional = ReportSelection::DeclaredFunctionalConsolidation {
+            period: "FY2026-P01".into(),
+        };
+        for selection in [&native, &functional, &declared, &declared_functional] {
             let epoch = Epoch::for_selection(book, selection).unwrap();
             assert!(supports(selection));
             assert_eq!(epoch.closure, registry_digest(selection).unwrap());

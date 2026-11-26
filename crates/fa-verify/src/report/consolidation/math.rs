@@ -3,8 +3,8 @@
 //! intercompany calculations never scan unrelated units for every group link.
 
 use super::{
-    Balances, ConsolidationElimination, ConsolidationEquity, ConsolidationLeg, Entity, Ownership,
-    ReportError, Totals, add, entity_hex, invalid, metadata, negate, subtract,
+    Balances, ConsolidationElimination, ConsolidationEquity, ConsolidationLeg, ConsolidationPair,
+    Entity, Ownership, ReportError, Totals, add, entity_hex, invalid, metadata, negate, subtract,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,17 +23,23 @@ struct Nets {
 }
 impl Nets {
     fn new(source: &Balances) -> Result<Self, ReportError> {
-        let mut out = Self {
-            cells: BTreeMap::new(),
-            units: BTreeMap::new(),
-            entities: BTreeMap::new(),
-        };
+        let mut cells = BTreeMap::new();
         for (&(entity, account, unit), &(debits, credits)) in source {
             if debits < 0 || credits < 0 {
                 return Err(invalid("negative entity balance"));
             }
             let net = subtract(debits, credits)?;
-            out.cells.insert((entity, account, unit), net);
+            cells.insert((entity, account, unit), net);
+        }
+        Ok(Self::from_cells(cells))
+    }
+    fn from_cells(cells: BTreeMap<(Entity, u128, u32), i128>) -> Self {
+        let mut out = Self {
+            cells,
+            units: BTreeMap::new(),
+            entities: BTreeMap::new(),
+        };
+        for (&(entity, account, unit), &net) in &out.cells {
             out.units
                 .entry(unit)
                 .or_default()
@@ -43,7 +49,20 @@ impl Nets {
                 .or_default()
                 .push((account, net));
         }
-        Ok(out)
+        out
+    }
+    fn without_pairs(&self, pairs: &[ConsolidationPair]) -> Result<Self, ReportError> {
+        let mut cells = self.cells.clone();
+        for pair in pairs {
+            for (entity, account, net) in [
+                (pair.entity_a, pair.account_a, pair.entity_a_net),
+                (pair.entity_b, pair.account_b, pair.entity_b_net),
+            ] {
+                let cell = cells.entry((entity, account, pair.unit_id)).or_default();
+                *cell = subtract(*cell, net)?;
+            }
+        }
+        Ok(Self::from_cells(cells))
     }
     fn cell(&self, entity: Entity, account: u128, unit: u32) -> i128 {
         self.cells
@@ -152,6 +171,24 @@ fn balanced(entry: ConsolidationElimination) -> Result<ConsolidationElimination,
         return Err(invalid("derived elimination does not balance"));
     }
     Ok(entry)
+}
+
+fn pair_elimination(pair: &ConsolidationPair) -> Result<ConsolidationElimination, ReportError> {
+    if pair.entity_a_net == 0 || add(pair.entity_a_net, pair.entity_b_net)? != 0 {
+        return Err(invalid("declared pair is not nonzero and reciprocal"));
+    }
+    let mut legs = Vec::with_capacity(2);
+    reversing(&mut legs, pair.entity_a, pair.account_a, pair.unit_id, pair.entity_a_net)?;
+    reversing(&mut legs, pair.entity_b, pair.account_b, pair.unit_id, pair.entity_b_net)?;
+    balanced(ConsolidationElimination {
+        code: format!("ELIM-IC-DECLARED-{}-U{}", pair.pair_key, pair.unit_id),
+        description: format!(
+            "Eliminate intercompany pair `{}` between {} and {}",
+            pair.pair_key, entity_hex(&pair.entity_a), entity_hex(&pair.entity_b),
+        ),
+        unit_id: pair.unit_id,
+        legs,
+    })
 }
 
 fn group_elimination(
@@ -455,16 +492,26 @@ pub(super) fn derive(
     intercompany: &BTreeSet<u128>,
     stock: &Balances,
     activity: &Balances,
+    stock_pairs: &[ConsolidationPair],
+    income_pairs: &[ConsolidationPair],
 ) -> Result<Calculation, ReportError> {
     let stock_nets = Nets::new(stock)?;
     let activity_nets = Nets::new(activity)?;
+    let stock_residual = (!stock_pairs.is_empty())
+        .then(|| stock_nets.without_pairs(stock_pairs))
+        .transpose()?;
+    let activity_residual = (!income_pairs.is_empty())
+        .then(|| activity_nets.without_pairs(income_pairs))
+        .transpose()?;
     let order = attribution_order(members, ownership)?;
     let mut attribution_work = 0;
     let stock_shares = attribute(&stock_nets, schema, &order, true, &mut attribution_work)?;
     let activity_shares = attribute(&activity_nets, schema, &order, false, &mut attribution_work)?;
-    let mut eliminations = Vec::new();
+    let mut eliminations = stock_pairs.iter().map(pair_elimination).collect::<Result<Vec<_>, _>>()?;
     for &unit in units {
-        if let Some(entry) = group_elimination(&stock_nets, schema, intercompany, unit, false)? {
+        if let Some(entry) = group_elimination(
+            stock_residual.as_ref().unwrap_or(&stock_nets), schema, intercompany, unit, false,
+        )? {
             eliminations.push(entry);
         }
     }
@@ -548,9 +595,11 @@ pub(super) fn derive(
     }
     let consolidated_stock = with_eliminations(stock, &eliminations)?;
     eliminated(&consolidated_stock, schema, intercompany, units, false)?;
-    let mut income_eliminations = Vec::new();
+    let mut income_eliminations = income_pairs.iter().map(pair_elimination).collect::<Result<Vec<_>, _>>()?;
     for &unit in units {
-        if let Some(entry) = group_elimination(&activity_nets, schema, intercompany, unit, true)? {
+        if let Some(entry) = group_elimination(
+            activity_residual.as_ref().unwrap_or(&activity_nets), schema, intercompany, unit, true,
+        )? {
             income_eliminations.push(entry);
         }
     }
@@ -636,6 +685,86 @@ pub(super) fn derive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn declared_fee(key: &str, amount: i128) -> ConsolidationPair {
+        ConsolidationPair {
+            pair_key: key.into(),
+            kind: super::super::ConsolidationPairKind::RevenueExpense,
+            unit_id: 0,
+            entity_a: [1; 16],
+            account_a: 5,
+            entity_a_net: -amount,
+            entity_b: [2; 16],
+            account_b: 6,
+            entity_b_net: amount,
+        }
+    }
+
+    #[test]
+    fn declared_fees_preserve_external_balances_and_leave_only_role_residuals() {
+        let (parent, sub) = ([1; 16], [2; 16]);
+        let members = BTreeMap::from([("P".into(), parent), ("S".into(), sub)]);
+        let stock = BTreeMap::from([
+            ((parent, 1, 0), (165, 0)),
+            ((parent, 5, 0), (0, 165)),
+            ((sub, 1, 0), (0, 165)),
+            ((sub, 6, 0), (165, 0)),
+        ]);
+        let pairs = [declared_fee("fee-1", 100), declared_fee("fee-2", 25)];
+        let ordinary = derive(
+            &schema(), &[0], &members, &[], &BTreeSet::new(), &stock, &stock, &pairs, &pairs,
+        ).unwrap();
+        assert_eq!(ordinary.eliminations.len(), 2);
+        assert_eq!(ordinary.income_eliminations.len(), 2);
+        assert_eq!(ordinary.stock[&(5, 0)], (125, 165));
+        assert_eq!(ordinary.stock[&(6, 0)], (165, 125));
+        assert_eq!(ordinary.activity, ordinary.stock);
+        assert_eq!(ordinary.equity[0].consolidated_total_equity, 0);
+        assert_eq!(ordinary.eliminations[0].code, "ELIM-IC-DECLARED-fee-1-U0");
+
+        let roles = derive(
+            &schema(), &[0], &members, &[], &BTreeSet::from([5, 6]),
+            &stock, &stock, &pairs, &pairs,
+        ).unwrap();
+        assert_eq!(roles.eliminations.len(), 3);
+        assert_eq!(roles.income_eliminations.len(), 3);
+        assert_eq!(roles.stock[&(5, 0)], (165, 165));
+        assert_eq!(roles.stock[&(6, 0)], (165, 165));
+        assert_eq!(roles.activity, roles.stock);
+        let residual = roles.eliminations.last().unwrap();
+        assert_eq!(residual.code, "ELIM-IC-GROUP-U0");
+        assert_eq!(residual.legs.iter().map(|leg| (leg.debits, leg.credits)).collect::<Vec<_>>(),
+            [(40, 0), (0, 40)]);
+    }
+
+    #[test]
+    fn zero_stock_keeps_the_later_periods_signed_declared_reversal() {
+        let (parent, sub) = ([1; 16], [2; 16]);
+        let members = BTreeMap::from([("P".into(), parent), ("S".into(), sub)]);
+        let stock = BTreeMap::from([
+            ((parent, 1, 0), (100, 100)),
+            ((parent, 5, 0), (100, 100)),
+            ((sub, 1, 0), (100, 100)),
+            ((sub, 6, 0), (100, 100)),
+        ]);
+        let activity = BTreeMap::from([
+            ((parent, 1, 0), (0, 100)),
+            ((parent, 5, 0), (100, 0)),
+            ((sub, 1, 0), (100, 0)),
+            ((sub, 6, 0), (0, 100)),
+        ]);
+        let result = derive(
+            &schema(), &[0], &members, &[], &BTreeSet::new(), &stock, &activity,
+            &[], &[declared_fee("fee-reversed", -100)],
+        ).unwrap();
+        assert!(result.eliminations.is_empty());
+        assert_eq!(result.income_eliminations.len(), 1);
+        assert_eq!(result.activity[&(5, 0)], (100, 100));
+        assert_eq!(result.activity[&(6, 0)], (100, 100));
+        assert_eq!(result.income_eliminations[0].legs.iter()
+            .map(|leg| (leg.account_id, leg.debits, leg.credits)).collect::<Vec<_>>(),
+            [(5, 0, 100), (6, 100, 0)]);
+    }
 
     #[test]
     fn signed_nci_rounding_has_exact_ties_and_full_width_intermediates() {
@@ -735,6 +864,8 @@ mod tests {
             &BTreeSet::new(),
             &stock,
             &Balances::new(),
+            &[],
+            &[],
         )
         .unwrap();
         assert_eq!(result.eliminations.len(), 2);
@@ -751,6 +882,8 @@ mod tests {
             &BTreeSet::new(),
             &false_basis,
             &Balances::new(),
+            &[],
+            &[],
         )
         .err()
         .unwrap();
@@ -789,6 +922,8 @@ mod tests {
             &BTreeSet::new(),
             &stock,
             &activity,
+            &[],
+            &[],
         )
         .unwrap();
         assert_eq!(result.eliminations.len(), 3);
@@ -873,6 +1008,8 @@ mod tests {
             &BTreeSet::new(),
             &stock,
             &activity,
+            &[],
+            &[],
         )
         .unwrap();
         // Capital: 100 + 50. Reserves: 20 + 20. Unclosed earnings: 25 + 19.
@@ -900,6 +1037,8 @@ mod tests {
             &BTreeSet::new(),
             &whole_intermediate,
             &activity,
+            &[],
+            &[],
         )
         .unwrap();
         assert_eq!(wholly_owned.equity[0].non_controlling_interest_equity, 95);
@@ -928,6 +1067,8 @@ mod tests {
             &BTreeSet::new(),
             &losses,
             &activity_losses,
+            &[],
+            &[],
         )
         .unwrap();
         assert_eq!(negative.equity[0].non_controlling_interest_equity, 146);
@@ -954,6 +1095,8 @@ mod tests {
             &BTreeSet::new(),
             &stock,
             &stock,
+            &[],
+            &[],
         )
         .unwrap();
         // HalfEven(2 * .75) = 2 at BOTH edges. Collapsing the ownership to

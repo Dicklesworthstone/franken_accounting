@@ -9681,6 +9681,8 @@ impl ReadScope<'_> {
             | ReportSelection::FunctionalDimensionTrialBalance { .. }
             | ReportSelection::Consolidation { .. }
             | ReportSelection::FunctionalConsolidation { .. }
+            | ReportSelection::DeclaredConsolidation { .. }
+            | ReportSelection::DeclaredFunctionalConsolidation { .. }
             | ReportSelection::DimensionTrialBalance { .. } => self.authority.whole_book(seq),
         };
         Ok(admitted.map(|()| seq))

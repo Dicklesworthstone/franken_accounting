@@ -1181,6 +1181,7 @@ impl Schema {
             | Selection::CustomStatement(_)
             | Selection::RegulatorySchedule(_)
             | Selection::Consolidation(_)
+            | Selection::DeclaredConsolidation(_)
             | Selection::OpenItems(_)
             | Selection::ExplainBalance { .. } => Err(failed(
                 "report_selector",

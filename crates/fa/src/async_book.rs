@@ -6467,6 +6467,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             &certificate.selection,
             crate::ReportSelection::Consolidation { .. }
                 | crate::ReportSelection::FunctionalConsolidation { .. }
+                | crate::ReportSelection::DeclaredConsolidation { .. }
+                | crate::ReportSelection::DeclaredFunctionalConsolidation { .. }
         );
         if certificate.book_id != self.context.book_id
             || !matches!(
@@ -6477,6 +6479,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     | crate::ReportSelection::FunctionalStatement(_)
                     | crate::ReportSelection::Consolidation { .. }
                     | crate::ReportSelection::FunctionalConsolidation { .. }
+                    | crate::ReportSelection::DeclaredConsolidation { .. }
+                    | crate::ReportSelection::DeclaredFunctionalConsolidation { .. }
                     | crate::ReportSelection::DimensionTrialBalance { .. }
                     | crate::ReportSelection::Statement(_)
                     | crate::ReportSelection::CustomStatement(_)
@@ -6869,6 +6873,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 | crate::ReportSelection::RegulatorySchedule(_)
                 | crate::ReportSelection::Consolidation { .. }
                 | crate::ReportSelection::FunctionalConsolidation { .. }
+                | crate::ReportSelection::DeclaredConsolidation { .. }
+                | crate::ReportSelection::DeclaredFunctionalConsolidation { .. }
         );
         let registries = if requires_registry_closure
             || matches!(

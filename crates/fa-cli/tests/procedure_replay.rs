@@ -780,5 +780,348 @@ fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_e
     assert_eq!(ok(&path, &["book", "info"]), before);
 }
 
+#[test]
+fn declared_consolidation_certifies_shared_account_pairs_and_preserves_legacy_replay() {
+    fn rows<'a>(value: &'a Json, name: &str) -> &'a [Json] {
+        value.get(name).and_then(Json::as_arr).unwrap()
+    }
+
+    fn amount(report: &Json, statement: &str, code: &str) -> String {
+        let statement = data(report).get(statement).unwrap();
+        let line = rows(statement, "lines")
+            .iter()
+            .find(|line| text(line, "code") == code && text(line, "unit") == "USD")
+            .unwrap();
+        rows(line, "amounts")[0].as_str().unwrap().to_string()
+    }
+
+    fn assert_totals(report: &Json, gross: &str) {
+        for (statement, line) in [
+            ("balance_sheet", "assets"),
+            ("balance_sheet", "liabilities"),
+            ("income_statement", "revenue"),
+            ("income_statement", "expense"),
+        ] {
+            assert_eq!(amount(report, statement, line), gross, "{statement}/{line}");
+        }
+        assert_eq!(amount(report, "balance_sheet", "balance_check"), "0.00 USD");
+        assert_eq!(amount(report, "income_statement", "net_income"), "0.00 USD");
+    }
+
+    let dir = temp();
+    let path = dir.join("book");
+    ok(
+        &path,
+        &[
+            "book",
+            "create",
+            "--name",
+            "Declared consolidation",
+            "--entity",
+            "A:Alpha",
+            "--entity",
+            "B:Beta",
+        ],
+    );
+    let chart = dir.join("chart.json");
+    std::fs::write(
+        &chart,
+        r#"{"accounts":[
+            {"code":"1100","name":"Receivables","type":"Asset","unit":"USD"},
+            {"code":"2000","name":"Payables","type":"Liability","unit":"USD"},
+            {"code":"4000","name":"Sales","type":"Revenue","unit":"USD"},
+            {"code":"6000","name":"Expense","type":"Expense","unit":"USD"}
+        ]}"#,
+    )
+    .unwrap();
+    ok(&path, &["chart", "import", chart.to_str().unwrap()]);
+    ok(&path, &["period", "create", "--fiscal-year", "2026"]);
+    for period in ["FY2026-P01", "FY2026-P02"] {
+        ok(&path, &["period", "open", period]);
+    }
+    let source = dir.join("source.txt");
+    std::fs::write(
+        &source,
+        "Synthetic declared trades and separate external activity",
+    )
+    .unwrap();
+    let recorded = ok(
+        &path,
+        &[
+            "document",
+            "add",
+            source.to_str().unwrap(),
+            "--kind",
+            "Invoice",
+            "--grade",
+            "HumanUpload",
+        ],
+    );
+    let evidence = text(data(&recorded[0]), "oid").to_string();
+
+    // Distinct declarations may share every account endpoint. These are
+    // ordinary shared accounts that also carry unrelated external activity.
+    let mut originals = Vec::new();
+    for (key, amount) in [("sale-100", "100.00"), ("sale-025", "25.00")] {
+        let intent = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{
+                    "effective_date":"2026-01-15",
+                    "idempotency_key":"{key}",
+                    "intercompany_pairs":[
+                        {{"pair_key":"{key}-activity","left_leg":1,"right_leg":2}},
+                        {{"pair_key":"{key}-balance","left_leg":0,"right_leg":3}}
+                    ],
+                    "legs":[
+                        {{"side":"debit","account":"1100","amount":"{amount} USD","entity":"A"}},
+                        {{"side":"credit","account":"4000","amount":"{amount} USD","entity":"A"}},
+                        {{"side":"debit","account":"6000","amount":"{amount} USD","entity":"B"}},
+                        {{"side":"credit","account":"2000","amount":"{amount} USD","entity":"B"}}
+                    ]
+                }}"#
+            ),
+        )
+        .unwrap();
+        let posted = ok(
+            &path,
+            &[
+                "post",
+                "--intent",
+                intent.to_str().unwrap(),
+                "--evidence",
+                &evidence,
+            ],
+        );
+        originals.push(text(data(&posted[0]), "vid").to_string());
+    }
+    for (key, entity, debit, credit) in [
+        ("external-sale", "A", "1100", "4000"),
+        ("external-expense", "B", "6000", "2000"),
+    ] {
+        let intent = dir.join(format!("{key}.json"));
+        std::fs::write(
+            &intent,
+            format!(
+                r#"{{"effective_date":"2026-01-20","idempotency_key":"{key}","legs":[{{"side":"debit","account":"{debit}","amount":"40.00 USD","entity":"{entity}"}},{{"side":"credit","account":"{credit}","amount":"40.00 USD","entity":"{entity}"}}]}}"#
+            ),
+        )
+        .unwrap();
+        ok(
+            &path,
+            &[
+                "post",
+                "--intent",
+                intent.to_str().unwrap(),
+                "--evidence",
+                &evidence,
+            ],
+        );
+    }
+
+    let report = ok(&path, &["consolidate", "--period", "FY2026-P01"]);
+    assert_totals(&report[0], "40.00 USD");
+    let known_at =
+        fgdb_types::CommitSeq(u64::try_from(number(data(&report[0]), "known_at")).unwrap());
+    let frontier = known_at.0.to_string();
+    let mut certificates = Vec::new();
+    for functional in [false, true] {
+        let file = dir.join(if functional {
+            "declared-functional.cert"
+        } else {
+            "declared-native.cert"
+        });
+        let mut args = vec![
+            "consolidate",
+            "--period",
+            "FY2026-P01",
+            "--as-known-at",
+            &frontier,
+            "--certificate-out",
+            file.to_str().unwrap(),
+        ];
+        if functional {
+            args.push("--functional");
+        }
+        let certified = ok(&path, &args);
+        assert_eq!(certified.len(), 2);
+        assert_totals(&certified[0], "40.00 USD");
+        assert_eq!(rows(data(&certified[0]), "eliminations").len(), 4);
+        assert_eq!(rows(data(&certified[0]), "income_eliminations").len(), 2);
+        assert!(
+            rows(data(&certified[0]), "eliminations")
+                .iter()
+                .all(|entry| text(entry, "code").starts_with("ELIM-IC-DECLARED-"))
+        );
+        let bytes = std::fs::read(&file).unwrap();
+        let decoded = fa::ReportCertificate::decode(&bytes).unwrap();
+        assert_eq!(decoded.known_at, known_at);
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        assert_eq!(
+            decoded.selection,
+            if functional {
+                fa::ReportSelection::DeclaredFunctionalConsolidation {
+                    period: "FY2026-P01".into(),
+                }
+            } else {
+                fa::ReportSelection::DeclaredConsolidation {
+                    period: "FY2026-P01".into(),
+                }
+            }
+        );
+        assert!(bytes.starts_with(if functional {
+            fa::certificate::DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+        } else {
+            fa::certificate::DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT
+        }));
+        let retained = format!("C:{}", text(data(&certified[1]), "oid"));
+        for source in [retained.as_str(), file.to_str().unwrap()] {
+            assert_eq!(ok(&path, &["replay", source])[0], certified[0]);
+        }
+        certificates.push((retained, file, certified[0].clone()));
+    }
+
+    // V6 and v7 intentionally keep the historical method. At this prefix the
+    // accounts carry no roles, so old reports retain the full 165.00 gross.
+    let mut legacy_files = Vec::new();
+    {
+        let keys = BookKeys::load(&path.join("book.keys")).unwrap();
+        let book = Book::open_dir(&path, keys, Entropy::production()).unwrap();
+        let head = book.head().unwrap();
+        for (selection, format, name) in [
+            (
+                fa::ReportSelection::Consolidation {
+                    period: "FY2026-P01".into(),
+                },
+                fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT,
+                "legacy-native.cert",
+            ),
+            (
+                fa::ReportSelection::FunctionalConsolidation {
+                    period: "FY2026-P01".into(),
+                },
+                fa::certificate::FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT,
+                "legacy-functional.cert",
+            ),
+        ] {
+            let legacy = book
+                .certify_report(selection, Some(known_at))
+                .unwrap()
+                .unwrap();
+            let bytes = legacy.certificate.canonical_bytes().unwrap();
+            assert!(bytes.starts_with(format));
+            assert_eq!(
+                book.replay_report(&fa::ReportCertificate::decode(&bytes).unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap(),
+                legacy.certificate.output
+            );
+            let file = dir.join(name);
+            std::fs::write(&file, bytes).unwrap();
+            legacy_files.push(file);
+        }
+        assert_eq!(book.head().unwrap(), head, "certification is a read");
+    }
+    let legacy_reports: Vec<_> = legacy_files
+        .iter()
+        .map(|file| {
+            let replayed = ok(&path, &["replay", file.to_str().unwrap()]);
+            assert_totals(&replayed[0], "165.00 USD");
+            assert!(rows(data(&replayed[0]), "eliminations").is_empty());
+            replayed[0].clone()
+        })
+        .collect();
+
+    // With roles assigned, the existing aggregate law handles the remaining
+    // 40.00 only. The 125.00 already declared must never be eliminated twice.
+    for (account, role) in [
+        ("1100", "intercompany"),
+        ("2000", "intercompany"),
+        ("4000", "intercompany_activity"),
+        ("6000", "intercompany_activity"),
+    ] {
+        ok(&path, &["chart", "role", account, role]);
+    }
+    let with_roles = ok(
+        &path,
+        &["consolidate", "--period", "FY2026-P01", "--certify"],
+    );
+    assert_totals(&with_roles[0], "0.00 USD");
+    assert_eq!(rows(data(&with_roles[0]), "eliminations").len(), 5);
+    assert_eq!(rows(data(&with_roles[0]), "income_eliminations").len(), 3);
+    assert_eq!(
+        rows(data(&with_roles[0]), "eliminations")
+            .iter()
+            .filter(|entry| text(entry, "code").starts_with("ELIM-IC-GROUP-"))
+            .count(),
+        1
+    );
+    let role_certificate = format!("C:{}", text(data(&with_roles[1]), "oid"));
+
+    ok(
+        &path,
+        &[
+            "reverse",
+            &originals[0],
+            "--reason",
+            "Duplicate",
+            "--effective",
+            "2026-02-15",
+        ],
+    );
+    let january = ok(&path, &["consolidate", "--period", "FY2026-P01"]);
+    assert_totals(&january[0], "0.00 USD");
+    assert_eq!(rows(data(&january[0]), "eliminations").len(), 5);
+    let february = ok(&path, &["consolidate", "--period", "FY2026-P02"]);
+    assert_totals(&february[0], "0.00 USD");
+    assert_eq!(rows(data(&february[0]), "eliminations").len(), 3);
+    assert_eq!(rows(data(&february[0]), "income_eliminations").len(), 1);
+    assert!(
+        rows(data(&february[0]), "eliminations")
+            .iter()
+            .all(|entry| !text(entry, "code").contains("sale-100"))
+    );
+    assert!(
+        text(&rows(data(&february[0]), "income_eliminations")[0], "code")
+            .contains("sale-100-activity")
+    );
+    let status = ok(&path, &["certificate", "status", &role_certificate]);
+    assert_eq!(text(data(&status[0]), "status"), "Current");
+
+    // A later-recorded reversal effective in January supersedes that report;
+    // the future-effective reversal above did not erase January's stock.
+    ok(
+        &path,
+        &[
+            "reverse",
+            &originals[1],
+            "--reason",
+            "Duplicate",
+            "--effective",
+            "2026-01-25",
+        ],
+    );
+    let january = ok(&path, &["consolidate", "--period", "FY2026-P01"]);
+    assert_totals(&january[0], "0.00 USD");
+    assert_eq!(rows(data(&january[0]), "eliminations").len(), 3);
+    assert_eq!(rows(data(&january[0]), "income_eliminations").len(), 2);
+    let status = ok(&path, &["certificate", "status", &role_certificate]);
+    assert_eq!(text(data(&status[0]), "status"), "SupersededBy");
+    assert_eq!(rows(data(&status[0]), "later_entries").len(), 1);
+
+    for (retained, file, original) in &certificates {
+        for source in [retained.as_str(), file.to_str().unwrap()] {
+            assert_eq!(ok(&path, &["replay", source])[0], *original);
+        }
+    }
+    for (file, original) in legacy_files.iter().zip(&legacy_reports) {
+        assert_eq!(ok(&path, &["replay", file.to_str().unwrap()])[0], *original);
+    }
+    assert_eq!(ok(&path, &["replay", &role_certificate])[0], with_roles[0]);
+}
+
 #[path = "procedure_replay/extended.rs"]
 mod extended;

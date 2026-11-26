@@ -1,6 +1,8 @@
 //! Complete-prefix transport for the existing one-book group reports.
 //!
-//! Native v6 and functional v7 certificates retain their exact report bytes.
+//! Native v6/v14 and functional v7/v15 certificates retain their exact report
+//! bytes. The later versions bind declaration-granular intercompany elimination;
+//! the earlier versions keep their original account-level computation.
 //! The closure adds the historical BookSpec (entity codes/names, calendar and
 //! functional unit) and the original role/rounding registries. Journaled OWNS
 //! and role controls remain inside the authenticated, payload-complete prefix;
@@ -42,11 +44,18 @@ const FUNCTIONAL_REGISTRIES: [&str; 7] = [
 pub(super) fn profile(certificate: &[u8], journal: &Journal, known_at: CommitSeq) -> Option<bool> {
     let read = || -> Result<Option<bool>, fa_model::DecodeError> {
         let mut reader = Reader::new(certificate);
-        let format =
-            reader.fixed::<{ b"fa:report-certificate:v6".len() }>("consolidation format")?;
-        let (functional, output, selector) = match &format {
+        let declared = certificate.starts_with(b"fa:report-certificate:v14")
+            || certificate.starts_with(b"fa:report-certificate:v15");
+        let format = if declared {
+            reader.fixed::<25>("consolidation format")?.to_vec()
+        } else {
+            reader.fixed::<24>("consolidation format")?.to_vec()
+        };
+        let (functional, output, selector) = match format.as_slice() {
             b"fa:report-certificate:v6" => (false, "fa:consolidation:v1", 4),
             b"fa:report-certificate:v7" => (true, "fa:functional-consolidation:v1", 5),
+            b"fa:report-certificate:v14" => (false, "fa:consolidation:v1", 12),
+            b"fa:report-certificate:v15" => (true, "fa:functional-consolidation:v1", 13),
             _ => return Ok(None),
         };
         if reader.str(64, "scope")? != "fa-fold-over-prefix" {
@@ -69,7 +78,7 @@ pub(super) fn profile(certificate: &[u8], journal: &Journal, known_at: CommitSeq
 }
 
 /// Package a replayed one-book consolidation with its exact historical inputs.
-/// Native v6 carries six registries and no Rate documents. Functional v7 adds
+/// Native v6/v14 carries six registries and no Rate documents. Functional v7/v15 adds
 /// the FX registry and every authenticated Rate document its retained values
 /// consume. Both use major 3's BookSpec/rate closure; no new certificate format,
 /// rewritten output or inferred group membership is introduced.
@@ -86,7 +95,7 @@ pub fn assemble(
 ) -> Outcome<Bundle> {
     let Some(valued) = profile(certificate, journal, known_at) else {
         return Ok(Err(refused(
-            "portable consolidation requires this book's sequence-selected trunk v6 native or v7 functional certificate",
+            "portable consolidation requires this book's sequence-selected trunk v6/v14 native or v7/v15 functional certificate",
         )));
     };
     let expected = if valued {
@@ -103,7 +112,7 @@ pub fn assemble(
             .any(|(_, bytes)| bytes.len() > 1024 * 1024)
     {
         return Ok(Err(refused(
-            "portable consolidation requires its exact account-role and rounding registry closure: six bounded documents for native v6, seven including FX laws for functional v7",
+            "portable consolidation requires its exact account-role and rounding registry closure: six bounded documents for native v6/v14, seven including FX laws for functional v7/v15",
         )));
     }
     if book_spec.len() > MAX_FUNCTIONAL_BOOK_BYTES || !book_spec.starts_with(&2u16.to_le_bytes()) {
@@ -138,4 +147,96 @@ pub fn assemble(
         registries,
         Some(BookClosure { book_spec, rates }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fa_model::{Id128, Writer};
+
+    // These fixtures exercise transport routing only. Complete certificate
+    // decoding and financial recomputation belong to the independent verifier.
+    fn header(version: u8, output: &str, selector: u8, branch: Id128, period: &str) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer
+            .fixed(format!("fa:report-certificate:v{version}").as_bytes())
+            .str("fa-fold-over-prefix")
+            .str("embedded-owner")
+            .str(output)
+            .fixed(&[3; 16])
+            .fixed(&branch.0)
+            .u64(9)
+            .u8(selector)
+            .str(period);
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn consolidation_routing_pins_each_legacy_and_declared_version_to_its_own_selector() {
+        let journal = Journal::from_records(Id128([3; 16]), CommitSeq(9), Vec::new()).unwrap();
+        for (version, selector, functional, output) in [
+            (6, 4, false, "fa:consolidation:v1"),
+            (7, 5, true, "fa:functional-consolidation:v1"),
+            (14, 12, false, "fa:consolidation:v1"),
+            (15, 13, true, "fa:functional-consolidation:v1"),
+        ] {
+            let valid = header(version, output, selector, Id128::TRUNK, "FY2026-P01");
+            assert_eq!(profile(&valid, &journal, CommitSeq(9)), Some(functional));
+            for other_selector in [4, 5, 12, 13] {
+                if other_selector != selector {
+                    assert_eq!(
+                        profile(
+                            &header(version, output, other_selector, Id128::TRUNK, "FY2026-P01"),
+                            &journal,
+                            CommitSeq(9),
+                        ),
+                        None,
+                        "version {version} must not borrow selector {other_selector}"
+                    );
+                }
+            }
+            for wrong_output in [
+                if functional {
+                    "fa:consolidation:v1"
+                } else {
+                    "fa:functional-consolidation:v1"
+                },
+                "fa:consolidation:v2",
+            ] {
+                assert_eq!(
+                    profile(
+                        &header(version, wrong_output, selector, Id128::TRUNK, "FY2026-P01"),
+                        &journal,
+                        CommitSeq(9),
+                    ),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn declared_consolidation_routing_requires_the_exact_book_branch_prefix_and_period() {
+        let journal = Journal::from_records(Id128([3; 16]), CommitSeq(9), Vec::new()).unwrap();
+        let other_book = Journal::from_records(Id128([4; 16]), CommitSeq(9), Vec::new()).unwrap();
+        let mut other_branch = journal.clone();
+        other_branch.branch_id = Id128([5; 16]);
+        for (version, selector, output) in [
+            (14, 12, "fa:consolidation:v1"),
+            (15, 13, "fa:functional-consolidation:v1"),
+        ] {
+            let valid = header(version, output, selector, Id128::TRUNK, "FY2026-P01");
+            assert_eq!(profile(&valid, &journal, CommitSeq(8)), None);
+            assert_eq!(profile(&valid, &other_book, CommitSeq(9)), None);
+            assert_eq!(profile(&valid, &other_branch, CommitSeq(9)), None);
+            for malformed in [
+                header(version, output, selector, Id128([5; 16]), "FY2026-P01"),
+                header(version, output, selector, Id128::TRUNK, ""),
+                header(16, output, selector, Id128::TRUNK, "FY2026-P01"),
+                valid[..valid.len() - 1].to_vec(),
+            ] {
+                assert_eq!(profile(&malformed, &journal, CommitSeq(9)), None);
+            }
+        }
+    }
 }

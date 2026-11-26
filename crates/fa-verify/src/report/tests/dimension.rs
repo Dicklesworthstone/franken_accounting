@@ -220,6 +220,7 @@ fn dimension_bundle_with_registries(
         | Selection::CustomStatement(_)
         | Selection::RegulatorySchedule(_)
         | Selection::Consolidation(_)
+        | Selection::DeclaredConsolidation(_)
         | Selection::OpenItems(_)
         | Selection::ExplainBalance { .. } => {
             panic!("dimension selection must be a trial balance")

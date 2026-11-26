@@ -28525,7 +28525,7 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     let original = format!("{}\n", lines[0]);
     let cert = format!("C:{oid}");
     let bytes = std::fs::read(&file)?;
-    assert!(bytes.starts_with(fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT));
+    assert!(bytes.starts_with(fa::certificate::DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT));
     assert_consolidation_certificate_replay_laws(&book, &bytes);
     let (code, replayed) = run(&["replay", &cert]);
     assert_eq!(code, 0, "{replayed}");
@@ -28830,7 +28830,7 @@ fn consolidate_eliminates_a_groups_intercompany_and_investments_and_allocates_th
     Ok(())
 }
 
-/// The native v6 artifact must refold the whole group, even when a supplied
+/// The native v14 artifact must refold the whole group, even when a supplied
 /// certificate's hashes have been recomputed after changing its claims.
 fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
     use fa::{ReportArtifactExpectation, ReportCertificate, ReportOutput, ReportSelection};
@@ -28840,7 +28840,7 @@ fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
     assert_eq!(certificate.canonical_bytes().unwrap(), bytes);
     assert_eq!(
         certificate.selection,
-        ReportSelection::Consolidation {
+        ReportSelection::DeclaredConsolidation {
             period: "FY2026-P03".to_string()
         }
     );
@@ -28872,6 +28872,31 @@ fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
     assert_eq!(repeated.report, historical);
     assert_eq!(repeated.certificate.canonical_bytes().unwrap(), bytes);
     assert_eq!(book.head().unwrap(), head, "certification is a read");
+
+    // Existing v6 artifacts retain their original role-aggregate computation.
+    // This fixture has no declarations, so the residual role law still agrees
+    // with it while the selected algorithm and certificate identity differ.
+    let legacy = book
+        .certify_report(
+            ReportSelection::Consolidation {
+                period: "FY2026-P03".to_string(),
+            },
+            Some(certificate.known_at),
+        )
+        .unwrap()
+        .unwrap();
+    let legacy_bytes = legacy.certificate.canonical_bytes().unwrap();
+    assert!(legacy_bytes.starts_with(fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT));
+    assert_ne!(legacy_bytes, bytes);
+    assert_eq!(legacy.certificate.output, certificate.output);
+    assert_eq!(
+        book.replay_report(&ReportCertificate::decode(&legacy_bytes).unwrap())
+            .unwrap()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        legacy.certificate.output
+    );
 
     for authority in [
         fa_policy::Capability::embedded(principal, &["produce"]).unwrap(),
@@ -28911,7 +28936,7 @@ fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
         forged.output_digest = hash_parts(b"fa:report-output:v1", &[&forged.output]);
         let encoded = forged.canonical_bytes().unwrap();
         forged.digest = hash_parts(
-            fa::certificate::CONSOLIDATION_CERTIFICATE_FORMAT,
+            fa::certificate::DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT,
             &[&encoded[..encoded.len() - 32]],
         );
         forged.canonical_bytes().unwrap()
@@ -28936,7 +28961,7 @@ fn assert_consolidation_certificate_replay_laws(path: &Path, bytes: &[u8]) {
         .expect("the real 108.00 NCI equity is encoded exactly");
     false_nci.output[amount..amount + 16].copy_from_slice(&10_801_i128.to_le_bytes());
     let mut false_period = certificate.clone();
-    false_period.selection = ReportSelection::Consolidation {
+    false_period.selection = ReportSelection::DeclaredConsolidation {
         period: "FY2026-P02".to_string(),
     };
     for forged in [false_member, false_nci, false_period] {

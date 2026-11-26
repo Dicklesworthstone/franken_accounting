@@ -88,6 +88,13 @@ pub const FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT: &[u8] =
     b"fa:report-certificate:v13";
 pub const FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT: &str =
     "fa:functional-dimension-trial-balance:v1";
+/// Consolidation using the journal's declared intercompany endpoints and
+/// reversal history. V6 continues to replay the original aggregate matcher.
+pub const DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] = b"fa:report-certificate:v14";
+/// The declared-pair method over independently verified retained base amounts.
+/// V7 keeps its aggregate matching and historical valuation semantics.
+pub const DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8] =
+    b"fa:report-certificate:v15";
 pub const REPLAY_SCOPE: &str = "fa-fold-over-prefix";
 pub const AUTHORITY: &str = "embedded-owner";
 pub const OUTPUT_FORMAT: &str = "fa:trial-balance:v1";
@@ -238,6 +245,15 @@ pub enum ReportSelection {
     FunctionalConsolidation {
         period: String,
     },
+    /// Group stock and activity with elimination pairs resolved from retained
+    /// declarations, plus residual role accounts not covered by those pairs.
+    DeclaredConsolidation {
+        period: String,
+    },
+    /// Declared intercompany endpoints valued in the shared functional unit.
+    DeclaredFunctionalConsolidation {
+        period: String,
+    },
     /// `selection` over only the legs tagged with `dimension`'s `value` or
     /// a value under it (`fa tb --dimension`); the other legs of a tagged
     /// entry are left out, so it need not balance.
@@ -328,7 +344,10 @@ impl ReportSelection {
             Self::Statement(selection) | Self::FunctionalStatement(selection) => {
                 selection.is_canonical()
             }
-            Self::Consolidation { period } | Self::FunctionalConsolidation { period } => {
+            Self::Consolidation { period }
+            | Self::FunctionalConsolidation { period }
+            | Self::DeclaredConsolidation { period }
+            | Self::DeclaredFunctionalConsolidation { period } => {
                 !period.is_empty() && period.len() <= 128
             }
             Self::DimensionTrialBalance {
@@ -424,6 +443,7 @@ impl ReportSelection {
         match self {
             Self::FunctionalStatement(_)
             | Self::FunctionalConsolidation { .. }
+            | Self::DeclaredFunctionalConsolidation { .. }
             | Self::FunctionalTrialBalance(_)
             | Self::FunctionalDimensionTrialBalance { .. } => true,
             Self::CustomStatement(selection) => selection.functional,
@@ -440,8 +460,12 @@ impl ReportSelection {
             Self::OpenItems { .. } => "fa:open-items:v1",
             Self::Statement(_) => "fa:statement:v1",
             Self::FunctionalStatement(_) => FUNCTIONAL_STATEMENT_OUTPUT_FORMAT,
-            Self::Consolidation { .. } => CONSOLIDATION_OUTPUT_FORMAT,
-            Self::FunctionalConsolidation { .. } => FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT,
+            Self::Consolidation { .. } | Self::DeclaredConsolidation { .. } => {
+                CONSOLIDATION_OUTPUT_FORMAT
+            }
+            Self::FunctionalConsolidation { .. } | Self::DeclaredFunctionalConsolidation { .. } => {
+                FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT
+            }
             Self::DimensionTrialBalance { .. } => DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT,
             Self::FunctionalDimensionTrialBalance { .. } => {
                 FUNCTIONAL_DIMENSION_TRIAL_BALANCE_OUTPUT_FORMAT
@@ -496,6 +520,12 @@ impl ReportSelection {
             Self::FunctionalConsolidation { period } => {
                 w.u8(5).str(period);
             }
+            Self::DeclaredConsolidation { period } => {
+                w.u8(12).str(period);
+            }
+            Self::DeclaredFunctionalConsolidation { period } => {
+                w.u8(13).str(period);
+            }
             Self::DimensionTrialBalance {
                 selection,
                 dimension,
@@ -549,6 +579,14 @@ impl ReportSelection {
             }),
             5 if version == 7 => Ok(Self::FunctionalConsolidation {
                 period: r.str(128, "functional consolidation period")?.to_string(),
+            }),
+            12 if version == 14 => Ok(Self::DeclaredConsolidation {
+                period: r.str(128, "declared consolidation period")?.to_string(),
+            }),
+            13 if version == 15 => Ok(Self::DeclaredFunctionalConsolidation {
+                period: r
+                    .str(128, "declared functional consolidation period")?
+                    .to_string(),
             }),
             6 if version == 8 => Ok(Self::DimensionTrialBalance {
                 selection: TrialBalanceSelection::read(r)?,
@@ -630,6 +668,14 @@ impl ReportSelection {
             }
             Self::FunctionalConsolidation { period } => Ok(
                 crate::consolidation::consolidate_functional_at(db, book, period, at)?
+                    .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
+            ),
+            Self::DeclaredConsolidation { period } => {
+                Ok(crate::consolidation::declared_consolidation_at(db, book, period, at)?
+                    .map(|run| ReportOutput::Consolidation(Box::new(run))))
+            }
+            Self::DeclaredFunctionalConsolidation { period } => Ok(
+                crate::consolidation::declared_functional_consolidation_at(db, book, period, at)?
                     .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
             ),
             Self::DimensionTrialBalance {
@@ -941,7 +987,10 @@ fn report_registries(selection: &ReportSelection) -> Vec<(&'static str, &'static
     // registered law.
     if matches!(
         selection,
-        ReportSelection::Consolidation { .. } | ReportSelection::FunctionalConsolidation { .. }
+        ReportSelection::Consolidation { .. }
+            | ReportSelection::FunctionalConsolidation { .. }
+            | ReportSelection::DeclaredConsolidation { .. }
+            | ReportSelection::DeclaredFunctionalConsolidation { .. }
     ) {
         sources.push((
             "account_roles",
@@ -1062,6 +1111,8 @@ fn offline_registry_profile(certificate: &ReportCertificate) -> bool {
                 | ReportSelection::RegulatorySchedule(_)
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DeclaredConsolidation { .. }
+                | ReportSelection::DeclaredFunctionalConsolidation { .. }
         ))
 }
 
@@ -1509,6 +1560,12 @@ impl ReportCertificate {
             ReportSelection::FunctionalConsolidation { .. } => {
                 FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
             }
+            ReportSelection::DeclaredConsolidation { .. } => {
+                DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT
+            }
+            ReportSelection::DeclaredFunctionalConsolidation { .. } => {
+                DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+            }
             ReportSelection::DimensionTrialBalance { .. } => {
                 DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
             }
@@ -1558,6 +1615,8 @@ impl ReportCertificate {
             || self.format() == CUSTOM_STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT
             || self.format() == FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT
+            || self.format() == DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT
+            || self.format() == DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
         {
             w.opt(self.time_selection.as_ref(), write_time_selection);
         } else if let Some(time) = &self.time_selection {
@@ -1583,7 +1642,17 @@ impl ReportCertificate {
             // V10 is the first two-digit version. Preserve every earlier wire
             // header and consume its exact length before reading framed fields.
             let version =
-                if bytes.starts_with(FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                if bytes.starts_with(DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
+                        "certificate format",
+                    )?;
+                    15
+                } else if bytes.starts_with(DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT) {
+                    r.fixed::<{ DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
+                        "certificate format",
+                    )?;
+                    14
+                } else if bytes.starts_with(FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
                     r.fixed::<{ FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
                         "certificate format",
                     )?;
@@ -2239,6 +2308,8 @@ pub(crate) fn replay_report<V: Vfs + Clone>(
                 | ReportSelection::FunctionalDimensionTrialBalance { .. }
                 | ReportSelection::Consolidation { .. }
                 | ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DeclaredConsolidation { .. }
+                | ReportSelection::DeclaredFunctionalConsolidation { .. }
                 | ReportSelection::DimensionTrialBalance { .. }
                 | ReportSelection::RegulatorySchedule(_)
                 | ReportSelection::CustomStatement(_)
@@ -3231,7 +3302,11 @@ pub(crate) fn selected(
     // and the account roles those schema controls journal.
     if entry.proposal.legs.is_empty() || fa_notary::journal::is_undated(entry.proposal.class) {
         return match (selection, report) {
-            (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+            (
+                ReportSelection::Consolidation { .. }
+                | ReportSelection::DeclaredConsolidation { .. },
+                ReportOutput::Consolidation(report),
+            ) => {
                 consolidation_control_selected(
                     report.effective_through,
                     &report.entity_codes,
@@ -3239,7 +3314,8 @@ pub(crate) fn selected(
                 )
             }
             (
-                ReportSelection::FunctionalConsolidation { .. },
+                ReportSelection::FunctionalConsolidation { .. }
+                | ReportSelection::DeclaredFunctionalConsolidation { .. },
                 ReportOutput::FunctionalConsolidation(report),
             ) => consolidation_control_selected(
                 report.group.effective_through,
@@ -3279,12 +3355,16 @@ pub(crate) fn selected(
     match (selection, report) {
         // Every member's posted stock through the period's last day, of
         // which the period's activity is part.
-        (ReportSelection::Consolidation { .. }, ReportOutput::Consolidation(report)) => {
+        (
+            ReportSelection::Consolidation { .. } | ReportSelection::DeclaredConsolidation { .. },
+            ReportOutput::Consolidation(report),
+        ) => {
             return Ok(entry.proposal.class != EntryClass::PENDING
                 && entry.proposal.effective_date <= report.effective_through);
         }
         (
-            ReportSelection::FunctionalConsolidation { .. },
+            ReportSelection::FunctionalConsolidation { .. }
+            | ReportSelection::DeclaredFunctionalConsolidation { .. },
             ReportOutput::FunctionalConsolidation(report),
         ) => {
             return Ok(entry.proposal.class != EntryClass::PENDING
@@ -4238,6 +4318,62 @@ mod tests {
             FUNCTIONAL_CONSOLIDATION_OUTPUT_FORMAT
         );
         assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
+    }
+
+    #[test]
+    fn declared_consolidation_versions_bind_the_method_without_reinterpreting_legacy_selectors() {
+        let period = "FY2026-P03".to_string();
+        for (selection, legacy, version, tag, format) in [
+            (
+                ReportSelection::DeclaredConsolidation {
+                    period: period.clone(),
+                },
+                ReportSelection::Consolidation {
+                    period: period.clone(),
+                },
+                14,
+                12,
+                DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT,
+            ),
+            (
+                ReportSelection::DeclaredFunctionalConsolidation {
+                    period: period.clone(),
+                },
+                ReportSelection::FunctionalConsolidation { period },
+                15,
+                13,
+                DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT,
+            ),
+        ] {
+            let mut writer = Writer::new();
+            selection.write(&mut writer).unwrap();
+            let bytes = writer.finish().unwrap();
+            assert_eq!(bytes[0], tag);
+            let mut reader = Reader::new(&bytes);
+            assert_eq!(ReportSelection::read(&mut reader, version).unwrap(), selection);
+            reader.finish().unwrap();
+            for other in (1..=15).filter(|other| *other != version) {
+                assert!(ReportSelection::read(&mut Reader::new(&bytes), other).is_err());
+            }
+            // Native inputs and registry laws are the same; the certificate
+            // selects how those authenticated journal declarations are used.
+            assert_eq!(
+                statements(CommitSeq(7), &selection),
+                statements(CommitSeq(7), &legacy)
+            );
+            assert_eq!(
+                registry_digest(&selection).unwrap(),
+                registry_digest(&legacy).unwrap()
+            );
+            assert_eq!(selection.output_format(), legacy.output_format());
+            let certificate = wire_fixture(selection, None);
+            assert_eq!(certificate.format(), format);
+            assert_ne!(
+                certificate.body_bytes().unwrap(),
+                wire_fixture(legacy, None).body_bytes().unwrap()
+            );
+            assert_eq!(certificate.body_bytes().unwrap().last(), Some(&0));
+        }
     }
 
     #[test]

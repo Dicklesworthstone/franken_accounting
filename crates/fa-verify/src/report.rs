@@ -178,7 +178,7 @@ pub use cash_flow_split::{
 };
 pub use consolidation::{
     ConsolidationElimination, ConsolidationEquity, ConsolidationLeg, ConsolidationMember,
-    VerifiedConsolidation,
+    ConsolidationPair, ConsolidationPairKind, VerifiedConsolidation,
 };
 pub use custom_statement::{
     PresentedStatementLine, VerifiedCustomActivation, VerifiedCustomStatement,
@@ -273,6 +273,9 @@ const STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v4";
 const FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v5";
 const CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v6";
 const FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v7";
+const DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v14";
+const DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT: &[u8; 25] =
+    b"fa:report-certificate:v15";
 const DIMENSION_CERTIFICATE_FORMAT: &[u8; 24] = b"fa:report-certificate:v8";
 const DIMENSION_OUTPUT_FORMAT: &[u8] = b"fa:dimension-trial-balance:v1";
 const FUNCTIONAL_CERTIFICATE_FORMAT: &[u8; 25] = b"fa:report-certificate:v10";
@@ -412,14 +415,14 @@ pub struct VerifiedReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Selection {
-    Periods(Vec<String>),
+enum Selection {    Periods(Vec<String>),
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
     CustomStatement(Box<custom_statement::Selection>),
     RegulatorySchedule(Box<regulatory::Selection>),
     Consolidation(String),
+    DeclaredConsolidation(String),
     OpenItems(Option<u128>),
     ExplainBalance { account: u128, period: String },
 }
@@ -520,17 +523,21 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         bytes.starts_with(FUNCTIONAL_CERTIFICATE_FORMAT) || functional_dimension;
     let custom_statement = bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT)
         || bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT);
-    let format = if functional_trial_balance || custom_statement {
+    let declared_consolidation = bytes.starts_with(DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT)
+        || bytes.starts_with(DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT);
+    let format = if functional_trial_balance || custom_statement || declared_consolidation {
         r.fixed::<25>("certificate.format")?.to_vec()
     } else {
         r.fixed::<24>("certificate.format")?.to_vec()
     };
     let functional_statement = format.as_slice() == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT;
-    let functional_consolidation = format.as_slice() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT;
+    let functional_consolidation = format.as_slice() == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT
+        || format.as_slice() == DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT;
     let functional_custom_statement =
         format.as_slice() == FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT;
-    let consolidation =
-        format.as_slice() == CONSOLIDATION_CERTIFICATE_FORMAT || functional_consolidation;
+    let consolidation = format.as_slice() == CONSOLIDATION_CERTIFICATE_FORMAT
+        || functional_consolidation
+        || declared_consolidation;
     let functional = functional_trial_balance
         || functional_statement
         || functional_consolidation
@@ -552,7 +559,7 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
     {
         return Err(failed(
             "supported_report",
-            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 consolidation, v8 dimension trial balance, v9 regulatory schedule, v10 functional trial balance, v11/v12 custom statement, or v13 functional dimension trial balance",
+            "expected a native v1/v2 trial balance, v3 OpenItems/ExplainBalance, v4 statement, v5 functional statement, v6/v7 or v14/v15 consolidation, v8 dimension trial balance, v9 regulatory schedule, v10 functional trial balance, v11/v12 custom statement, or v13 functional dimension trial balance",
         ));
     }
     for (field, expected) in [
@@ -611,17 +618,27 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
             functional_custom_statement,
         )?))
     } else if consolidation {
-        if selector != if functional_consolidation { 5 } else { 4 } {
+        let expected_selector = match (declared_consolidation, functional_consolidation) {
+            (false, false) => 4,
+            (false, true) => 5,
+            (true, false) => 12,
+            (true, true) => 13,
+        };
+        if selector != expected_selector {
             return Err(failed(
                 "supported_report",
-                "v6/v7 requires its native/functional consolidation selector",
+                "consolidation requires the native/functional selector bound to its method version",
             ));
         }
         let period = text(&mut r, 128, "certificate.period")?.to_string();
         if period.is_empty() {
             return Err(failed("report_selector", "consolidation period is empty"));
         }
-        Selection::Consolidation(period)
+        if declared_consolidation {
+            Selection::DeclaredConsolidation(period)
+        } else {
+            Selection::Consolidation(period)
+        }
     } else if statement {
         if selector != if functional_statement { 3 } else { 2 } {
             return Err(failed(
@@ -667,8 +684,10 @@ fn certificate(bytes: &[u8]) -> Result<Certificate<'_>, ReportError> {
         }
     };
     let expected_format = match &selection {
-        Selection::Consolidation(_) if functional => "fa:functional-consolidation:v1",
-        Selection::Consolidation(_) => "fa:consolidation:v1",
+        Selection::Consolidation(_) | Selection::DeclaredConsolidation(_) if functional => {
+            "fa:functional-consolidation:v1"
+        }
+        Selection::Consolidation(_) | Selection::DeclaredConsolidation(_) => "fa:consolidation:v1",
         Selection::ExplainBalance { .. } => "fa:balance-explanation:v1",
         Selection::OpenItems(_) => "fa:open-items:v1",
         Selection::Statement(_) if functional => "fa:functional-statement:v1",
@@ -1467,11 +1486,14 @@ fn verify_report_with_subledger_inputs(
         .or_else(|| native_subledger.as_ref().map(|value| value.digest))
         .or_else(|| external_feed.as_ref().map(|value| value.digest))
         .unwrap_or(cert.digest);
-    let is_consolidation = matches!(cert.selection, Selection::Consolidation(_));
+    let is_consolidation = matches!(
+        cert.selection,
+        Selection::Consolidation(_) | Selection::DeclaredConsolidation(_)
+    );
     if (cert.functional || is_consolidation) != (major == 3) {
         return Err(failed(
             "supported_report",
-            "functional v5/v10/v12/v13 and consolidation v6/v7 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
+            "functional v5/v10/v12/v13 and consolidation v6/v7/v14/v15 certificates require version-3 bundles; v1/v2 report semantics are unchanged",
         ));
     }
     let is_statement = matches!(cert.selection, Selection::Statement(_));
@@ -1767,7 +1789,9 @@ fn verify_report_with_subledger_inputs(
         .as_ref()
         .map(|selection| dimension_history.select(selection))
         .transpose()?;
-    if let Selection::Consolidation(period) = &cert.selection {
+    if let Selection::Consolidation(period) | Selection::DeclaredConsolidation(period) =
+        &cert.selection
+    {
         if cert.time_selection.is_some() {
             return Err(failed(
                 "supported_report",

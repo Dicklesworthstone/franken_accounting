@@ -1884,13 +1884,46 @@ fn functional_consolidation_replays_exact_valuations_and_refuses_unvalued_or_rew
         "fa:functional-consolidation:v1"
     );
     let bytes = std::fs::read(&file).unwrap();
-    assert!(bytes.starts_with(b"fa:report-certificate:v7"));
+    assert!(
+        bytes.starts_with(fa::certificate::DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT)
+    );
     let decoded = fa::ReportCertificate::decode(&bytes).unwrap();
     assert!(matches!(
         decoded.selection,
-        fa::ReportSelection::FunctionalConsolidation { .. }
+        fa::ReportSelection::DeclaredFunctionalConsolidation { .. }
     ));
     assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+    // Existing v7 artifacts retain the original role-based method and exact
+    // retained FX amounts. With no declarations the new residual path agrees.
+    let legacy_file = f.dir.join("legacy-functional-consolidation.cert");
+    {
+        let keys = BookKeys::load(&f.book.join("book.keys")).unwrap();
+        let book = Book::open_dir(&f.book, keys, Entropy::production()).unwrap();
+        let legacy = book
+            .certify_report(
+                fa::ReportSelection::FunctionalConsolidation {
+                    period: "FY2026-P03".to_string(),
+                },
+                Some(decoded.known_at),
+            )
+            .unwrap()
+            .unwrap();
+        let legacy_bytes = legacy.certificate.canonical_bytes().unwrap();
+        assert!(
+            legacy_bytes.starts_with(fa::certificate::FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT)
+        );
+        assert_ne!(legacy_bytes, bytes);
+        assert_eq!(legacy.certificate.output, decoded.output);
+        assert_eq!(
+            book.replay_report(&fa::ReportCertificate::decode(&legacy_bytes).unwrap())
+                .unwrap()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            legacy.certificate.output
+        );
+        std::fs::write(&legacy_file, legacy_bytes).unwrap();
+    }
     let reference = format!("C:{}", text(certificate, "oid"));
     for source in [reference.as_str(), file.to_str().unwrap()] {
         assert_eq!(ok(&f.book, &["replay", source]), original[0]);
@@ -1959,6 +1992,11 @@ fn functional_consolidation_replays_exact_valuations_and_refuses_unvalued_or_rew
     assert_eq!(text(data(&status), "status"), "SupersededBy");
     assert_eq!(rows(data(&status), "later_entries").len(), 1);
     assert_eq!(ok(&f.book, &["replay", &reference]), original[0]);
+    assert_eq!(
+        data(&ok(&f.book, &["replay", legacy_file.to_str().unwrap()])),
+        data(&original[0]),
+        "a fresh process still replays v7 after a later backdated posting"
+    );
 
     post(
         "group-unvalued",

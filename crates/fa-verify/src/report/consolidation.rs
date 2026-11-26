@@ -8,8 +8,11 @@
 //! ownership tree, each subsidiary's controlling earnings and reserves flow
 //! to its parent before that parent's noncontrolling share is calculated.
 
+mod declared;
 mod math;
 mod statements;
+
+pub use declared::{ConsolidationPair, ConsolidationPairKind};
 
 use super::{Certificate, ReportError, failed, functional, metadata, statement, text};
 use crate::blake3::hash_parts;
@@ -83,6 +86,8 @@ pub struct VerifiedConsolidation {
     pub base_unit: Option<u32>,
     pub rounding_law: &'static str,
     pub members: Vec<ConsolidationMember>,
+    /// Source-derived pairs for v14/v15; legacy v6/v7 retain an empty list.
+    pub matched_pairs: Vec<ConsolidationPair>,
     pub eliminations: Vec<ConsolidationElimination>,
     pub income_eliminations: Vec<ConsolidationElimination>,
     pub equity_reconciliations: Vec<ConsolidationEquity>,
@@ -450,6 +455,22 @@ pub(super) fn replay(
     let history = controls(
         &cert.book, &members, through, role_types, schema, envelopes, infos,
     )?;
+    let declared = if matches!(cert.selection, super::Selection::DeclaredConsolidation(_)) {
+        declared::fold(
+            &spec,
+            &members,
+            schema,
+            period,
+            through,
+            envelopes,
+            records,
+            legs,
+            infos,
+            &identities,
+        )?
+    } else {
+        declared::Population::default()
+    };
     let mut stock = Balances::new();
     let mut activity = Balances::new();
     let mut lineage = statement::Lineage::default();
@@ -598,6 +619,8 @@ pub(super) fn replay(
         &intercompany,
         &stock,
         &activity,
+        &declared.stock,
+        &declared.income,
     )?;
     let (balance_sheet, bs_bytes) = statements::build(
         false,
@@ -661,6 +684,7 @@ pub(super) fn replay(
                 }
             })
             .collect(),
+        matched_pairs: declared.stock,
         eliminations: calculated.eliminations,
         income_eliminations: calculated.income_eliminations,
         equity_reconciliations: calculated.equity,
@@ -721,9 +745,19 @@ fn run_bytes(
         .fixed(&report.branch_id)
         .u64(report.known_at)
         .bytes(report.period.as_bytes())
-        // This method derives group role-account eliminations, not declared
-        // cross-book pairs. A nonempty pair transcript cannot be substituted.
-        .count(0);
+        .count(report.matched_pairs.len());
+    for pair in &report.matched_pairs {
+        w.bytes(pair.pair_key.as_bytes())
+            .u8(pair.kind.tag())
+            .u32(pair.unit_id)
+            .fixed(&pair.entity_a)
+            .u128(pair.account_a)
+            .i128(pair.entity_a_net)
+            .fixed(&pair.entity_b)
+            .u128(pair.account_b)
+            .i128(pair.entity_b_net)
+            .u8(0); // Native declarations cannot infer an FX difference.
+    }
     for entries in [&report.eliminations, &report.income_eliminations] {
         w.count(entries.len());
         for entry in entries {
