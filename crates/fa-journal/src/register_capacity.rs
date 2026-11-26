@@ -800,7 +800,7 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
                         migration_changed = true;
                     }
                     DeltaRow::LabelMembership { label: flipped, .. }
-                        if *flipped == label::ENTRY =>
+                        if *flipped == label::ENTRY || *flipped == label::ENTRY_FRAGMENT =>
                     {
                         usable = false;
                     }
@@ -809,12 +809,13 @@ fn carry<V: asupersync::fs::Vfs + Clone>(
                         elem: ElementId::Vertex(vid),
                         ..
                     } => {
-                        // A committed entry is immutable; a change to one is
-                        // beyond what the summary stands for.
-                        if db
-                            .vertex_at(*vid, at)?
-                            .is_some_and(|row| row.labels.contains(&label::ENTRY))
-                        {
+                        // Gross columns depend on the immutable root and all
+                        // of its fragments. Even restoring identical fragment
+                        // bytes changes their birth coordinate.
+                        if db.vertex_at(*vid, at)?.is_some_and(|row| {
+                            row.labels.contains(&label::ENTRY)
+                                || row.labels.contains(&label::ENTRY_FRAGMENT)
+                        }) {
                             usable = false;
                         }
                     }

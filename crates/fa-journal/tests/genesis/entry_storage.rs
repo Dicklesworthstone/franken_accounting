@@ -188,6 +188,68 @@ fn changed_fragment_and_identical_restoration_refuse_but_original_prefix_survive
 }
 
 #[test]
+fn a_carried_post_checks_mutated_fragments_of_an_already_summarized_entry() {
+    let mut h = harness();
+    let large = h.proposal(large_legs(&h), b"carried-fragments", EntryClass::ORIGINAL);
+    let posted = h.post(h.request(large, &["post"])).unwrap();
+    let mut history = fa_journal::CarriedHistory::default();
+    let ctx = h.ctx();
+    let warm = h.proposal(h.rent_legs(1), b"warm-fragments", EntryClass::ORIGINAL);
+    let request = h.request(warm, &["post"]);
+    h.runtime
+        .block_on(fa_journal::post_carrying(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            request,
+            &mut history,
+        ))
+        .unwrap()
+        .unwrap();
+    assert!(history.capacity().unwrap().admitted_from_summary());
+
+    let fragment = h
+        .db
+        .vertices_at(posted.recorded_at())
+        .unwrap()
+        .into_iter()
+        .find(|row| row.created_at == posted.recorded_at() && row.labels == [label::ENTRY_FRAGMENT])
+        .unwrap();
+    let original = fa_journal::rows::bytes(&fragment, property::FA_PAYLOAD, "fragment").unwrap();
+    let mut changed = original.clone();
+    changed[0] ^= 1;
+    let warmed = history;
+    for bytes in [changed, original] {
+        let mut edit = fgdb::WriteBatch::new(relation::HAS_LEG);
+        edit.set_vertex_property(
+            fragment.vid,
+            property::FA_PAYLOAD,
+            Some(CanonicalScalar::bytes(bytes).unwrap()),
+        );
+        h.write_raw(edit);
+        let before = h.db.frontier().unwrap();
+        let next = h.proposal(h.rent_legs(1), b"after-fragment-edit", EntryClass::ORIGINAL);
+        let request = h.request(next.clone(), &["post"]);
+        let literal = h
+            .runtime
+            .block_on(fa_journal::post(&mut h.db, &ctx, &h.book, request));
+        let request = h.request(next, &["post"]);
+        let mut carried = warmed.clone();
+        let resident = h.runtime.block_on(fa_journal::post_carrying(
+            &mut h.db,
+            &ctx,
+            &h.book,
+            request,
+            &mut carried,
+        ));
+        let expected = literal.unwrap_err().to_string();
+        assert!(expected.contains("fragment"), "{expected}");
+        assert_eq!(resident.unwrap_err().to_string(), expected);
+        assert_eq!(h.db.frontier().unwrap(), before);
+    }
+}
+
+#[test]
 fn previous_native_inline_entries_above_four_kib_remain_readable() {
     let mut h = harness_legacy();
     let legs = (1..=48).flat_map(|amount| h.rent_legs(amount)).collect();
