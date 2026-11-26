@@ -1,7 +1,28 @@
 //! A recipient's fixed external-feed question and its exact mechanical result.
 
 use super::{Args, Check, Json, Usage, amount, day, h, int, n, s, usage};
-use crate::report::{ExternalFeedRequest, VerifiedExternalFeed};
+use crate::report::{ExternalFeedManifest, ExternalFeedRequest, VerifiedExternalFeed};
+
+pub(super) fn population_check(
+    manifest: &ExternalFeedManifest,
+    report: &VerifiedExternalFeed,
+) -> Check {
+    let mut check = Check::pass(
+        "external_feed_population",
+        "declared_source_population",
+        vec![
+            ("extract", s(&manifest.extract)),
+            ("manifest_digest", h(&manifest.digest)),
+            ("from", day(Some(manifest.from))),
+            ("through", day(Some(manifest.through))),
+        ],
+    );
+    if let Err(reason) = manifest.verify(report) {
+        check.verdict = super::Verdict::Fail;
+        check.reason = Some(reason);
+    }
+    check
+}
 
 pub(super) fn request(args: &Args) -> Result<Option<ExternalFeedRequest>, Usage> {
     if !args.has("--external-feed") {

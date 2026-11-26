@@ -74,7 +74,10 @@ fn check_accounts(effect: &Effect<'_>, roots: &BTreeSet<&str>) -> Result<(), Rep
         let mut id = leg.account;
         let mut path = BTreeSet::new();
         while !admitted.contains(&id) {
-            let account = effect.schema.accounts.get(&id)
+            let account = effect
+                .schema
+                .accounts
+                .get(&id)
                 .ok_or_else(|| scope_error("account is missing from fork chart"))?;
             if !path.insert(id) {
                 return Err(scope_error("cycle in account scope ancestry"));
@@ -82,8 +85,10 @@ fn check_accounts(effect: &Effect<'_>, roots: &BTreeSet<&str>) -> Result<(), Rep
             if roots.contains(account.code.as_str()) {
                 break;
             }
-            id = *effect.schema.parents.get(&id)
-                .ok_or_else(|| scope_error("assumed leg lies outside declared account roots"))?;
+            id =
+                *effect.schema.parents.get(&id).ok_or_else(|| {
+                    scope_error("assumed leg lies outside declared account roots")
+                })?;
         }
         admitted.extend(path);
     }
@@ -123,11 +128,15 @@ fn check_effect_scope(
         6 => {
             // Posting plans observe the head. A read pinned at, or before,
             // any known-at sequence cannot authorize that observation.
-            return Err(scope_error("known-at-pinned capability cannot plan a posting"));
+            return Err(scope_error(
+                "known-at-pinned capability cannot plan a posting",
+            ));
         }
         7 => {
             if r.fixed::<16>("scope.branch")? != [0; 16] {
-                return Err(scope_error("declared branch differs from assumed trunk entry"));
+                return Err(scope_error(
+                    "declared branch differs from assumed trunk entry",
+                ));
             }
             "branch"
         }
@@ -327,19 +336,25 @@ mod tests {
     #[test]
     fn declared_scope_binds_every_assumed_leg_and_the_exact_fork_coordinates() {
         use crate::report::metadata::Account;
-
         let mut schema = Schema::default();
-        for (id, code, is_leaf) in [(1, "Assets", false), (2, "Cash", true), (3, "AssetSales", true)] {
-            schema.accounts.insert(id, Account {
-                code: code.into(),
-                name: code.into(),
-                account_type: 1,
-                normal_balance: 0,
-                is_leaf,
-                unit_policy: -1,
-                limit: None,
-                created_at: 1,
-            });
+        for (id, code, is_leaf) in [
+            (1, "Assets", false),
+            (2, "Cash", true),
+            (3, "AssetSales", true),
+        ] {
+            schema.accounts.insert(
+                id,
+                Account {
+                    code: code.into(),
+                    name: code.into(),
+                    account_type: 1,
+                    normal_balance: 0,
+                    is_leaf,
+                    unit_policy: -1,
+                    limit: None,
+                    created_at: 1,
+                },
+            );
         }
         schema.parents.insert(2, 1);
         let cash = Leg {
@@ -348,7 +363,14 @@ mod tests {
             debit: true,
             mantissa: 20,
         };
-        let legs = [cash, Leg { account: 3, debit: false, ..cash }];
+        let legs = [
+            cash,
+            Leg {
+                account: 3,
+                debit: false,
+                ..cash
+            },
+        ];
         let effect = Effect {
             book: [9; 16],
             day: 31,
@@ -388,7 +410,7 @@ mod tests {
         for (tag, invalid) in [
             (1, other_book.buf),
             (3, codes(&["Assets"])), // The opposite leg needs a separate root.
-            (3, codes(&["Asset"])), // No account-code prefix matching.
+            (3, codes(&["Asset"])),  // No account-code prefix matching.
             (3, codes(&["Cash", "Cash"])),
             (3, codes(&["Cash", "AssetSales"])),
             (4, codes(&["February"])),
@@ -400,7 +422,9 @@ mod tests {
             (13, only_control.buf),
         ] {
             assert_eq!(
-                check_effect_scope(tag, &invalid, &effect).unwrap_err().predicate,
+                check_effect_scope(tag, &invalid, &effect)
+                    .unwrap_err()
+                    .predicate,
                 "scenario_planner_scope"
             );
         }

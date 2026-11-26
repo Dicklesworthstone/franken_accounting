@@ -5,7 +5,10 @@
 //! chronology. Native graph mirrors, security admission, actual reviewer
 //! independence and completeness of the external source system are unjudged.
 
+mod population;
 mod source;
+
+pub use population::ExternalFeedManifest;
 #[cfg(test)]
 mod tests;
 

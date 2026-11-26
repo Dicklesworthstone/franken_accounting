@@ -201,7 +201,7 @@ pub use explain::{
     ExplanationEvidence, ExplanationSupersession, VerifiedBalanceExplanation,
 };
 pub use external_feed::{
-    ExternalFeedRequest, VerifiedExternalFeed, VerifiedExternalFeedBatch,
+    ExternalFeedManifest, ExternalFeedRequest, VerifiedExternalFeed, VerifiedExternalFeedBatch,
     VerifiedExternalFeedContribution, VerifiedExternalFeedLeg, VerifiedExternalFeedRow,
     VerifiedExternalFeedSummaryLeg, VerifiedExternalFeedTotal,
 };

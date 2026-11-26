@@ -140,7 +140,16 @@ pub(super) fn run(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ("holder", s(format!("{:032x}", planner.holder))),
                 ("declared_issuer", s(format!("{:032x}", planner.issuer))),
                 ("capability_commitment", h(&planner.capability_commitment)),
-                ("checked_effect_scopes", Json::List(planner.checked_effect_scopes.iter().map(|name| s(*name)).collect())),
+                (
+                    "checked_effect_scopes",
+                    Json::List(
+                        planner
+                            .checked_effect_scopes
+                            .iter()
+                            .map(|name| s(*name))
+                            .collect(),
+                    ),
+                ),
             ],
         ));
     }

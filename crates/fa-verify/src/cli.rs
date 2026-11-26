@@ -127,7 +127,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
                [--subledger CODE --control-account A --through D --known-at N]
-               [--external-feed FEED --control-account A --through D --known-at N]
+               [--external-feed FEED --control-account A --through D --known-at N [--population-manifest FILE]]
                                                 independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 statement comparisons and complete native publication traces,
@@ -193,6 +193,8 @@ options:
                  omitting --account requests the whole chart.
   --from D --to D  an inclusive effective-day interval (days since 1970-01-01)
   --receipt R    a bundle's detached production receipt
+  --population-manifest FILE  external feed: compare authenticated child Workpapers, row count
+                 and gross cells with the recipient's source-extract declaration.
   --units N,N,...  V1 statements require 1..=4096 strictly ascending unique native unit IDs;
                  obtain the complete list independently. For V1 it is a report premise,
                  not proof of unit registration or labels. For V2 the list is optional;
@@ -255,7 +257,7 @@ const COMMANDS: [&str; 14] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 32] = [
+const VALUE_FLAGS: [&str; 33] = [
     "--state",
     "--book",
     "--branch",
@@ -285,6 +287,7 @@ const VALUE_FLAGS: [&str; 32] = [
     "--view",
     "--subledger",
     "--external-feed",
+    "--population-manifest",
     "--control-account",
     "--through",
     "--known-at",
@@ -353,6 +356,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--view",
             "--subledger",
             "--external-feed",
+            "--population-manifest",
             "--control-account",
             "--through",
             "--known-at",
@@ -1599,6 +1603,25 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ));
             }
             let external_feed_request = external_feed::request(args)?;
+            let manifest = if let Some(path) = args.one("--population-manifest") {
+                if external_feed_request.is_none() {
+                    return Err(usage(
+                        "--population-manifest requires the external-feed question",
+                        "supply --external-feed, --control-account, --through and --known-at",
+                    ));
+                }
+                let bytes = load(read, path, false)?;
+                Some(
+                    crate::report::ExternalFeedManifest::parse(&bytes).map_err(|reason| {
+                        usage(
+                            reason,
+                            "supply the independently retained v1 source population manifest",
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
             let native_subledger_request = if external_feed_request.is_some() {
                 None
             } else {
@@ -1983,6 +2006,9 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                     }
                     if let Some(external) = &report.external_feed {
                         checks.extend(external_feed::checks(external));
+                        if let Some(manifest) = &manifest {
+                            checks.push(external_feed::population_check(manifest, external));
+                        }
                     }
                     if let Some(procedure) = &report.procedure {
                         checks.extend(procedure_checks(procedure));

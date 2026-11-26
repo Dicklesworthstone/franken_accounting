@@ -322,3 +322,124 @@ fn external_feed_public_accepts_atomic_reversal_before_its_target_leaf() {
         (140, 140)
     );
 }
+
+const MANIFEST: &str = concat!(
+    "fa:external-feed-population:v1\n",
+    "03030303030303030303030303030303 ERP:AR extract-1 10 20 3\n",
+    "child batch-1 90e026c4b6367161fc9b8d5681f00d09c0d6eabcce3dad67ac8f2292a53a03a7\n",
+    "cell 5706e80e281fc21c8fd6647d5ccb5a06 0 - 100 40\n",
+    "cell a9aee1fc6b7f3cbc8738d312e5c540c5 0 - 0 60\n",
+);
+
+fn population_result(
+    manifest: &str,
+    bundle: &[u8],
+    digest: &str,
+    hex_bundle: bool,
+) -> fa_verify::cli::Output {
+    let mut args = vec![
+        "report".into(),
+        "bundle".into(),
+        "--key".into(),
+        KEY.trim().into(),
+        "--expect".into(),
+        digest.trim().into(),
+        "--external-feed".into(),
+        "ERP:AR".into(),
+        "--control-account".into(),
+        question().control_account.to_string(),
+        "--through".into(),
+        "20".into(),
+        "--known-at".into(),
+        "5".into(),
+        "--population-manifest".into(),
+        "source.manifest".into(),
+        "--json".into(),
+    ];
+    if hex_bundle {
+        args.push("--hex".into());
+    }
+    fa_verify::cli::run(&args, &|path| match path {
+        "bundle" => Ok(bundle.to_vec()),
+        "source.manifest" => Ok(manifest.as_bytes().to_vec()),
+        _ => Err(std::io::Error::new(std::io::ErrorKind::NotFound, path)),
+    })
+}
+
+#[test]
+fn external_feed_cli_compares_a_recipient_manifest_with_original_source_deliveries() {
+    // Independently pinned declarations for the signed fixture, including its
+    // non-control Equity leg. The manifest remains plain text with --hex.
+    let valid = population_result(MANIFEST, VALID.as_bytes(), VALID_DIGEST, true);
+    assert_eq!(valid.exit, 0, "{}{}", valid.stdout, valid.stderr);
+    assert!(
+        valid
+            .stdout
+            .contains("\"check\":\"external_feed_population\"")
+    );
+
+    for (manifest, reason) in [
+        (
+            MANIFEST.replace("child batch-1", "child batch-2"),
+            "undeclared child",
+        ),
+        (
+            format!("{MANIFEST}child batch-2 {}\n", "ab".repeat(32)),
+            "missing child",
+        ),
+        (MANIFEST.replace("90e026c4", "91e026c4"), "Workpaper OID"),
+        (MANIFEST.replace("100 40", "101 41"), "gross mismatch"),
+        (MANIFEST.replace("10 20 3", "10 20 2"), "source rows"),
+        (MANIFEST.replace(" 0 - 0 60", " 1 - 0 60"), "gross mismatch"),
+    ] {
+        let result = population_result(&manifest, VALID.as_bytes(), VALID_DIGEST, true);
+        assert_eq!(result.exit, 8, "{}{}", result.stdout, result.stderr);
+        assert!(
+            result
+                .stdout
+                .contains("\"check\":\"external_feed_population\"")
+        );
+        assert!(result.stdout.contains(reason), "{}", result.stdout);
+    }
+}
+
+#[test]
+fn external_feed_cli_selects_source_batches_by_inclusive_effective_window() {
+    // The only source batch is effective on day 10. An empty population
+    // declaration is true after that date and false on the boundary itself.
+    let empty = concat!(
+        "fa:external-feed-population:v1\n",
+        "03030303030303030303030303030303 ERP:AR extract-empty 11 20 0\n",
+    );
+    let after = population_result(empty, VALID.as_bytes(), VALID_DIGEST, true);
+    assert_eq!(after.exit, 0, "{}{}", after.stdout, after.stderr);
+    let at = population_result(
+        &empty.replace("11 20", "10 20"),
+        VALID.as_bytes(),
+        VALID_DIGEST,
+        true,
+    );
+    assert_eq!(at.exit, 8, "{}{}", at.stdout, at.stderr);
+    assert!(at.stdout.contains("undeclared child"));
+}
+
+#[test]
+fn external_feed_cli_counts_an_atomic_reversal_as_one_original_source_delivery() {
+    let bundle = attach_existing_registries(unhex(include_str!(
+        "external_feed/same-commit-reversal.head.hex"
+    )));
+    let digest = include_str!("external_feed/same-commit-reversal.digest");
+    // One three-row delivery still has gross 100/40 in Cash even though the
+    // proved posting and reversal together have register turnover 140/140.
+    let result = population_result(MANIFEST, &bundle, digest, false);
+    assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+    assert!(
+        result
+            .stdout
+            .contains("\"check\":\"external_feed_population\"")
+    );
+    let turnover = MANIFEST.replace("100 40", "140 140");
+    let wrong = population_result(&turnover, &bundle, digest, false);
+    assert_eq!(wrong.exit, 8, "{}{}", wrong.stdout, wrong.stderr);
+    assert!(wrong.stdout.contains("gross mismatch"));
+}
