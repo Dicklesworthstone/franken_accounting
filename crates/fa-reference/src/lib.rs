@@ -4,7 +4,7 @@
 //! scans, and sign-magnitude limb integers written from scratch so that a
 //! shared arithmetic bug in `fa-money` cannot make the differential green.
 //! The oracle mirrors the kernel's law order exactly — structure, control,
-//! supported subset, balance, period resolution, identity (recorded outcome
+//! base authorization, supported subset, balance, period resolution, identity (recorded outcome
 //! or conflict), period law, accounts, reversal shape, resolution shape — and
 //! returns the same
 //! refusal codes as independent string constants, so a renumbering on either
@@ -36,6 +36,8 @@ pub mod sod;
 pub mod statements;
 mod temporal;
 
+#[cfg(test)]
+mod idempotency_tests;
 #[cfg(test)]
 mod reclassification_tests;
 
@@ -821,8 +823,8 @@ enum ControlContent {
     },
 }
 
-/// The semantic content an identity binds (what the kernel's
-/// `proposal_digest` covers, minus fields this model does not carry).
+/// The semantic content and represented approval transcript an identity
+/// binds, minus fields this model does not carry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Content {
     class: String,
@@ -834,6 +836,9 @@ struct Content {
     resolves: Option<Resolve>,
     settles: Vec<Settle>,
     key: Vec<u8>,
+    /// This model represents approval transcripts by count. Migration
+    /// chunks keep their separate run-scoped retry law.
+    approvals: usize,
     /// A balancing request's leg: the identity binds the request (its legs
     /// at the requested amount, and which leg balances), not what moved.
     balancing: Option<u16>,
@@ -868,6 +873,11 @@ impl Content {
             resolves: i.resolves.clone(),
             settles: i.settles.clone(),
             key: i.key.clone(),
+            approvals: if i.class == "Migration" {
+                0
+            } else {
+                i.approvals
+            },
             balancing,
             timeout,
             by_sweep: false,
@@ -954,6 +964,14 @@ pub struct Recorded {
 /// An account's `(opened, closed, promoted_on)` days (`fa-up7`).
 type Effectivity = (Option<DateDay>, Option<DateDay>, Option<DateDay>);
 
+/// A successful key in the model's one-book, one-posting-actor scope.
+/// Target-derived entry identities still reserve the caller's request key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostingOutcome {
+    Entry(usize),
+    Batch,
+}
+
 #[derive(Clone)]
 pub struct Oracle {
     calendar: FiscalCalendar,
@@ -966,6 +984,9 @@ pub struct Oracle {
     journal: Vec<Entry>,
     /// Key → (journal index, content) for key-identified entries.
     keys: BTreeMap<Vec<u8>, (usize, Content)>,
+    /// Successful PostEntry/PostBatch keys share one caller namespace
+    /// (plan §5.9). System minting and migration chunks have separate scopes.
+    posting_outcomes: BTreeMap<Vec<u8>, PostingOutcome>,
     /// Reversed target index → (reversal index, content).
     reversed: BTreeMap<usize, (usize, Content)>,
     /// Resolved pending index → (resolution index, content).
@@ -1008,9 +1029,9 @@ pub struct Oracle {
     migration_keys: BTreeMap<(usize, Vec<u8>), (usize, Content)>,
     classes: EntryClasses,
     sod: SodPolicy,
-    /// Batch key -> (the recorded request, its members' journal indices)
-    /// (plan §5.9 IntentOutcome).
-    batches: BTreeMap<Vec<u8>, (Vec<Intent>, Vec<usize>)>,
+    /// Batch key → its members' journal indices, in request order. Each
+    /// member's own recorded content judges retries (plan §5.9 IntentOutcome).
+    batches: BTreeMap<Vec<u8>, Vec<usize>>,
     /// Drafts by name (plan §15.2, fa-s7x).
     drafts: BTreeMap<String, Draft>,
     /// Tokens of revoked capabilities.
@@ -1071,6 +1092,7 @@ impl Oracle {
             opening_date: None,
             journal: Vec::new(),
             keys: BTreeMap::new(),
+            posting_outcomes: BTreeMap::new(),
             reversed: BTreeMap::new(),
             resolved: BTreeMap::new(),
             limits: BTreeMap::new(),
@@ -1790,29 +1812,72 @@ impl Oracle {
     /// any other request under the key is an idempotency conflict, and a
     /// member whose identity is already recorded refuses the batch.
     pub fn post_batch(&mut self, key: &[u8], members: &[Intent]) -> BatchVerdict {
-        if let Some((request, indices)) = self.batches.get(key) {
-            return if request.as_slice() == members {
-                BatchVerdict::Recorded {
-                    indices: indices.clone(),
-                }
-            } else {
-                BatchVerdict::Refused {
-                    member: None,
-                    code: code::IDEMPOTENCY_CONFLICT,
-                }
+        let max_members = fa_registry::limits_embedded().expect("limits.toml")["max_batch_entries"];
+        let member_keys: BTreeSet<_> = members.iter().map(|intent| &intent.key).collect();
+        if key.is_empty()
+            || key.len() > 64
+            || members.is_empty()
+            || u64::try_from(members.len()).expect("member count") > max_members
+            || member_keys.len() != members.len()
+        {
+            return BatchVerdict::Refused {
+                member: None,
+                code: code::STRUCTURE,
             };
+        }
+        // Authorize every member before observing any successful outcome,
+        // including a retry's outcome. Authority is not request content.
+        for (i, intent) in members.iter().enumerate() {
+            if !intent.ops.iter().any(|op| op == "post") {
+                return BatchVerdict::Refused {
+                    member: Some(i),
+                    code: code::CAPABILITY,
+                };
+            }
+        }
+        for (i, intent) in members.iter().enumerate() {
+            if !matches!(
+                intent.class.as_str(),
+                "Original" | "Adjusting" | "Reversal" | "Pending" | "Resolution"
+            ) {
+                return BatchVerdict::Refused {
+                    member: Some(i),
+                    code: code::STRUCTURE,
+                };
+            }
+        }
+        let conflict = |member| BatchVerdict::Refused {
+            member,
+            code: code::IDEMPOTENCY_CONFLICT,
+        };
+        if members.iter().any(|intent| intent.key == key) {
+            return conflict(None);
         }
         let mut trial = self.clone();
         trial.capacity_deferred = true;
         let mut indices = Vec::with_capacity(members.len());
+        let mut retry = false;
         for (i, intent) in members.iter().enumerate() {
             match trial.post(intent) {
-                Verdict::Posted { index, .. } => indices.push(index),
-                Verdict::Recorded { .. } => {
-                    return BatchVerdict::Refused {
-                        member: Some(i),
-                        code: code::IDEMPOTENCY_CONFLICT,
-                    };
+                Verdict::Posted { index, .. } => {
+                    // The first member's admission precedes observing the
+                    // batch key. A new member cannot replay an old batch.
+                    if retry || (i == 0 && self.posting_outcomes.contains_key(key)) {
+                        return conflict(None);
+                    }
+                    indices.push(index);
+                }
+                Verdict::Recorded { index } => {
+                    if i == 0 {
+                        match self.posting_outcomes.get(key) {
+                            Some(PostingOutcome::Batch) => retry = true,
+                            Some(PostingOutcome::Entry(_)) => return conflict(None),
+                            None => return conflict(Some(i)),
+                        }
+                    } else if !retry {
+                        return conflict(Some(i));
+                    }
+                    indices.push(index);
                 }
                 Verdict::Refused { code } => {
                     return BatchVerdict::Refused {
@@ -1821,6 +1886,13 @@ impl Oracle {
                     };
                 }
             }
+        }
+        if retry {
+            return if self.batches.get(key) == Some(&indices) {
+                BatchVerdict::Recorded { indices }
+            } else {
+                conflict(None)
+            };
         }
         trial.capacity_deferred = false;
         let accounts = members
@@ -1833,9 +1905,10 @@ impl Oracle {
                 code: code::REGISTER_CAPACITY,
             };
         }
+        trial.batches.insert(key.to_vec(), indices.clone());
         trial
-            .batches
-            .insert(key.to_vec(), (members.to_vec(), indices.clone()));
+            .posting_outcomes
+            .insert(key.to_vec(), PostingOutcome::Batch);
         *self = trial;
         BatchVerdict::Posted { indices }
     }
@@ -2320,6 +2393,7 @@ impl Oracle {
                         }),
                         settles: Vec::new(),
                         key,
+                        approvals: 0,
                         balancing: None,
                         timeout: None,
                         by_sweep: true,
@@ -2505,6 +2579,13 @@ impl Oracle {
         if class.kind == fa_registry::ClassKind::Control {
             return Verdict::Refused {
                 code: code::CONTROL_VIA_POST,
+            };
+        }
+        // Base posting authority precedes every outcome observation,
+        // including exact retries. Period-specific authority remains step 5.
+        if !intent.ops.iter().any(|op| op == "post") {
+            return Verdict::Refused {
+                code: code::CAPABILITY,
             };
         }
         // 1b. A Replacement posts only paired with its Reversal in one batch
@@ -2765,7 +2846,32 @@ impl Oracle {
                 None => self.keys.get(&intent.key),
             },
         };
+        // A target-derived entry still owns its successful caller key.
+        // Check that ownership before the target's retry law: a key used by
+        // another entry or batch conflicts even if this target is consumed.
+        // System sweeps and run-scoped Migration chunks are separate actors.
+        let caller_key = run.is_none() && !self.minting_scheduled;
+        if caller_key
+            && let Some(claim) = self.posting_outcomes.get(&intent.key)
+            && !matches!(claim, PostingOutcome::Entry(index) if existing.is_some_and(|(recorded, _)| recorded == index))
+        {
+            return Verdict::Refused {
+                code: code::IDEMPOTENCY_CONFLICT,
+            };
+        }
         if let Some((index, recorded)) = existing {
+            // Resolution's one-target law precedes approval binding when a
+            // distinct, still-unused key tries to consume the same hold.
+            if is_resolution && recorded.key != content.key {
+                return Verdict::Refused {
+                    code: code::ALREADY_RESOLVED,
+                };
+            }
+            if recorded.approvals != content.approvals {
+                return Verdict::Refused {
+                    code: code::IDEMPOTENCY_CONFLICT,
+                };
+            }
             // A Reclassification's identity also binds its target.
             let same_target = self.reclassification_targets.get(index).copied() == reclass_target;
             return if *recorded == content && same_target {
@@ -3510,6 +3616,10 @@ impl Oracle {
                     self.keys.insert(intent.key.clone(), (index, content));
                 }
             },
+        }
+        if caller_key {
+            self.posting_outcomes
+                .insert(intent.key.clone(), PostingOutcome::Entry(index));
         }
         Verdict::Posted { index, period }
     }

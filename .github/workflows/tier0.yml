@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: false
+      g1_acceptance_tests:
+        description: Run G1 crash recovery, fixed 50-seed differential and negative controls (not a full release proof)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -27,7 +32,7 @@ concurrency:
 jobs:
   tier0:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.g1_acceptance_tests && 120 || 45 }}
     steps:
       - name: Fetch the exact commit
         shell: bash
@@ -55,6 +60,63 @@ jobs:
           cargo +nightly-2026-08-31 check --locked -Z bindeps -Z git=shallow-deps --workspace --all-targets --jobs 2
       # These named feature regressions supplement Tier 0; they do not replace
       # the complete Tier 1 workspace verification chain.
+      - name: G1 crash recovery and independent reference
+        if: ${{ inputs.g1_acceptance_tests }}
+        env:
+          CARGO_TERM_COLOR: never
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          import subprocess
+
+          cargo = ["cargo", "+nightly-2026-08-31", "test", "--locked",
+                   "-Z", "bindeps", "-Z", "git=shallow-deps"]
+
+          def checked_test(package, target, name=None):
+              command = cargo + ["-p", package] + target + ([name] if name else [])
+              command += ["--jobs", "2", "--", "--show-output", "--format", "pretty"]
+              if name:
+                  command.append("--exact")
+              print("+ " + " ".join(command), flush=True)
+              lines = []
+              with subprocess.Popen(command, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True) as child:
+                  for line in child.stdout:
+                      print(line, end="", flush=True)
+                      lines.append(line.rstrip("\n"))
+                  if child.wait() != 0:
+                      raise SystemExit("G1 test command failed")
+              summaries = [match.groups() for line in lines if (match := re.fullmatch(
+                  r"test result: ok\. (\d+) passed; 0 failed; (\d+) ignored; .*", line))]
+              if len(summaries) != 1 or int(summaries[0][0]) == 0:
+                  raise SystemExit("G1 requires a completed, nonempty test run")
+              if name:
+                  # --show-output prints captured test output after successes:.
+                  # Only the harness's preceding result records count here.
+                  records = lines[:lines.index("successes:")] if "successes:" in lines else lines
+                  if summaries[0] != ("1", "0") or records.count(f"test {name} ... ok") != 1:
+                      raise SystemExit(f"G1 expected exactly one executed passing test: {name}")
+
+          for name in (
+              "a_post_crashed_at_every_commit_point_is_whole_or_absent_after_reopen",
+              "a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen",
+              "every_barrier_crashed_at_every_commit_point_recovers_as_fa_art_lab_02",
+          ):
+              checked_test("fa", ["--lib"], "book::tests::" + name)
+          checked_test("fa-reference", ["--lib"])
+          for name in (
+              "multi_seed_campaign_tier1",
+              "differential_seed_shards_preserve_exact_nonoverlapping_ranges",
+              "differential_seed_configuration_rejects_empty_invalid_and_overflowing_shards",
+              "planted_mutation_found_and_shrunk",
+              "serial_replay_refuses_a_history_the_reference_would_not_admit",
+              "shared_outcome_keys::shared_outcome_keys_cover_entry_and_batch_collisions",
+              "shared_outcome_keys::shared_outcome_keys_preserve_authorization_and_atomic_refusals",
+          ):
+              checked_test("fa-registers", ["--test", "differential"], name)
+          PY
       - name: Focused proportional posting laws and journal admission
         if: ${{ inputs.focused_accounting_tests }}
         shell: bash

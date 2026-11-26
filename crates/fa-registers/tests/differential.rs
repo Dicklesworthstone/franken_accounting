@@ -41,6 +41,8 @@ mod checkpoint_recovery;
 mod empty_checkpoint_repair;
 #[path = "differential/large_pending_state.rs"]
 mod large_pending_state;
+#[path = "differential/shared_outcome_keys.rs"]
+mod shared_outcome_keys;
 
 fn maintain(k: &mut Kernel, period: &str) -> fa_registers::Advance {
     let ctx = k.ctx();

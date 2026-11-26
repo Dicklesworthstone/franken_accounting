@@ -3094,6 +3094,31 @@ Cargo with this workspace's `--manifest-path`.
 
 Releases will ship through the suite's self-releaser (`dsr`), never GitHub Actions.
 
+### Qualifying G1 on a release revision
+
+From a clean, committed checkout, retain a full gate proof and then evaluate
+the G1 release criteria against that exact commit:
+
+```bash
+bash scripts/local_proof.sh --output /tmp/fa-g1-proof
+python3 -B scripts/g1_release_check.py --proof /tmp/fa-g1-proof --json
+```
+
+The proof directory must be new and outside the checkout. The G1 qualifier
+requires a verified format-v3 full-gate PASS, the crash/reopen acceptance
+tests, the fixed 50-seed differential campaign (including 2,000 serial races),
+and its mutation and invalid-history negative controls. The campaign's seed
+cohort cannot be reduced with diagnostic environment variables. Missing,
+ignored, duplicated, altered, or UNRUN evidence cannot qualify a release.
+Use `--revision <commit>` only when evaluating an explicitly selected archived
+revision; the default requires clean `HEAD` and proof for that revision.
+
+The manual **Tier 0 (format and type-check every target)** Actions workflow also offers G1 acceptance
+tests for focused execution. That run is useful feedback, but the release
+qualification above requires the complete retained proof. Its verdict does
+not change the generated scoreboard's static declarations or close the broader
+G2 work tracked by `fa-nl7` and `fa-2ihd`.
+
 ---
 
 ## Complete public transaction datasets

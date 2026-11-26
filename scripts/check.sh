@@ -391,7 +391,7 @@ cargo_build() {
 # An isolated command runs one test, so it carries its own rch test budget
 # (CHECK_ISOLATED_TIMEOUT_SEC, via RCH_TEST_TIMEOUT_SEC); every other command
 # keeps the fleet's cap.
-TEST_SPLIT_PACKAGES="fa fa-cli fa-journal fa-mcp fa-notary fa-verify fad"
+TEST_SPLIT_PACKAGES="fa fa-cli fa-journal fa-mcp fa-notary fa-registers fa-verify fad"
 # "<package> <--lib|--test=NAME> <test path>": tests that alone take a large
 # share of the cap. Sweep of 10-27 (vmi1153651): the fa metamorphic binary
 # took 1,598-1,640 s, its last 1,500 s these five tests in parallel; the
@@ -407,6 +407,7 @@ TEST_ISOLATED=(
   "fa --test=metamorphic metamorphic_export_reread_identity_on_fixture_books"
   "fa --test=metamorphic retention_cut_preserves_certified_results"
   "fa-journal --lib batch::tests::batch_exceeding_v1_capsule_ceiling_refuses_with_fa_ref_201_and_split_bound"
+  "fa-registers --test=differential multi_seed_campaign_tier1"
 )
 CHECK_TEST_ATTEMPTS="${CHECK_TEST_ATTEMPTS:-3}"
 CHECK_ISOLATED_TIMEOUT_SEC="${CHECK_ISOLATED_TIMEOUT_SEC:-10800}"
@@ -466,7 +467,9 @@ for directory in members:
         for test in slow:
             placed.add((name, selector, test))
             label = test.replace("::", ".")
-            print(f"{name}.{suffix}.isolated.{label}\t" + " ".join(["-p", name, *alone, "--", "--exact", test]))
+            # Retain the fixed cohort witness for the post-proof G1 consumer.
+            capture = ["--show-output"] if (name, test) == ("fa-registers", "multi_seed_campaign_tier1") else []
+            print(f"{name}.{suffix}.isolated.{label}\t" + " ".join(["-p", name, *alone, "--", "--exact", test, *capture]))
     if has_lib:
         print(f"{name}.doc\t-p {name} --doc")
 unplaced = [f"{p} {s} {t}" for (p, s), tests in isolated.items() for t in tests if (p, s, t) not in placed]
@@ -765,6 +768,10 @@ run_invariant_gates() {
 
 public_ledger_unit() {
   local rc
+  python3 -B -m unittest discover \
+    -s "$ROOT/scripts/tests" -p 'test_g1_release_check.py'
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   python3 -B -m unittest discover \
     -s "$ROOT/scripts/tests" -p 'test_public_ledger*.py'
   rc=$?
