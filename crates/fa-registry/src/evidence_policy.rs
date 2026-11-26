@@ -140,6 +140,14 @@ fn unique<'a>(
 }
 
 impl EvidencePolicy {
+    /// The process-wide law compiled from the immutable embedded registries.
+    /// Posting and scheduling can share it across batch members and books.
+    pub fn shared_embedded() -> Result<&'static Self, RegistryError> {
+        static LAW: std::sync::LazyLock<Result<EvidencePolicy, RegistryError>> =
+            std::sync::LazyLock::new(EvidencePolicy::embedded);
+        LAW.as_ref().map_err(Clone::clone)
+    }
+
     /// The embedded registry, validated against the embedded entry classes.
     pub fn embedded() -> Result<Self, RegistryError> {
         Self::from_text(EVIDENCE_POLICY, &EntryClasses::embedded()?)

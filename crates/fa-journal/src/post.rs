@@ -56,7 +56,7 @@ use fa_model::{
 };
 use fa_money::Side;
 use fa_registry::evidence_policy::EvidencePolicy;
-use fa_registry::{Admissibility, Decision, EntryClasses};
+use fa_registry::{Admissibility, Decision};
 use fa_time::resolve_period;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_types::context::PurposeContexts;
@@ -3516,9 +3516,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //     state: an activation that commits first makes this post a
     //     first-committer-wins conflict (plan §14.2 `current-policy`).
     let epoch = policy::epoch_witness(&txn, db)?;
-    let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
-        Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        Admissibility::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     if let Some(rule) = matrix.kind_rule(born)
         && !rule.admits(class_name)
     {
@@ -3908,11 +3907,11 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     //     the actual proposal, under the same transaction, before anything is
     //     staged. Nothing posts without a why.
     let evidence_policy =
-        EvidencePolicy::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        EvidencePolicy::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let evidence = if balancing {
         None
     } else {
-        match resolve_evidence(&txn, db, &evidence_policy, proposal)? {
+        match resolve_evidence(&txn, db, evidence_policy, proposal)? {
             Ok(evidence) => Some(evidence),
             Err(refusal) => {
                 txn.abort();
@@ -5048,7 +5047,7 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     }
     let evidence = match evidence {
         Some(evidence) => evidence,
-        None => match resolve_evidence(&txn, db, &evidence_policy, &sealed)? {
+        None => match resolve_evidence(&txn, db, evidence_policy, &sealed)? {
             Ok(evidence) => evidence,
             Err(refusal) => {
                 txn.abort();

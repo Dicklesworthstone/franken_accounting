@@ -51,7 +51,7 @@ use fa_policy::{Intent, Party};
 /// The capability vocabulary a sweep request is built from (the sweep's
 /// capability is a `Profile::System` one holding `Op::Post`).
 pub use fa_policy::{Op, Profile};
-use fa_registry::{Admissibility, Decision, EntryClasses};
+use fa_registry::{Admissibility, Decision};
 use fa_time::DateDay;
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_crypto::Hasher;
@@ -1362,9 +1362,8 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
         .vertex(db, tick.entry)?
         .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
     let tick_digest = decode_entry(&tick_row)?.entry_digest;
-    let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
-        Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        Admissibility::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let preparer = Party::for_capability(req.principal_ref, &req.capability);
 
     let mut accounts: BTreeMap<VId, AccountRow> = BTreeMap::new();
@@ -1403,7 +1402,7 @@ pub async fn sweep_batch_with_crash_and_witness<V: asupersync::fs::Vfs + Clone>(
         let state_scalar = txn.vertex_property(db, pvid, property::STATE)?;
         let state = state_from_scalar(state_scalar.as_ref())
             .ok_or_else(|| KernelError::Corrupt(format!("period `{period}` state mirror")))?;
-        if let Err(r) = expires_admissible(&matrix, state, &period, &req.capability) {
+        if let Err(r) = expires_admissible(matrix, state, &period, &req.capability) {
             txn.abort();
             return Ok(Err(r));
         }
@@ -2909,7 +2908,7 @@ mod tests {
     #[test]
     fn the_sweep_obeys_the_registered_expires_rows() {
         use fa_time::PeriodState;
-        let classes = EntryClasses::embedded().expect("classes");
+        let classes = fa_registry::EntryClasses::embedded().expect("classes");
         let cap = Capability::new(VId(1), Profile::System, &[Op::Post], VId(1)).expect("cap");
         let embedded = Admissibility::embedded(&classes).expect("matrix");
         for s in [

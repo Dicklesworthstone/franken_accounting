@@ -61,7 +61,7 @@ use fa_model::{
 use fa_money::Side;
 use fa_policy::Party;
 use fa_registry::evidence_policy::EvidencePolicy;
-use fa_registry::{Admissibility, Decision, EntryClasses};
+use fa_registry::{Admissibility, Decision};
 use fa_time::{DateDay, PeriodState, resolve_period};
 use fgdb::{Database, VertexRow, WriteBatch, WriteMismatchPolicy, WriteTxn, WriteTxnError};
 use fgdb_crypto::Hasher;
@@ -492,9 +492,8 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
         return Ok((Vec::new(), witness));
     };
     let today = policy.civil_date(tick.observed_utc_ns);
-    let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
-        Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        Admissibility::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
 
     let candidates = match indexed_due_schedules(db, book, today) {
         Ok(Some((scheds, idx_witness))) => {
@@ -540,7 +539,7 @@ pub fn due_reversals_with_witness<V: asupersync::fs::Vfs + Clone>(
                 let state = state_from_scalar(prop(&prow, property::STATE)).ok_or_else(|| {
                     KernelError::Corrupt(format!("period `{}` state mirror", schedule.period))
                 })?;
-                match row_status(&matrix, state, &schedule.period, None) {
+                match row_status(matrix, state, &schedule.period, None) {
                     ReversalStatus::Due if live_applications(db, &schedule)? => {
                         ReversalStatus::Blocked {
                             state,
@@ -1122,9 +1121,9 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
     if let Err(refusal) = inherited_valuation(txn, db, book, &target.proposal, &proposal)? {
         return execution_refusal(mints, schedule, trigger, refusal);
     }
-    let evidence_policy =
-        EvidencePolicy::embedded().map_err(|error| KernelError::Corrupt(error.to_string()))?;
-    let evidence = match crate::evidence::resolve_evidence(txn, db, &evidence_policy, &proposal)? {
+    let evidence_policy = EvidencePolicy::shared_embedded()
+        .map_err(|error| KernelError::Corrupt(error.to_string()))?;
+    let evidence = match crate::evidence::resolve_evidence(txn, db, evidence_policy, &proposal)? {
         Ok(evidence) => evidence,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
     };
@@ -1337,9 +1336,8 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
     due.sort_by_key(|s| (s.recorded_at, s.vid));
     due.truncate(MAX_BATCH_ENTRIES);
     let epoch = policy::epoch_witness(txn, db)?;
-    let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
-        Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        Admissibility::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     for s in &due {
         let row = txn
             .vertex(db, s.vid)?
@@ -1351,7 +1349,7 @@ pub(crate) fn mint_on_open<V: asupersync::fs::Vfs + Clone>(
             ctx,
             book,
             capability,
-            &matrix,
+            matrix,
             &mut mints,
             &s,
             PeriodState::Open,
@@ -1575,9 +1573,8 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
         .vertex(db, tick.entry)?
         .ok_or_else(|| KernelError::Corrupt("the latest tick's entry is missing".into()))?;
     let tick_digest = decode_entry(&tick_row)?.entry_digest;
-    let classes = EntryClasses::embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let matrix =
-        Admissibility::embedded(&classes).map_err(|e| KernelError::Corrupt(e.to_string()))?;
+        Admissibility::shared_embedded().map_err(|e| KernelError::Corrupt(e.to_string()))?;
     let executor = Party::for_capability(req.principal_ref, &req.capability);
     let mut mints = Mints::new();
     let mut processed = 0usize;
@@ -1601,7 +1598,7 @@ pub async fn sweep_reversals_batch<V: asupersync::fs::Vfs + Clone>(
             ctx,
             book,
             &req.capability,
-            &matrix,
+            matrix,
             &mut mints,
             &s,
             state,

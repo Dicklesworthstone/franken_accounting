@@ -632,6 +632,14 @@ pub struct Admissibility {
 }
 
 impl Admissibility {
+    /// The process-wide law compiled from the immutable embedded registries.
+    /// Posting and scheduling can share it across batch members and books.
+    pub fn shared_embedded() -> Result<&'static Self, RegistryError> {
+        static LAW: std::sync::LazyLock<Result<Admissibility, RegistryError>> =
+            std::sync::LazyLock::new(|| Admissibility::embedded(&EntryClasses::embedded()?));
+        LAW.as_ref().map_err(Clone::clone)
+    }
+
     pub fn embedded(classes: &EntryClasses) -> Result<Self, RegistryError> {
         Self::parse(classes, ADMISSIBILITY)
     }
