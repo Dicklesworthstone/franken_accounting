@@ -2709,21 +2709,49 @@ fn kernel_and_oracle_agree_on_a_generated_history() {
         .assert_minimums("seed 0x9e3779b97f4a7c15");
 }
 
-/// fa-2ihd: the same campaign, every assertion included, over more seeds.
-/// Tier 1 runs 8 seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2), from
-/// `FA_DIFFERENTIAL_SEED_FROM=<k>` for a shard ([`seed_indices`]). Each seed
-/// builds its own book and history, and a divergence names its seed.
+/// Configurable diagnostics and tier-2 shards of the generated-history
+/// differential. The separate `multi_seed_campaign_tier1` test always runs
+/// its canonical 50-seed cohort, independently of these environment settings.
 #[test]
 fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
-    let seeds = seed_indices();
+    run_generated_history_seeds(seed_indices());
+}
+
+const G1_TIER1_SEED_COUNT: u64 = 50;
+
+/// fa-2ihd / G1-05: the release floor is 50 complete generated histories
+/// and 50 serial-equivalence race histories. Environment variables only
+/// configure the separate diagnostics; they cannot shorten or shift this
+/// acceptance cohort. Each history retains every per-step oracle comparison,
+/// coverage obligation, register check and committed-journal replay.
+#[test]
+fn multi_seed_campaign_tier1() {
+    let seeds = 1..G1_TIER1_SEED_COUNT + 1;
+    let histories = run_generated_history_seeds(seeds.clone());
+    let races = run_serial_equivalence_seeds(seeds);
+    let race_count: u32 = races.races.values().map(|c| c.ran).sum();
+    assert_eq!(
+        race_count, 2_000,
+        "every tier-1 seed must execute all 40 serial-equivalence races"
+    );
+    eprintln!(
+        "G1-05 tier1: seed_from=1 seed_count={G1_TIER1_SEED_COUNT} histories={G1_TIER1_SEED_COUNT} steps_per_history=640 race_histories={G1_TIER1_SEED_COUNT} races={race_count} coverage_cells={} serial_replayed={}",
+        histories.cells.len(),
+        histories.serial_replayed + races.replayed
+    );
+}
+
+fn run_generated_history_seeds(seeds: std::ops::Range<u64>) -> Coverage {
+    assert!(seeds.start < seeds.end, "empty generated-history campaign");
     let mut total = Coverage::default();
     for i in seeds.clone() {
         let seed = splitmix(i);
         match std::panic::catch_unwind(|| generated_history_campaign(seed, true)) {
             Ok(coverage) => total.add(&coverage),
-            Err(_) => {
+            Err(failure) => {
                 panic!(
-                    "the generated history diverged at seed {seed:#018x} (index {i} of {seeds:?})"
+                    "the generated history diverged at seed {seed:#018x} (index {i} of {seeds:?}): {}",
+                    panic_text(failure)
                 )
             }
         }
@@ -2737,6 +2765,7 @@ fn kernel_and_oracle_agree_on_generated_histories_across_seeds() {
     );
     total.assert_minimums(&format!("seed indices {seeds:?}"));
     total.assert_coverage(&format!("seed indices {seeds:?}"));
+    total
 }
 
 /// Delta debugging (Zeller and Hildebrandt's ddmin, complements first) over
@@ -3001,21 +3030,85 @@ impl Coverage {
     }
 }
 
-/// A nonzero xorshift seed derived from `i` (SplitMix64).
-/// The seed indices both multi-seed campaigns run: `FA_DIFFERENTIAL_SEEDS=<n>`
-/// of them (8, tier 1, by default) from `FA_DIFFERENTIAL_SEED_FROM=<k>` (1 by
-/// default). A tier-2 run splits into disjoint shards across workers whose
-/// ranges together cover 1..=N, each shard's seeds the ones a single run
-/// would draw.
+/// The configurable diagnostic and tier-2 campaigns run
+/// `FA_DIFFERENTIAL_SEEDS=<n>` seeds (8 by default), starting at
+/// `FA_DIFFERENTIAL_SEED_FROM=<k>` (1 by default). Disjoint shards together
+/// cover 1..=N, drawing exactly the seeds an unsharded run would draw.
+/// Invalid settings fail instead of silently changing the requested cohort.
+/// The mandatory tier-1 acceptance test does not consult these settings.
 fn seed_indices() -> std::ops::Range<u64> {
-    let var = |name: &str, default: u64| {
-        std::env::var(name)
-            .ok()
-            .and_then(|n| n.parse::<u64>().ok())
-            .unwrap_or(default)
+    let var = |name: &str| match std::env::var(name) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("{name}: {error}"),
     };
-    let from = var("FA_DIFFERENTIAL_SEED_FROM", 1).max(1);
-    from..from.saturating_add(var("FA_DIFFERENTIAL_SEEDS", 8))
+    let from = var("FA_DIFFERENTIAL_SEED_FROM");
+    let count = var("FA_DIFFERENTIAL_SEEDS");
+    configured_seed_indices(from.as_deref(), count.as_deref())
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+fn configured_seed_indices(
+    from: Option<&str>,
+    count: Option<&str>,
+) -> Result<std::ops::Range<u64>, String> {
+    let positive = |name: &str, value: Option<&str>, default: u64| {
+        let parsed = match value {
+            Some(value) => value
+                .parse::<u64>()
+                .map_err(|_| format!("{name} must be a positive integer, got {value:?}"))?,
+            None => default,
+        };
+        if parsed == 0 {
+            return Err(format!("{name} must be greater than zero"));
+        }
+        Ok(parsed)
+    };
+    let from = positive("FA_DIFFERENTIAL_SEED_FROM", from, 1)?;
+    let count = positive("FA_DIFFERENTIAL_SEEDS", count, 8)?;
+    let end = from
+        .checked_add(count)
+        .ok_or_else(|| format!("differential seed range overflows: start={from}, count={count}"))?;
+    Ok(from..end)
+}
+
+#[test]
+fn differential_seed_shards_preserve_exact_nonoverlapping_ranges() {
+    assert_eq!(configured_seed_indices(None, None).unwrap(), 1..9);
+    assert_eq!(
+        configured_seed_indices(Some("1"), Some("50")).unwrap(),
+        1..51
+    );
+    assert_eq!(
+        configured_seed_indices(Some("51"), Some("50")).unwrap(),
+        51..101
+    );
+    assert_eq!(
+        configured_seed_indices(Some("126"), Some("125")).unwrap(),
+        126..251
+    );
+}
+
+#[test]
+fn differential_seed_configuration_rejects_empty_invalid_and_overflowing_shards() {
+    for (from, count) in [
+        (Some("0"), None),
+        (None, Some("0")),
+        (Some(""), None),
+        (None, Some("")),
+        (Some("-1"), None),
+        (None, Some("-1")),
+        (Some("seed"), None),
+        (None, Some("50.0")),
+        (Some("18446744073709551615"), Some("1")),
+        (Some("2"), Some("18446744073709551615")),
+        (None, Some("18446744073709551616")),
+    ] {
+        assert!(
+            configured_seed_indices(from, count).is_err(),
+            "invalid shard was accepted: start={from:?}, count={count:?}"
+        );
+    }
 }
 
 fn splitmix(i: u64) -> u64 {
@@ -5316,24 +5409,29 @@ fn race_campaign(seed: u64) -> RaceCoverage {
     coverage
 }
 
-/// fa-2ihd acceptance (serial-equivalence oracle): race campaigns over many
-/// seeds, each race two writers prepared at one committed prefix and
-/// published in a seeded order, checked in commit order against the
-/// reference, then the committed journal replayed serially. Tier 1 runs 8
-/// seeds; `FA_DIFFERENTIAL_SEEDS=<n>` runs n (tier 2), sharded by
-/// `FA_DIFFERENTIAL_SEED_FROM=<k>` ([`seed_indices`]). A divergence names its
-/// seed.
+/// fa-2ihd serial-equivalence oracle: two writers prepare at one committed
+/// prefix and publish in a seeded order. The independent reference judges
+/// commit order, then replays the committed journal. This configurable
+/// diagnostic retains tier-2 sharding through `seed_indices`; the fixed
+/// 50-seed release floor runs the same oracle in `multi_seed_campaign_tier1`.
 #[test]
 fn serial_equivalence_oracle() {
-    let seeds = seed_indices();
+    run_serial_equivalence_seeds(seed_indices());
+}
+
+fn run_serial_equivalence_seeds(seeds: std::ops::Range<u64>) -> RaceCoverage {
+    assert!(seeds.start < seeds.end, "empty serial-equivalence campaign");
     let mut total = RaceCoverage::default();
     for i in seeds.clone() {
         // Distinct from the generated-history campaign's seeds.
         let seed = splitmix(i.wrapping_add(0x5E71_A1E0));
         match std::panic::catch_unwind(|| race_campaign(seed)) {
             Ok(coverage) => total.add(&coverage),
-            Err(_) => {
-                panic!("the race campaign diverged at seed {seed:#018x} (index {i} of {seeds:?})")
+            Err(failure) => {
+                panic!(
+                    "the race campaign diverged at seed {seed:#018x} (index {i} of {seeds:?}): {}",
+                    panic_text(failure)
+                )
             }
         }
     }
@@ -5342,6 +5440,7 @@ fn serial_equivalence_oracle() {
         total.races
     );
     total.assert_minimums(&format!("seed indices {seeds:?}"));
+    total
 }
 
 /// The message a caught panic carried.

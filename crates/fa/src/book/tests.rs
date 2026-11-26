@@ -2487,6 +2487,7 @@ fn a_batch_crashed_at_every_commit_point_is_all_or_none_after_reopen() {
 /// The runs of the atomic batch's crash-point matrix above, one per
 /// `commit_crash_cases` case; FA-ART-LAB-02 reuses them.
 fn batch_crash_matrix() -> Vec<CrashObservation> {
+    use fa_journal::refusal::{code, exit};
     use fgdb::CrashPoint;
     let mut runs = Vec::new();
     for (case, (point, expected)) in (0u8..).zip(commit_crash_cases()) {
@@ -2510,6 +2511,42 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
             let batch = fa_intents::PostBatch::new(b"crash-batch".to_vec(), members).unwrap();
             let before = journal_entries(&book, &cx);
             let context = book.context().clone();
+            // Retain the exact ordered entries before publication. A crash
+            // campaign must check the outcome's identities and digests, not
+            // only whether three entries were counted after recovery.
+            let basis = book.head(&cx).unwrap();
+            let plan = fa_journal::plan_batch_with_history(
+                &mut book.db,
+                &cx,
+                &context,
+                request.capability.clone(),
+                batch.clone(),
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(book.head(&cx).unwrap(), basis, "{point:?}: plan wrote");
+            let expected_entries: Vec<_> = plan
+                .prepared_entries()
+                .iter()
+                .map(|entry| {
+                    entry.entry_ref(fa_model::entry_vid(
+                        entry.proposal.book_id,
+                        &entry.proposal.principal_ref.0.to_le_bytes(),
+                        &entry.proposal.idempotency_key,
+                    ))
+                })
+                .collect();
+            let expected_outcome = fa_journal::outcome_vid(&context, &batch);
+            let expected_members: Vec<_> = expected_entries.iter().map(|entry| entry.vid).collect();
+            let expected_body = fa_journal::OutcomeBody {
+                request_digest: fa_journal::request_digest(
+                    batch.idempotency_key(),
+                    &expected_members,
+                ),
+                entries: expected_entries,
+            };
             let outcome = fa_journal::post_batch_with_crash(
                 &mut book.db,
                 &cx,
@@ -2523,7 +2560,12 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
             // parent directory that needs no sync, say) leaves an ordinary
             // commit; one it passes fails the publication. Either way, a
             // completed publication must survive the crash below.
-            let published = matches!(outcome, Ok(Ok(_)));
+            let acknowledged = outcome
+                .as_ref()
+                .ok()
+                .and_then(|result| result.as_ref().ok())
+                .cloned();
+            let published = acknowledged.is_some();
             if point.is_none() || matches!(point, Some(CrashPoint::BeforeCapsule)) {
                 assert_eq!(published, point.is_none(), "{point:?}: {outcome:?}");
             }
@@ -2556,6 +2598,29 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
             } else if let Some(expected) = expected {
                 assert_eq!(kept, expected, "{point:?}");
             }
+            let retained =
+                fa_journal::read_outcome(&book.db, &cx.query(), expected_outcome).unwrap();
+            assert_eq!(
+                retained.is_some(),
+                kept,
+                "{point:?}: entries and IntentOutcome must survive together"
+            );
+            if let Some((body, recorded_at)) = &retained {
+                assert_eq!(body, &expected_body, "{point:?}: retained outcome changed");
+                for entry_ref in &body.entries {
+                    let (vid, entry, entry_seq) = after
+                        .iter()
+                        .find(|(vid, _, _)| *vid == entry_ref.vid)
+                        .expect("every retained outcome member is in the journal");
+                    assert_eq!(&entry.entry_ref(*vid), entry_ref, "{point:?}");
+                    assert_eq!(entry_seq, recorded_at, "{point:?}: split publication");
+                }
+                if let Some(acknowledged) = &acknowledged {
+                    assert_eq!(acknowledged.outcome, expected_outcome, "{point:?}");
+                    assert_eq!(acknowledged.entries, body.entries, "{point:?}");
+                    assert_eq!(acknowledged.recorded_at, *recorded_at, "{point:?}");
+                }
+            }
             let fold = book
                 .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
                 .await
@@ -2568,13 +2633,95 @@ fn batch_crash_matrix() -> Vec<CrashObservation> {
                 "{point:?}"
             );
             assert_journal_verifies(&book, &cx, point);
+            let before_retry = book.head(&cx).unwrap();
             let retried = book
-                .post_batch(&cx, batch, &request.capability)
+                .post_batch(&cx, batch.clone(), &request.capability)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(retried.already_recorded, kept, "{point:?}");
+            assert_eq!(retried.outcome, expected_outcome, "{point:?}");
+            assert_eq!(retried.entries, expected_body.entries, "{point:?}");
+            if let Some((_, recorded_at)) = &retained {
+                assert_eq!(retried.recorded_at, *recorded_at, "{point:?}");
+                assert_eq!(
+                    book.head(&cx).unwrap(),
+                    before_retry,
+                    "{point:?}: retry wrote"
+                );
+            }
+            assert_eq!(
+                fa_journal::read_outcome(&book.db, &cx.query(), expected_outcome).unwrap(),
+                Some((expected_body.clone(), retried.recorded_at)),
+                "{point:?}: retry must retain the same outcome"
+            );
             assert_eq!(journal_entries(&book, &cx).len(), before.len() + 3);
+            let settled_head = book.head(&cx).unwrap();
+            let settled_vertices = book.db.vertices().unwrap();
+
+            // A new client's canonical request must return the original
+            // EntryRefs and CommitSeq without another publication.
+            let decoded = fa_intents::PostBatch::decode(&batch.canonical_bytes().unwrap()).unwrap();
+            let again = book
+                .post_batch(&cx, decoded, &request.capability)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(again.already_recorded, "{point:?}");
+            assert_eq!(again.outcome, retried.outcome, "{point:?}");
+            assert_eq!(again.entries, retried.entries, "{point:?}");
+            assert_eq!(again.recorded_at, retried.recorded_at, "{point:?}");
+            assert_eq!(book.head(&cx).unwrap(), settled_head, "{point:?}");
+            assert_eq!(book.db.vertices().unwrap(), settled_vertices, "{point:?}");
+
+            // Recovery must also preserve the key's exclusion law. A
+            // reordered batch and a changed member are conflicts, and a
+            // single-entry intent cannot take the batch's scoped key.
+            let reordered = fa_intents::PostBatch::new(
+                batch.idempotency_key().to_vec(),
+                batch.members().iter().rev().cloned().collect(),
+            )
+            .unwrap();
+            let mut changed_members = batch.members().to_vec();
+            let mut changed = changed_members[1].proposal().clone();
+            changed.description = book.seal_text(&cx, "changed batch member").unwrap();
+            changed_members[1] = fa_intents::PostIntent::new(changed, Vec::new()).unwrap();
+            let changed =
+                fa_intents::PostBatch::new(batch.idempotency_key().to_vec(), changed_members)
+                    .unwrap();
+            for (name, conflicting) in [("reordered", reordered), ("changed", changed)] {
+                let refusal = book
+                    .post_batch(&cx, conflicting, &request.capability)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(
+                    (refusal.code, refusal.exit),
+                    (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT),
+                    "{point:?} {name}: {refusal}"
+                );
+                assert_eq!(book.head(&cx).unwrap(), settled_head, "{point:?} {name}");
+                assert_eq!(
+                    book.db.vertices().unwrap(),
+                    settled_vertices,
+                    "{point:?} {name}: conflict wrote"
+                );
+            }
+            let mut competing = request.clone();
+            competing.proposal.idempotency_key = batch.idempotency_key().to_vec();
+            let refusal = book.post(&cx, competing).await.unwrap().unwrap_err();
+            assert_eq!(
+                (refusal.code, refusal.exit),
+                (code::IDEMPOTENCY_CONFLICT, exit::CONFLICT),
+                "{point:?}: {refusal}"
+            );
+            assert_eq!(book.head(&cx).unwrap(), settled_head, "{point:?}");
+            assert_eq!(book.db.vertices().unwrap(), settled_vertices, "{point:?}");
+            assert_eq!(
+                fa_journal::read_outcome(&book.db, &cx.query(), expected_outcome).unwrap(),
+                Some((expected_body, retried.recorded_at)),
+                "{point:?}: a losing request overwrote the durable winner"
+            );
             let fold = book
                 .advance_registers(&cx, VId(1), &maintenance_capability(VId(1)), &march)
                 .await
