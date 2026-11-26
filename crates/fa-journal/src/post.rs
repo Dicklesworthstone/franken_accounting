@@ -2334,7 +2334,8 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
     // prefix. A native batch may share that prefix only when its complete
     // member set proves that no member can alter another member's lot source.
     // Native drafts also revalidate the complete retained source population
-    // at their current preparation prefix. Cases and scenarios remain refused.
+    // at their current preparation prefix. Scenario relief belongs only to
+    // its private scratch factory and carries that factory's bound context.
     if crate::disposal::has_basis(proposal) {
         // Only a private, already admitted draft path can substitute source
         // derivation for general Read. Its retained planner must explicitly
@@ -2349,7 +2350,10 @@ fn prepare_post_in<V: asupersync::fs::Vfs + Clone>(
             || replacement_basis.is_some()
             || !(matches!(
                 admission,
-                Admission::Commit | Admission::VerifiedPlan(_) | Admission::Plan
+                Admission::Commit
+                    | Admission::VerifiedPlan(_)
+                    | Admission::Plan
+                    | Admission::ScratchScenario(_)
             ) || (matches!(
                 admission,
                 Admission::VerifiedBatch(_)

@@ -19,7 +19,7 @@ use crate::cli::{
 };
 use crate::json::{Json, obj, s};
 
-const DISPOSE_USAGE: &str = "fa dispose --account 1400 --quantity \"3 SHARE\" --quantity-offset 1490 --cost-offset 5100 --date YYYY-MM-DD --key disposal-1 --evidence D:<oid> [--dimension KIND:VALUE]... [--dry-run | --review-only | --review-out <new-file>]";
+const DISPOSE_USAGE: &str = "fa dispose --account 1400 --quantity \"3 SHARE\" --quantity-offset 1490 --cost-offset 5100 --date YYYY-MM-DD --key disposal-1 --evidence D:<oid> [--dimension KIND:VALUE]... [--scenario <name>] [--dry-run | --review-only | --review-out <new-file>]";
 const POLICY_USAGE: &str = "fa chart lot-policy set --account 1400 --law FIFO|LIFO|SpecificId|WeightedAverage --regime US-GAAP|US-TAX|IFRS --date YYYY-MM-DD --key lot-policy-1 [--review-only | --review-out <new-file>]";
 
 const BATCH_REVIEW_USAGE: &str = "prepare each disposal with --review-only at the same book prefix, then use batch members {\"review\":\"<bytes hex>\",\"review_digest\":\"<review_digest>\"}; only inline unchanged disposal reviews are accepted";
@@ -579,16 +579,32 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             "--digest",
             "--review-out",
             "--plan-out",
+            "--scenario",
         ],
         &["--dry-run", "--review-only"],
     )?;
     check_post_planning_options(args)?;
     let review_only = review_mode(args)?;
+    let scenario = args.flag("--scenario");
+    if scenario.is_some_and(str::is_empty)
+        || (scenario.is_some() && (args.switch("--dry-run") || args.flag("--plan-out").is_some()))
+    {
+        return Err(usage(
+            "--scenario needs a name and uses --review-only for a read-only derivation",
+            "fa dispose ... --scenario <name> [--review-only | --review-out <new-file>]",
+        ));
+    }
     let capability = ctx.capability(args, &["read", "post"])?;
     let principal = ctx.principal(args);
     let bound = ctx.authority().is_some();
     let mut draft = None;
     let mut book = ctx.books.open_admitted(args, |book| {
+        if scenario.is_some() && capability.branch().is_some() {
+            return Err(usage(
+                "a draft-confined capability cannot derive scenario relief",
+                DISPOSE_USAGE,
+            ));
+        }
         if review_only && capability.branch().is_some() {
             draft = Some(book.draft_source_name(&capability)??);
             Ok(())
@@ -627,6 +643,7 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         let quantity = fa_money::Amount::parse(required(args, "--quantity")?, units)
             .map_err(|error| usage(format!("--quantity: {error}"), DISPOSE_USAGE))?;
         let mut specific_ids = Vec::new();
+        let mut scenario_targets = Vec::new();
         for raw in args.flag_all("--target") {
             let (id, ordinal) = raw.rsplit_once(':').ok_or_else(|| {
                 usage(
@@ -638,6 +655,10 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             let ordinal = ordinal
                 .parse::<u16>()
                 .map_err(|_| usage("invalid quantity-leg ordinal", DISPOSE_USAGE))?;
+            if scenario.is_some() {
+                scenario_targets.push((vid, ordinal));
+                continue;
+            }
             let target = match draft.as_deref() {
                 Some(name) => book
                     .draft_source_entry_ref(&capability, name, vid)??
@@ -672,11 +693,18 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             specific_ids,
         };
         let template = template(&mut book, args, principal)?;
-        let prepared = match draft.as_deref() {
-            Some(name) => {
+        let prepared = match (scenario, draft.as_deref()) {
+            (Some(name), _) => book.prepare_lot_disposal_targets_in_scenario(
+                &capability,
+                name,
+                &request,
+                &scenario_targets,
+                template,
+            )??,
+            (None, Some(name)) => {
                 book.prepare_lot_disposal_in_draft(&capability, name, &request, template)??
             }
-            None => book.prepare_lot_disposal(&capability, &request, template)??,
+            (None, None) => book.prepare_lot_disposal(&capability, &request, template)??,
         };
         PostIntent::new(prepared.into_proposal(), Vec::new())
             .map_err(|error| usage(format!("disposal proposal: {error}"), DISPOSE_USAGE))?
@@ -744,6 +772,38 @@ pub(crate) fn dispose_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     if args.switch("--dry-run") {
         let plan = book.plan(intent, &capability)??;
         return emit_post_plan(&ctx.out, &book, &ctx.files, args, &plan, &capability);
+    }
+    if let Some(name) = scenario {
+        let proposal = intent.proposal();
+        let entry = fa_model::entry_vid(
+            book.context().book_id,
+            &proposal.principal_ref.0.to_le_bytes(),
+            &proposal.idempotency_key,
+        );
+        let run = book.run_in_scenario(capability, name, intent)??;
+        let recorded = &run.recorded;
+        ctx.out.at_book(&book)?;
+        ctx.out.event(
+            "scenario_run",
+            vec![
+                ("scenario", s(format!("{:032x}", recorded.scenario.0))),
+                ("name", s(name)),
+                (
+                    "control_entry",
+                    s(format!("{:032x}", recorded.control_entry.0)),
+                ),
+                ("recorded_at", Json::Int(i128::from(recorded.recorded_at.0))),
+                ("already_recorded", Json::Bool(recorded.already_recorded)),
+                ("ordinal", Json::Int(run.ordinal as i128)),
+                ("entry", s(format!("{:032x}", entry.0))),
+                ("rehearsed", Json::Bool(run.rehearsed.is_some())),
+            ],
+            &format!(
+                "lot disposal ran in scenario {name} as intent #{}; trunk lots unchanged",
+                run.ordinal
+            ),
+        );
+        return Ok(());
     }
     let posted = book.post(fa_journal::PostRequest {
         proposal: intent.proposal().clone(),

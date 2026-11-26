@@ -4091,6 +4091,7 @@ mod tests {
     #[test]
     fn lot_disposal_basis_requires_its_minor_and_posting_class() {
         let basis = crate::LotDisposalBasis {
+            scenario: None,
             account: VId(10),
             dimensions: Vec::new(),
             quantity: fa_money::Amount::new(fa_money::UnitId(2), 3),

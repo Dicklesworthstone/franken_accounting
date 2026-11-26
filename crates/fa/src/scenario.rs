@@ -148,6 +148,197 @@ fn in_scenario(name: &str, fork_at: CommitSeq, ordinal: usize, refusal: Refusal)
 }
 
 impl Book {
+    /// Derive a disposal solely from this scenario's fork and prior intents.
+    /// Submit its proposal with [`Book::run_in_scenario`]; trunk refuses it.
+    pub fn prepare_lot_disposal_in_scenario(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::LotDisposalPostRequest,
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        self.prepare_scenario_disposal(capability, name, request, None, template)
+    }
+
+    /// Resolve SpecificId selectors in the isolated history, including lots
+    /// acquired only by earlier scenario intents. Never reads trunk lots.
+    pub fn prepare_lot_disposal_targets_in_scenario(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::LotDisposalPostRequest,
+        targets: &[(VId, u16)],
+        template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        self.prepare_scenario_disposal(capability, name, request, Some(targets), template)
+    }
+
+    fn prepare_scenario_disposal(
+        &mut self,
+        capability: &fa_journal::Capability,
+        name: &str,
+        request: &crate::LotDisposalPostRequest,
+        targets: Option<&[(VId, u16)]>,
+        mut template: fa_model::EntryPayload,
+    ) -> Outcome<crate::PreparedLotDisposal> {
+        use fa_model::{EntryOrigin, EntryRef, Id128};
+        use fa_policy::{Op, Reach};
+
+        let book_id = self.context().book_id;
+        // Current authority and the explicit effect precede scenario lookup
+        // and full fork-history materialization.
+        if let Err(denial) = fa_policy::admit_read(capability, template.principal_ref, book_id)
+            .and_then(|()| fa_policy::reach(capability, &Reach::whole_book(true), None))
+            .and_then(|()| {
+                fa_policy::admit_base_for_plan(
+                    capability,
+                    &fa_policy::Intent {
+                        principal: template.principal_ref,
+                        trunk: true,
+                        op: Op::Post,
+                        book: book_id,
+                        legs: &[(request.quantity.unit, request.quantity.mantissa)],
+                    },
+                )
+            })
+        {
+            return Ok(Err(fa_journal::policy::refusal(&denial)));
+        }
+        if let Err(refusal) = self.admit_current(capability)? {
+            return Ok(Err(refusal));
+        }
+        let invalid = |message: &str| {
+            Refusal::new(
+                code::SETTLE_SHAPE,
+                exit::REFUSAL,
+                message,
+                "plan §6.5 / §15.2 (scenario-bound lot relief)",
+                "prepare a disposal in your open scenario and run it with the same --scenario name",
+            )
+        };
+        if template.book_id != book_id
+            || template.branch_id != Id128::TRUNK
+            || template.idempotency_key.is_empty()
+            || template.idempotency_key.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
+            || request.specific_ids.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS
+            || targets.is_some_and(|targets| {
+                targets.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS
+            })
+            || !matches!(template.origin, EntryOrigin::Intent { .. })
+        {
+            return Ok(Err(invalid(
+                "invalid scenario disposal template or idempotency key",
+            )));
+        }
+        let Some(view) = self.scenario(name)? else {
+            return Ok(Err(unknown(name)));
+        };
+        if view.body.owner != capability.holder() {
+            return Ok(Err(invalid(
+                "only the scenario's owner may derive its lot relief",
+            )));
+        }
+        if view
+            .body
+            .from
+            .is_some_and(|from| template.effective_date < from)
+        {
+            return Ok(Err(invalid(
+                "the disposal precedes the scenario's counterfactual start",
+            )));
+        }
+        // Each scenario owns an idempotency namespace. Reusing a user key on
+        // trunk or in a second scenario cannot select this hypothetical entry.
+        template.idempotency_key = domain_digest(
+            b"fa:scenario-lot-key:v1",
+            &[&view.vid.0.to_le_bytes(), &template.idempotency_key],
+        )
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        .into_bytes();
+        if let EntryOrigin::Intent { intent_oid, .. } = &mut template.origin {
+            *intent_oid = Oid(domain_digest(
+                b"fa:intent:v1",
+                &[
+                    &book_id.0,
+                    &template.principal_ref.0.to_le_bytes(),
+                    &template.idempotency_key,
+                ],
+            ));
+        }
+        let prior = view.intents.iter().position(|planned| {
+            planned.intent.proposal().idempotency_key == template.idempotency_key
+        });
+        if prior.is_none()
+            && (view.state != fa_journal::scenario::ScenarioState::Open
+                || view.intents.len() >= fa_model::limits::MAX_BATCH_ENTRIES)
+        {
+            return Ok(Err(invalid(
+                "the scenario is closed or its intent bound is exhausted",
+            )));
+        }
+        let ordinal = prior.unwrap_or(view.intents.len()) + 1;
+        let scope = fa_model::lot_disposal::LotDisposalScenario {
+            scenario: view.vid,
+            body_digest: view.body.digest()?,
+            fork_at: view.body.fork_at,
+            ordinal: u32::try_from(ordinal).map_err(|_| {
+                BookError::Kernel(fa_journal::KernelError::Corrupt(
+                    "scenario ordinal overflow".into(),
+                ))
+            })?,
+        };
+        // A retry derives at its original position. Subsequent scenario
+        // activity never reprices the previously recorded intent.
+        let through = prior.unwrap_or(view.intents.len());
+        let mut scenario = match self.materialize(view, through)? {
+            Ok(scenario) => scenario,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut request = request.clone();
+        if let Some(targets) = targets {
+            request.specific_ids.clear();
+            for &(vid, ordinal) in targets {
+                let Some((entry, _)) = scenario.book.read_entry(vid)? else {
+                    return Ok(Err(invalid(
+                        "a selected lot is absent from the scenario's isolated history",
+                    )));
+                };
+                request.specific_ids.push((
+                    EntryRef {
+                        vid,
+                        entry_digest: entry.entry_digest,
+                    },
+                    ordinal,
+                ));
+            }
+        }
+        // Current planner authority was admitted on source. As in scenario
+        // replay, the isolated store uses an embedded rehearsal capability;
+        // a delegation issued after the fork need not exist in old history.
+        let scratch_capability =
+            fa_journal::Capability::embedded(capability.holder(), &["read", "post"])
+                .map_err(|error| fa_journal::KernelError::Corrupt(error.to_string()))?;
+        let prepared =
+            match scenario
+                .book
+                .prepare_lot_disposal(&scratch_capability, &request, template)?
+            {
+                Ok(prepared) => prepared,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+        let prepared = prepared.bind_scenario(scope).map_err(|error| {
+            fa_journal::KernelError::Corrupt(format!("scenario disposal encoding: {error}"))
+        })?;
+        let intent = fa_journal::PostIntent::new(prepared.proposal().clone(), Vec::new())
+            .map_err(|error| fa_journal::KernelError::Corrupt(error.to_string()))?;
+        if let Err(refusal) = self.admit_scenario_intent(name, &intent, capability)? {
+            return Ok(Err(refusal));
+        }
+        Ok(Ok(prepared))
+    }
+
     /// Materialize the scenario `name` (plan §15.2): replay the trunk prefix
     /// at its fork sequence into a scratch book, then post its intents in
     /// order under their planners, each through every posting law of the
@@ -203,7 +394,10 @@ impl Book {
         }
         requests.extend(candidate);
         let coordinates = match replay {
-            ScenarioReplay::Protected => Coordinates::Protected,
+            ScenarioReplay::Protected => Coordinates::ProtectedScenario {
+                scenario: view.vid,
+                body_digest: view.body.digest()?,
+            },
             ScenarioReplay::LegacyCertificateV1 => Coordinates::LegacyV1,
         };
         let fork_at = view.body.fork_at;
@@ -402,11 +596,13 @@ fn scratch_request(
 ) -> Outcome<PostRequest> {
     let principal = intent.proposal().principal_ref;
     let observes_roles = intent.proposal().class == fa_model::EntryClass::CLOSING
-        || intent
-            .proposal()
-            .extensions
-            .iter()
-            .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION);
+        || intent.proposal().extensions.iter().any(|(tag, _)| {
+            matches!(
+                *tag,
+                fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION
+                    | fa_model::entry::LOT_DISPOSAL_EXTENSION
+            )
+        });
     if observes_roles
         && let Err(denial) = fa_policy::admit_read(planner, principal, intent.proposal().book_id)
             .and_then(|()| fa_policy::reach(planner, &fa_policy::Reach::whole_book(true), None))

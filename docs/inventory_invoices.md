@@ -74,7 +74,9 @@ these source-bound entries without receiving general book-read authority. An
 independent authorized principal reviews and promotes the draft; promotion
 checks the retained source history and publishes the unchanged entries together.
 Stock movement that changes a reviewed source makes promotion refuse atomically.
-Inventory invoices do not support counterfactual `--scenario` disposal.
+Inventory invoices still refuse `--scenario`: recording their revenue and every
+disposal as one atomic scenario group is not yet supported. Standalone scenario
+lot disposal is available as described below.
 
 The invoice retains its normal `invoice:[<entity>:]<number>` key, or the explicit
 `--key`. Separate domain-separated, bounded keys identify the batch and each
@@ -89,3 +91,41 @@ after their successful publication.
 
 The executable regression scenarios are in
 `crates/fa-cli/tests/cli/lot_disposal/invoice.rs`.
+
+## Standalone counterfactual lot disposal
+
+`fa dispose --scenario <name>` derives relief from the scenario's isolated
+history: the trunk prefix at the fork, followed by its earlier counterfactual
+acquisitions and disposals. It uses the lot policy retained at that fork. Later
+trunk acquisitions, disposals and policy changes cannot alter the scenario.
+
+```sh
+fa scenario fork stocking-policy --book ./books/myco --json
+fa dispose --book ./books/myco --scenario stocking-policy \
+  --account 1400 --quantity "15.000000 SHARE" \
+  --quantity-offset 1499 --cost-offset 5100 \
+  --date 2026-03-15 --key scenario-sale \
+  --evidence D:<retained-document-oid> --review-out scenario-sale.review --json
+fa dispose --book ./books/myco --scenario stocking-policy \
+  --review scenario-sale.review --digest <review-digest> --json
+fa scenario diff stocking-policy --book ./books/myco \
+  --period FY2026-P03 --certify --json
+```
+
+`--review-only` or `--review-out` derives and reviews without appending an intent.
+Scenario relief uses these options instead of a native `--dry-run`/`--plan-out`.
+The review binds the scenario identity, immutable body, fork and intent position;
+trunk, drafts and other scenarios refuse it. `SpecificId --target` selectors are
+resolved in the isolated history and may name scenario-only acquisitions.
+
+Each scenario owns a separate disposal idempotency namespace. An unchanged retry
+reuses its original intent position even after later scenario activity; changed
+quantity, sources or evidence under that key refuses. The ordinary lot laws
+reject over-relief and absent fork-time accounts or policies. Source preparation
+requires current whole-book `read` and `post` authority and the scenario's owner;
+a draft-confined capability does not grant access to scenario sources.
+
+The existing in-book `fa scenario diff --certify` and `fa replay` reproduce these
+counterfactual inventory and COGS effects. This does not extend the standalone
+verifier's additive-scenario profile to source-bound lot admission. The process
+regressions are in `crates/fa-cli/tests/cli/lot_disposal/scenario.rs`.

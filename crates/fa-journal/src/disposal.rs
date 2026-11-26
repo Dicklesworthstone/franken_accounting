@@ -68,6 +68,17 @@ impl PreparedLotDisposal {
     pub fn into_proposal(self) -> EntryPayload {
         self.proposal
     }
+
+    /// Bind effects to their counterfactual context. This grants no posting
+    /// authority: only the private scenario factory may admit them.
+    pub fn bind_scenario(
+        mut self,
+        scenario: fa_model::lot_disposal::LotDisposalScenario,
+    ) -> Result<Self, fa_model::EntryError> {
+        self.basis.scenario = Some(scenario);
+        self.proposal.set_lot_disposal_basis(&self.basis)?;
+        Ok(self)
+    }
 }
 
 fn invalid(detail: impl core::fmt::Display) -> Refusal {
@@ -86,7 +97,7 @@ pub(crate) fn unsupported_batch() -> Refusal {
         exit::REFUSAL,
         "this compound operation cannot combine source-bound lot disposals",
         "plan §5.8–5.10 / §6.5 (the complete lot population is an aggregate dependency)",
-        "use native plans, or an atomic batch or native draft of disposals from distinct lot accounts and ordinary Original postings with no applications; keep ordinary postings outside all lot sources and disposal offsets outside other lot sources; dependent relief, cases and counterfactual scenarios remain unsupported",
+        "use native plans, an independent atomic batch or native draft, or a disposal bound to its scenario's private scratch replay; keep ordinary postings outside all lot sources and disposal offsets outside other lot sources; dependent batches and cases remain unsupported",
     )
 }
 
@@ -277,6 +288,7 @@ fn prepare_lot_disposal_with_admission<V: Vfs + Clone>(
             )));
         };
         let mut basis = LotDisposalBasis {
+            scenario: None,
             account: request.account,
             dimensions: request.dimensions.clone(),
             quantity: request.quantity,
@@ -348,6 +360,21 @@ pub(crate) fn validate_post<V: Vfs + Clone>(
         Ok(value) => value,
         Err(error) => return Ok(Err(invalid(error))),
     };
+    if let Some(basis) = &basis {
+        let admitted = match (basis.scenario.as_ref(), admission) {
+            (Some(scope), crate::post::Admission::ScratchScenario(token)) => {
+                token.admits_lot(scope)
+            }
+            (None, crate::post::Admission::ScratchScenario(_)) => false,
+            (None, _) => true,
+            (Some(_), _) => false,
+        };
+        if !admitted {
+            return Ok(Err(invalid(
+                "a scenario lot disposal can post only in its bound scratch materialization; trunk and other scenarios cannot import it",
+            )));
+        }
+    }
     // The target's exact side-swap and recorded UNSETTLES are checked by the
     // existing reversal pipeline, including extension equality below it.
     if proposal.class == EntryClass::REVERSAL {

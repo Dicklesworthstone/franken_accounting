@@ -15,6 +15,7 @@ use crate::{DecodeError, EncodeError, EntryRef, Reader, Writer};
 pub const LOT_POLICY_FORMAT: &[u8] = b"fa:lot-policy:v1";
 pub const LOT_DISPOSAL_FORMAT: &[u8] = b"fa:lot-disposal:v1";
 pub const DIMENSIONED_LOT_DISPOSAL_FORMAT: &[u8] = b"fa:lot-disposal:v2";
+pub const SCENARIO_LOT_DISPOSAL_FORMAT: &[u8] = b"fa:lot-disposal:v3";
 /// One disposal's targets fit its ordinary per-leg settlement bound.
 pub const MAX_SPECIFIC_LOTS: usize = crate::limits::MAX_SETTLES_PER_LEG;
 
@@ -81,6 +82,15 @@ impl LotPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LotDisposalScenario {
+    pub scenario: VId,
+    pub body_digest: [u8; 32],
+    pub fork_at: CommitSeq,
+    /// Position in the scenario's immutable intent log, starting at one.
+    pub ordinal: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LotDisposalBasis {
     pub account: VId,
     /// Exact acquisition partition; an empty set selects dimensionless lots.
@@ -95,12 +105,16 @@ pub struct LotDisposalBasis {
     pub law: LotLaw,
     pub regime: AccountingRegime,
     pub rounding_law: RoundingLaw,
+    /// Only the private factory for this scenario may admit these effects.
+    pub scenario: Option<LotDisposalScenario>,
 }
 
 impl LotDisposalBasis {
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut w = Writer::new();
-        let format = if self.dimensions.is_empty() {
+        let format = if self.scenario.is_some() {
+            SCENARIO_LOT_DISPOSAL_FORMAT
+        } else if self.dimensions.is_empty() {
             LOT_DISPOSAL_FORMAT
         } else {
             DIMENSIONED_LOT_DISPOSAL_FORMAT
@@ -118,10 +132,16 @@ impl LotDisposalBasis {
             .u128(self.policy.vid.0)
             .fixed(&self.policy.entry_digest);
         write_laws(&mut w, self.law, self.regime, self.rounding_law);
-        if !self.dimensions.is_empty() {
+        if !self.dimensions.is_empty() || self.scenario.is_some() {
             w.list(&self.dimensions, |w, (dimension, value)| {
                 w.u32(*dimension).u128(value.0);
             });
+        }
+        if let Some(scenario) = &self.scenario {
+            w.u128(scenario.scenario.0)
+                .fixed(&scenario.body_digest)
+                .u64(scenario.fork_at.0)
+                .u32(scenario.ordinal);
         }
         w.finish()
     }
@@ -132,7 +152,8 @@ impl LotDisposalBasis {
             return Err(r.invalid("lot_disposal.format"));
         }
         let format = r.bytes(64, "lot_disposal.format")?;
-        let dimensioned = format == DIMENSIONED_LOT_DISPOSAL_FORMAT;
+        let counterfactual = format == SCENARIO_LOT_DISPOSAL_FORMAT;
+        let dimensioned = format == DIMENSIONED_LOT_DISPOSAL_FORMAT || counterfactual;
         if format != LOT_DISPOSAL_FORMAT && !dimensioned {
             return Err(r.invalid("lot_disposal.format"));
         }
@@ -169,7 +190,7 @@ impl LotDisposalBasis {
                     ))
                 },
             )?;
-            if dimensions.is_empty()
+            if (!counterfactual && dimensions.is_empty())
                 || !crate::canon::strictly_ascending(&dimensions, |(dimension, _)| *dimension)
             {
                 return Err(r.invalid("lot_disposal.dimensions"));
@@ -177,6 +198,25 @@ impl LotDisposalBasis {
             dimensions
         } else {
             Vec::new()
+        };
+        let scenario = if counterfactual {
+            let scope = LotDisposalScenario {
+                scenario: VId(r.u128("lot_disposal.scenario")?),
+                body_digest: r.fixed("lot_disposal.scenario_body")?,
+                fork_at: CommitSeq(r.u64("lot_disposal.scenario_fork")?),
+                ordinal: r.u32("lot_disposal.scenario_ordinal")?,
+            };
+            if scope.scenario.0 == 0
+                || scope.fork_at.0 == 0
+                || scope.ordinal == 0
+                || usize::try_from(scope.ordinal)
+                    .map_or(true, |ordinal| ordinal > crate::limits::MAX_BATCH_ENTRIES)
+            {
+                return Err(r.invalid("lot_disposal.scenario_scope"));
+            }
+            Some(scope)
+        } else {
+            None
         };
         let unique: BTreeSet<_> = specific_ids
             .iter()
@@ -205,6 +245,7 @@ impl LotDisposalBasis {
             law,
             regime,
             rounding_law,
+            scenario,
         })
     }
 }
@@ -215,6 +256,7 @@ mod tests {
 
     fn basis() -> LotDisposalBasis {
         LotDisposalBasis {
+            scenario: None,
             account: VId(10),
             dimensions: Vec::new(),
             quantity: Amount::new(UnitId(2), 37),
@@ -261,6 +303,44 @@ mod tests {
         let mut wrong_version = bytes;
         *wrong_version.last_mut().unwrap() = 1;
         assert!(LotDisposalBasis::decode(&wrong_version).is_err());
+    }
+
+    #[test]
+    fn scenario_basis_binds_identity_fork_and_position_without_changing_native_bytes() {
+        let native = basis();
+        let native_bytes = native.encode().unwrap();
+        let mut scoped = native.clone();
+        scoped.scenario = Some(LotDisposalScenario {
+            scenario: VId(71),
+            body_digest: [23; 32],
+            fork_at: CommitSeq(75),
+            ordinal: 2,
+        });
+        let bytes = scoped.encode().unwrap();
+        assert_eq!(LotDisposalBasis::decode(&bytes).unwrap(), scoped);
+        assert_ne!(bytes, native_bytes);
+        for end in 0..bytes.len() {
+            assert!(LotDisposalBasis::decode(&bytes[..end]).is_err());
+        }
+        let mut invalid = scoped.clone();
+        invalid.scenario.as_mut().unwrap().ordinal = 0;
+        assert!(LotDisposalBasis::decode(&invalid.encode().unwrap()).is_err());
+        invalid = scoped.clone();
+        invalid.scenario.as_mut().unwrap().fork_at = CommitSeq(0);
+        assert!(LotDisposalBasis::decode(&invalid.encode().unwrap()).is_err());
+        for change in 0..4 {
+            let mut changed = scoped.clone();
+            let scope = changed.scenario.as_mut().unwrap();
+            match change {
+                0 => scope.scenario = VId(72),
+                1 => scope.body_digest[0] ^= 1,
+                2 => scope.fork_at = CommitSeq(74),
+                _ => scope.ordinal = 3,
+            }
+            assert_ne!(changed.encode().unwrap(), bytes);
+        }
+        scoped.scenario = None;
+        assert_eq!(scoped.encode().unwrap(), native_bytes);
     }
 
     #[test]

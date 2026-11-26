@@ -1034,6 +1034,32 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
             "fork your own scenario with `fa scenario fork <name>`",
         )));
     }
+    if crate::disposal::has_basis(p) {
+        let basis = p
+            .lot_disposal_basis()
+            .map_err(|error| KernelError::Corrupt(error.to_string()))?
+            .ok_or_else(|| KernelError::Corrupt("scenario disposal lost its basis".into()))?;
+        let ordinal = view
+            .intents
+            .iter()
+            .position(|planned| planned.intent.proposal().idempotency_key == p.idempotency_key)
+            .unwrap_or(view.intents.len())
+            + 1;
+        if basis.scenario.as_ref().is_none_or(|scope| {
+            scope.scenario != view.vid
+                || scope.fork_at != view.body.fork_at
+                || usize::try_from(scope.ordinal).ok() != Some(ordinal)
+        }) || basis.scenario.as_ref().is_some_and(|scope| {
+            view.body
+                .digest()
+                .map_or(true, |digest| scope.body_digest != digest)
+        }) {
+            return Ok(Err(usage(
+                "the disposal does not bind this scenario, fork and intent position",
+                "derive it with fa dispose --scenario <name>; ordinary trunk reviews and another scenario's reviews cannot be imported",
+            )));
+        }
+    }
     // A recorded identity is this Plan's retry, or another intent under the
     // same key, judged by the kernel's retry law (plan §4.9), never by the
     // record's bytes: a resubmitted intent reseals its text with fresh salts.
@@ -1126,7 +1152,28 @@ fn check_plan<V: asupersync::fs::Vfs + Clone>(
 /// The token only [`materialize_into`] makes: one Plan record of a
 /// scenario, posted into the scenario's own scratch replay.
 #[derive(Clone, Copy, Debug)]
-pub struct Rehearsing(());
+pub struct Rehearsing {
+    lot_scope: Option<LotScope>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LotScope {
+    scenario: VId,
+    body_digest: [u8; 32],
+    fork_at: CommitSeq,
+    ordinal: u32,
+}
+
+impl Rehearsing {
+    pub(crate) fn admits_lot(&self, scope: &fa_model::lot_disposal::LotDisposalScenario) -> bool {
+        self.lot_scope.is_some_and(|expected| {
+            expected.scenario == scope.scenario
+                && expected.body_digest == scope.body_digest
+                && expected.fork_at == scope.fork_at
+                && expected.ordinal == scope.ordinal
+        })
+    }
+}
 
 /// How [`materialize_into`] numbers the replayed prefix: the protected
 /// native coordinates every new materialization uses, or an older v1
@@ -1135,6 +1182,11 @@ pub struct Rehearsing(());
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coordinates {
     Protected,
+    /// The immutable scenario body that source-bound intents must retain.
+    ProtectedScenario {
+        scenario: VId,
+        body_digest: [u8; 32],
+    },
     LegacyV1,
 }
 
@@ -1186,8 +1238,30 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
             crate::closing::case_scope_refusal(),
         )));
     }
+    let scenario_scope = match coordinates {
+        Coordinates::ProtectedScenario {
+            scenario,
+            body_digest,
+        } => {
+            let Some(row) = source.vertex(scenario)? else {
+                return Ok(Err(MaterializeRefusal::Replay(usage(
+                    "the scenario materialization has no retained body",
+                    "select an existing scenario",
+                ))));
+            };
+            let body = scenario_row_body(&row)?;
+            if body.vid() != scenario || body.digest()? != body_digest || body.fork_at != fork_at {
+                return Ok(Err(MaterializeRefusal::Replay(usage(
+                    "the scenario materialization differs from its retained body or fork",
+                    "replay the scenario at its original fork coordinate",
+                ))));
+            }
+            Some((scenario, body_digest))
+        }
+        Coordinates::Protected | Coordinates::LegacyV1 => None,
+    };
     let replayed = match coordinates {
-        Coordinates::Protected => {
+        Coordinates::Protected | Coordinates::ProtectedScenario { .. } => {
             crate::scratch::replay_into(source, &mut target, ctx, book, Some(fork_at)).await?
         }
         Coordinates::LegacyV1 => {
@@ -1212,13 +1286,21 @@ pub async fn materialize_into<V: asupersync::fs::Vfs + Clone>(
         // factory until a case derives the committed PPA member.
         let admission = if crate::case::case_bound(req.proposal.class)
             || req.proposal.class == fa_model::EntryClass::CLOSING
+            || crate::disposal::has_basis(&req.proposal)
             || req
                 .proposal
                 .extensions
                 .iter()
                 .any(|(tag, _)| *tag == fa_model::entry::PRIOR_PERIOD_ADJUSTMENT_EXTENSION)
         {
-            crate::post::Admission::ScratchScenario(Rehearsing(()))
+            crate::post::Admission::ScratchScenario(Rehearsing {
+                lot_scope: scenario_scope.map(|(scenario, body_digest)| LotScope {
+                    scenario,
+                    body_digest,
+                    fork_at,
+                    ordinal: u32::try_from(i + 1).unwrap_or(u32::MAX),
+                }),
+            })
         } else {
             crate::post::Admission::Commit
         };
