@@ -68,7 +68,7 @@ use crate::checkpoint::{
     CheckpointBody, SignError, TransparencyCheckpoint, checkpoint_oid, checkpoint_vid,
 };
 use crate::journal::{Journal, JournalReadWork, Leaf, LeafKinds, Record, protected_record_row};
-use crate::scope::{ScopeIndex, ScopeRequest};
+use crate::scope::{ScopeRequest, checkpoint_scope_root};
 use crate::sign::CheckpointSigner;
 use crate::tree::Digest;
 use crate::{Statement, code};
@@ -387,7 +387,7 @@ impl PrefixSummary {
             Some(p) if !new_scope_tuples => p.scope_root,
             _ => {
                 work.publication_scope_rebuilds += 1;
-                ScopeIndex::of(journal).root()
+                checkpoint_scope_root(journal.book_id, journal.branch_id, &journal.leaves)
             }
         };
         Ok(Self {
@@ -1412,12 +1412,11 @@ fn shared_predecessor_check<V: asupersync::fs::Vfs + Clone>(
     let body = CheckpointBody {
         statement: expected.statement(),
         state_oid: stored_prev.oid,
-        scope_index_root: ScopeIndex::of_leaves(
+        scope_index_root: checkpoint_scope_root(
             journal.book_id,
             journal.branch_id,
             &journal.leaves[..count],
-        )
-        .root(),
+        ),
         substrate_chain_commitment: chain_commitment(db, ctx, book, prev.through_seq)?,
         witness_policy_oid: None,
         time_evidence_oid: stored_cp.checkpoint.body.time_evidence_oid.and(latest_time),
@@ -1859,12 +1858,11 @@ fn shared_state_checks<V: asupersync::fs::Vfs + Clone>(
         let body = CheckpointBody {
             statement: expected.statement(),
             state_oid: stored.oid,
-            scope_index_root: ScopeIndex::of_leaves(
+            scope_index_root: checkpoint_scope_root(
                 journal.book_id,
                 journal.branch_id,
                 &journal.leaves[..count],
-            )
-            .root(),
+            ),
             substrate_chain_commitment: chain_commitment(db, ctx, book, state.through_seq)?,
             witness_policy_oid: None,
             time_evidence_oid: stored_cp.checkpoint.body.time_evidence_oid.and(latest_time),

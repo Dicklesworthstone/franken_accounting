@@ -46,7 +46,7 @@ pub fn empty_root() -> Digest {
 }
 
 /// The largest power of two strictly below `n` (`n ≥ 2`).
-fn split(n: usize) -> usize {
+pub(crate) fn split(n: usize) -> usize {
     let mut k = 1;
     while k << 1 < n {
         k <<= 1;

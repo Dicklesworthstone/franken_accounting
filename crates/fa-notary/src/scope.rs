@@ -79,6 +79,45 @@ pub fn scope_root(count: u64, tree_root: &Digest) -> Digest {
     hash(SCOPE_ROOT_DOMAIN, &[&count.to_le_bytes(), tree_root])
 }
 
+fn sorted_tuples(leaves: &[Leaf]) -> Vec<ScopeTuple> {
+    let mut tuples = Vec::new();
+    for (i, leaf) in leaves.iter().enumerate() {
+        let Some(day) = leaf.envelope.effective_day else {
+            continue;
+        };
+        for account in &leaf.envelope.account_vids {
+            tuples.push(ScopeTuple {
+                account: account.0,
+                day,
+                leaf_index: i as u64,
+            });
+        }
+    }
+    tuples.sort_unstable();
+    tuples
+}
+
+/// Checkpoint production and verification only need the root. After sorting
+/// the tuples, hash the RFC 9162 tree in postorder without retaining its leaf
+/// hashes or interior nodes. The recursion holds at most one digest per level.
+pub(crate) fn checkpoint_scope_root(book: Id128, branch: Id128, leaves: &[Leaf]) -> Digest {
+    let tuples = sorted_tuples(leaves);
+    scope_root(tuples.len() as u64, &tuple_tree_root(book, branch, &tuples))
+}
+
+fn tuple_tree_root(book: Id128, branch: Id128, tuples: &[ScopeTuple]) -> Digest {
+    match tuples {
+        [] => [0; 32],
+        [tuple] => hash(SCOPE_LEAF_DOMAIN, &[&tuple.bytes(book, branch)]),
+        _ => {
+            let (left, right) = tuples.split_at(crate::tree::split(tuples.len()));
+            let left = tuple_tree_root(book, branch, left);
+            let right = tuple_tree_root(book, branch, right);
+            hash(SCOPE_NODE_DOMAIN, &[&left, &right])
+        }
+    }
+}
+
 /// A journal prefix's scope index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeIndex {
@@ -98,20 +137,7 @@ impl ScopeIndex {
     /// Derive the same index for a borrowed prefix of an authenticated
     /// journal without copying or decoding the prefix's record payloads.
     pub(crate) fn of_leaves(book_id: Id128, branch_id: Id128, leaves: &[Leaf]) -> Self {
-        let mut tuples = Vec::new();
-        for (i, leaf) in leaves.iter().enumerate() {
-            let Some(day) = leaf.envelope.effective_day else {
-                continue;
-            };
-            for account in &leaf.envelope.account_vids {
-                tuples.push(ScopeTuple {
-                    account: account.0,
-                    day,
-                    leaf_index: i as u64,
-                });
-            }
-        }
-        tuples.sort_unstable();
+        let tuples = sorted_tuples(leaves);
         let mut tree = Tree::with_node_domain(SCOPE_NODE_DOMAIN);
         for t in &tuples {
             tree.push(hash(SCOPE_LEAF_DOMAIN, &[&t.bytes(book_id, branch_id)]));
@@ -291,4 +317,32 @@ pub fn prove(journal: &Journal, request: &ScopeRequest) -> Outcome<Vec<u8>> {
     Ok(Ok(
         ScopeIndex::of(journal).proof(journal, account.0, from, to)?
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_scope_roots_match_the_proof_tree_at_every_prefix() {
+        let book = Id128([1; 16]);
+        let branch = Id128([2; 16]);
+        let mut tuples = Vec::new();
+        let mut tree = Tree::with_node_domain(SCOPE_NODE_DOMAIN);
+        for i in 0..=129u64 {
+            let expected = if i == 0 { [0; 32] } else { tree.root() };
+            assert_eq!(
+                tuple_tree_root(book, branch, &tuples),
+                expected,
+                "tuple count {i}"
+            );
+            let tuple = ScopeTuple {
+                account: u128::from(i / 9),
+                day: (i % 9) as i32 - 5,
+                leaf_index: i,
+            };
+            tree.push(hash(SCOPE_LEAF_DOMAIN, &[&tuple.bytes(book, branch)]));
+            tuples.push(tuple);
+        }
+    }
 }
