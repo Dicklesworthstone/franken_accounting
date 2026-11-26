@@ -19,9 +19,19 @@ use fgdb_types::{CanonicalScalar, EId, VId};
 use crate::refusal::{KernelError, Refusal, code, exit};
 use crate::rows::{leg_vid, scalar_text};
 
-fn refusal(message: impl Into<String>) -> Refusal {
+fn invalid_declaration(error: impl std::fmt::Display) -> Refusal {
     Refusal::new(
         code::STRUCTURE,
+        exit::USAGE,
+        error.to_string(),
+        "plan §12.3 (canonical intercompany pair declaration)",
+        "supply strictly ordered, unique pair keys and two distinct in-range leg ordinals per pair; each leg may occur only once",
+    )
+}
+
+fn nonreciprocal_pair(message: impl Into<String>) -> Refusal {
+    Refusal::new(
+        code::INTERCOMPANY_PAIR,
         exit::REFUSAL,
         message,
         "plan §12.3 (declared intercompany pairs are complete and reciprocal at commit)",
@@ -36,13 +46,13 @@ pub(crate) fn admit(
 ) -> Result<(), Refusal> {
     let Some(pairs) = proposal
         .intercompany_pairs()
-        .map_err(|error| refusal(error.to_string()))?
+        .map_err(invalid_declaration)?
     else {
         return Ok(());
     };
     pairs
         .validate_shape(proposal.legs.len())
-        .map_err(|error| refusal(error.to_string()))?;
+        .map_err(invalid_declaration)?;
     if proposal.base_totals.is_some()
         || proposal
             .legs
@@ -67,7 +77,7 @@ pub(crate) fn admit(
             || lhs.side == rhs.side
             || lhs.account_ref == rhs.account_ref
         {
-            return Err(refusal(
+            return Err(nonreciprocal_pair(
                 "an intercompany pair requires distinct accounts, equal positive amounts and opposite debit/credit sides",
             )
             .at("pair_key", &pair.pair_key)
@@ -77,11 +87,11 @@ pub(crate) fn admit(
         let (Some(Some(left_entity)), Some(Some(right_entity))) =
             (entities.get(left), entities.get(right))
         else {
-            return Err(refusal("both intercompany legs must belong to declared legal entities")
+            return Err(nonreciprocal_pair("both intercompany legs must belong to declared legal entities")
                 .at("pair_key", &pair.pair_key));
         };
         if left_entity == right_entity {
-            return Err(refusal("intercompany counterpart legs must belong to different legal entities")
+            return Err(nonreciprocal_pair("intercompany counterpart legs must belong to different legal entities")
                 .at("pair_key", &pair.pair_key));
         }
     }

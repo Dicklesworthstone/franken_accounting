@@ -1313,6 +1313,14 @@ exit = "refusal"
 cite = "Appendix A fa:entry:v1 additive-minor law (fa-hoi5: only entries written at schema minors this build knows may be sealed)"
 fix = "write the minor this build knows; register the extension first"
 
+[[refusal]]
+code = "FA-REF-209"
+name = "INTERCOMPANY_PAIR"
+owners = ["fa-journal"]
+exit = "refusal"
+cite = "plan §12.3, FA-INV-13 (declared intercompany legs must be reciprocal at publication)"
+fix = "declare equal positive amounts on opposite sides of distinct accounts belonging to two declared legal entities; balance each entity independently"
+
 # ---- Proof export (145–146) ---
 [[refusal]]
 code = "FA-REF-145"

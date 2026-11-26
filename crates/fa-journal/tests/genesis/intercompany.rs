@@ -162,12 +162,12 @@ fn mismatched_pairs_and_cross_entity_netting_refuse_without_any_write() {
         proposal.unit_totals = EntryPayload::fold_unit_totals(&proposal.legs).unwrap();
         let refusal = h.post(h.request(proposal, &["post"])).unwrap_err();
         assert_eq!(refusal.exit, exit::REFUSAL, "plant {plant}: {refusal}");
-        if plant == 2 {
-            assert_eq!(refusal.code, "FA-REF-001", "{refusal}");
-        }
-        if plant == 4 {
-            assert_eq!(refusal.code, "FA-REF-102", "{refusal}");
-        }
+        let expected = match plant {
+            2 => "FA-REF-001",
+            4 => "FA-REF-102",
+            _ => "FA-REF-209",
+        };
+        assert_eq!(refusal.code, expected, "plant {plant}: {refusal}");
         assert_eq!(h.db.frontier().unwrap(), frontier, "plant {plant}");
         assert!(pairs(&h).is_empty());
     }

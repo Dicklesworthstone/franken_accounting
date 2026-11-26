@@ -495,6 +495,8 @@ pub mod code {
     pub const DIMENSION_MISSING: &str = "FA-REF-005";
     /// A leg names a legal-entity value the book has not declared.
     pub const ENTITY_UNDECLARED: &str = "FA-REF-104";
+    /// Declared intercompany counterpart legs fail the reciprocal-pair law.
+    pub const INTERCOMPANY_PAIR: &str = "FA-REF-209";
     /// A leg names a dimension value (cost center, department, project and
     /// the other registered kinds) outside its valid-time effectivity on
     /// the entry's effective date (plan §4.1).
