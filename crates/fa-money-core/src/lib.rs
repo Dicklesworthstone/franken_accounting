@@ -181,5 +181,40 @@ impl Amount {
     }
 }
 
+/// Round a nonnegative quantity to an integral billing increment, then enforce
+/// a minimum that is itself rounded *up* to the next increment. Both the
+/// increment and minimum are in the amount's native minor units. No floating
+/// point, allocation or implicit rounding policy is involved.
+pub fn step_round(
+    qty: Amount,
+    step_mantissa: u128,
+    min_mantissa: u128,
+    law: RoundingLaw,
+) -> Result<Amount, AmountError> {
+    if step_mantissa == 0 {
+        return Err(AmountError::InvariantViolation("billing step must be nonzero"));
+    }
+    if qty.mantissa < 0 {
+        return Err(AmountError::InvariantViolation(
+            "step rounding requires a nonnegative quantity",
+        ));
+    }
+    let magnitude = qty.mantissa as u128;
+    let quotient = magnitude / step_mantissa;
+    let remainder = magnitude % step_mantissa;
+    let rounded_steps = law
+        .apply_magnitude(quotient, remainder, step_mantissa, false)
+        .ok_or(AmountError::Overflow)?;
+    let minimum_steps = (min_mantissa / step_mantissa)
+        .checked_add(u128::from(min_mantissa % step_mantissa != 0))
+        .ok_or(AmountError::Overflow)?;
+    let steps = rounded_steps.max(minimum_steps);
+    let rounded = steps
+        .checked_mul(step_mantissa)
+        .and_then(|value| i128::try_from(value).ok())
+        .ok_or(AmountError::Overflow)?;
+    Ok(Amount::new(qty.unit, rounded))
+}
+
 #[cfg(test)]
 mod tests;
