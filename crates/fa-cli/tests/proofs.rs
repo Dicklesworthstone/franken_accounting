@@ -1694,7 +1694,7 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
 
     // `fa-verify ads <dir>` reads the package by its names: exit 0 on the
     // export as written, 8 when GL_Detail is altered, 2 with no key.
-    let cli = |gl_detail: &str, with_key: bool| {
+    let cli = |gl_detail: &str, trial_balance: &str, with_key: bool, definitions: &[&str]| {
         let mut args = vec![
             "ads".to_string(),
             dir.to_str().unwrap().to_string(),
@@ -1706,16 +1706,21 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
                 text(proof, "checkpoint_public_key").to_string(),
             ]);
         }
+        for definition in definitions {
+            args.extend(["--unit-definition".into(), (*definition).to_owned()]);
+        }
         let read = |path: &str| {
             if path.ends_with("/GL_Detail.txt") {
                 Ok(gl_detail.as_bytes().to_vec())
+            } else if path.ends_with("/Trial_Balance.txt") {
+                Ok(trial_balance.as_bytes().to_vec())
             } else {
                 std::fs::read(path)
             }
         };
         fa_verify::cli::run(&args, &read)
     };
-    let verified = cli(&gl, true);
+    let verified = cli(&gl, &tb, true, &[]);
     assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
     let report = json::parse(verified.stdout.trim()).expect("one JSON report");
     assert_eq!(text(&report, "verdict"), "verified");
@@ -1732,8 +1737,23 @@ fn an_ads_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         text(get(extract, "detail"), "chart_coverage"),
         "authenticated_declarations"
     );
-    assert_eq!(cli(&without, true).exit, 8);
-    assert_eq!(cli(&gl, false).exit, 2);
+    assert_eq!(cli(&without, &tb, true, &[]).exit, 8);
+    assert_eq!(cli(&gl, &tb, false, &[]).exit, 2);
+
+    let definitions = ["0:USD:2", "1:EUR:2"];
+    let correct = cli(&gl, &tb, true, &definitions);
+    assert_eq!(correct.exit, 0, "{}", correct.stdout);
+    assert!(correct.stdout.contains(r#""denomination_rows":4"#));
+    let relabeled = (gl.replace("|USD|", "|EUR|"), tb.replace("|USD|", "|EUR|"));
+    let shifted = (
+        gl.replace("12.34|USD|2", "1.234|USD|3")
+            .replace("2.00|USD|2", "0.200|USD|3"),
+        tb.replace("14.34|USD|2", "1.434|USD|3"),
+    );
+    for (gl, tb) in [relabeled, shifted] {
+        assert_eq!(cli(&gl, &tb, true, &[]).exit, 0);
+        assert_eq!(cli(&gl, &tb, true, &definitions).exit, 8);
+    }
 }
 
 /// Plan §13.1 (fa-2q91): one account's month, `fa export ads --account 1000
@@ -2199,6 +2219,24 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         };
         fa_verify::cli::run(&args, &read)
     };
+    let definitions = [
+        "--unit-definition",
+        "0:USD:2",
+        "--unit-definition",
+        "1:EUR:2",
+    ];
+    let correct = cli(&xml, true, &definitions);
+    assert_eq!(correct.exit, 0, "{}", correct.stdout);
+    assert!(correct.stdout.contains(r#""denomination_rows":4"#));
+    for altered in [
+        xml.replace(">USD<", ">EUR<"),
+        xml.replace(">12.34<", ">1.234<")
+            .replace(">2.00<", ">0.200<")
+            .replace(">14.34<", ">1.434<"),
+    ] {
+        assert_eq!(cli(&altered, true, &[]).exit, 0);
+        assert_eq!(cli(&altered, true, &definitions).exit, 8);
+    }
     let verified = cli(&xml, true, &[]);
     assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
     let parsed = json::parse(verified.stdout.trim()).expect("one JSON report");

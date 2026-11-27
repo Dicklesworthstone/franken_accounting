@@ -59,7 +59,7 @@ mod external_feed;
 mod native_subledger;
 mod scenario;
 
-use crate::ads::{AdsReport, verify_ads};
+use crate::ads::{AdsFiles, AdsReport, UnitDefinitions, verify_ads_with_units};
 use crate::blake3::hex;
 use crate::bundle::{BundleReport, BundleScope, Completeness, Grade, verify_bundle};
 use crate::checkpoint::{CheckpointError, SignedCheckpoint, verify_checkpoint};
@@ -159,6 +159,7 @@ commands:
                                                 proves through the certificate's cutoff,
                                                 Trial_Balance exactly their refold and, against a
                                                 complete prefix, Chart_of_Accounts its declarations
+               [--unit-definition ID:CODE:SCALE ...]
                [--through D --expect-checkpoint HEX64 [--account CODE]]
                                                 require the whole chart or one chart account at
                                                 your effective cutoff and signed checkpoint
@@ -166,6 +167,7 @@ commands:
                                                 Checks transactions, balance assertions and accounts
                                                 against the signed journal. OECD XSD validation
                                                 requires a separate standards validator.
+               [--unit-definition ID:CODE:SCALE ...]
                [--through D --expect-checkpoint HEX64]
                                                 require the whole chart at your effective cutoff
                                                 and signed checkpoint (D is days since 1970-01-01)
@@ -180,6 +182,8 @@ ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its
 
 options:
   --proof P      the proof file (instead of naming it positionally)
+  --unit-definition ID:CODE:SCALE  ADS and SAF-T: check every transaction line against your unit
+                 definitions, e.g. 0:USD:2. Repeat for each used code. IDs are decimal.
   --key K        a trusted Ed25519 public key, 64 hex characters (repeatable)
   --state S      access-log raw form: canonical AccumulatorState exported for C's signed state_oid
   --book HEX32 --branch HEX32  access-log: independently selected identities, required for
@@ -260,7 +264,7 @@ const COMMANDS: [&str; 14] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 33] = [
+const VALUE_FLAGS: [&str; 34] = [
     "--state",
     "--book",
     "--branch",
@@ -284,6 +288,7 @@ const VALUE_FLAGS: [&str; 33] = [
     "--expect",
     "--receipt",
     "--units",
+    "--unit-definition",
     "--base-unit",
     "--equity-diff-request",
     "--scenario-request",
@@ -341,13 +346,20 @@ fn admitted(command: &str) -> &'static [&'static str] {
         "doc-commit" => &["--kind", "--expect"],
         "bundle" => &["--key", "--receipt", "--account", "--from", "--to"],
         "ads" => &[
+            "--unit-definition",
             "--key",
             "--receipt",
             "--account",
             "--through",
             "--expect-checkpoint",
         ],
-        "saft" => &["--key", "--receipt", "--through", "--expect-checkpoint"],
+        "saft" => &[
+            "--key",
+            "--receipt",
+            "--through",
+            "--expect-checkpoint",
+            "--unit-definition",
+        ],
         "report" => &[
             "--key",
             "--receipt",
@@ -785,12 +797,12 @@ fn parse(args: &[String]) -> Result<Args, Usage> {
                     format!("pass `{flag} <value>`"),
                 ));
             }
-            if !matches!(flag.as_str(), "--key" | "--witness")
+            if !matches!(flag.as_str(), "--key" | "--witness" | "--unit-definition")
                 && values.iter().any(|(f, _)| *f == flag)
             {
                 return Err(usage(
                     format!("`{flag}` may be supplied only once"),
-                    format!("pass one `{flag}`; only `--key` and `--witness` repeat"),
+                    format!("pass one `{flag}`"),
                 ));
             }
             values.push((flag, value));
@@ -2097,6 +2109,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
             Ok(checks)
         }
         "ads" => {
+            let definitions = extract_units(args)?;
             let dir = subject(args, "an ADS package directory")?;
             let selection = ExtractSelection::from_args(args, cmd)?;
             let keys = args.all("--key");
@@ -2125,18 +2138,22 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Some(p) => load(read, p, args.hex)?,
                 None => load(read, &format!("{dir}/ADS_Proof.receipt"), false)?,
             };
-            let verified = verify_ads(
-                &certificate,
-                &chart_of_accounts,
-                &gl_detail,
-                &trial_balance,
+            let verified = verify_ads_with_units(
+                AdsFiles {
+                    certificate: &certificate,
+                    chart_of_accounts: &chart_of_accounts,
+                    gl_detail: &gl_detail,
+                    trial_balance: &trial_balance,
+                },
                 &bundle,
                 &keys,
                 Some(&receipt),
+                definitions.as_ref(),
             );
             Ok(extract_verdict(verified, "ads_extract", selection))
         }
         "saft" => {
+            let definitions = extract_units(args)?;
             let dir = subject(args, "a SAF-T package directory")?;
             let selection = ExtractSelection::from_args(args, cmd)?;
             let keys = args.all("--key");
@@ -2159,7 +2176,13 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Some(p) => load(read, p, args.hex)?,
                 None => load(read, &format!("{dir}/SAFT_Proof.receipt"), false)?,
             };
-            let verified = crate::saft::verify_saft(&xml, &bundle, &keys, Some(&receipt));
+            let verified = crate::saft::verify_saft_with_units(
+                &xml,
+                &bundle,
+                &keys,
+                Some(&receipt),
+                definitions.as_ref(),
+            );
             Ok(extract_verdict(verified, "saft_extract", selection))
         }
         _ => unreachable_command(cmd),
@@ -5578,6 +5601,33 @@ impl<'a> ExtractSelection<'a> {
     }
 }
 
+/// Decimal ID and scale delimit the case-sensitive code. The definition is
+/// supplied by the recipient independently of the extract being checked.
+fn extract_units(args: &Args) -> Result<Option<UnitDefinitions>, Usage> {
+    let values = args.all("--unit-definition");
+    if values.is_empty() {
+        return Ok(None);
+    }
+    let hint = "use --unit-definition ID:CODE:SCALE, for example 0:USD:2";
+    let mut definitions = Vec::with_capacity(values.len());
+    for value in values {
+        let malformed = || usage(format!("invalid unit definition {value:?}"), hint);
+        let (id, rest) = value.split_once(':').ok_or_else(malformed)?;
+        let (code, scale) = rest.rsplit_once(':').ok_or_else(malformed)?;
+        if !id.bytes().all(|b| b.is_ascii_digit()) || !scale.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(malformed());
+        }
+        definitions.push((
+            id.parse().map_err(|_| malformed())?,
+            code.to_owned(),
+            scale.parse().map_err(|_| malformed())?,
+        ));
+    }
+    UnitDefinitions::new(definitions)
+        .map(Some)
+        .map_err(|why| usage(why, hint))
+}
+
 fn extract_verdict(
     verified: Result<AdsReport, crate::bundle::BundleError>,
     scope: &'static str,
@@ -5613,6 +5663,10 @@ fn ads_checks(report: &AdsReport, name: &'static str) -> Vec<Check> {
         ("rows", n(report.rows)),
         ("tb_rows", n(report.tb_rows)),
         ("chart_rows", report.chart_rows.map_or(Json::Null, n)),
+        (
+            "denomination_rows",
+            report.denomination_rows.map_or(Json::Null, n),
+        ),
         (
             "chart_coverage",
             s(if report.chart_rows.is_some() {
@@ -7115,6 +7169,21 @@ mod tests {
             &["--expect-checkpoint", &pin],
             &["--through", "today", "--expect-checkpoint", &pin],
             &["--through", "20543", "--expect-checkpoint", "xyz"],
+            &["--unit-definition", "USD:2"],
+            &["--unit-definition", "0::2"],
+            &["--unit-definition", "0:USD:39"],
+            &[
+                "--unit-definition",
+                "0:USD:2",
+                "--unit-definition",
+                "0:EUR:2",
+            ],
+            &[
+                "--unit-definition",
+                "0:USD:2",
+                "--unit-definition",
+                "1:USD:0",
+            ],
         ] {
             for command in ["ads", "saft"] {
                 let mut args = vec![command, "unopened", "--key", &key];

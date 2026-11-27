@@ -11,7 +11,8 @@
 //! and matched to proven entries of the same recorded sequence by class,
 //! effective date and legs. A row's account is matched by deriving its vid
 //! from its code and the book id; unit codes are matched to the legs' unit
-//! ids one to one (the codes' names are not authenticated offline). A
+//! ids one to one. Recipient-supplied unit definitions additionally bind each
+//! monetary row's display code and decimal scale to its authenticated unit ID. A
 //! migration chunk counts exactly when its run makes it visible: a verified
 //! migration-aware balance over one of its cells (fa-mv0f) decides that from
 //! the run bodies it carries, and its fold reads exactly the visible chunks.
@@ -28,6 +29,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
+
+mod denominations;
+pub use denominations::UnitDefinitions;
 
 use crate::balance::CLASS_MIGRATION;
 use crate::blake3::hash_parts;
@@ -71,6 +75,9 @@ pub struct AdsReport {
     /// the versioned extension leave this `None`; monetary equality does not
     /// authenticate omitted dimensions.
     pub dimension_rows: Option<u64>,
+    /// Rows checked against recipient-supplied unit IDs, codes and decimal scales.
+    /// Set only after the complete extract verifies.
+    pub denomination_rows: Option<u64>,
     /// Unit code to the unit id its rows matched, one to one.
     pub units: Vec<(String, u32)>,
     /// Every way the extract differs from the proven selection.
@@ -958,6 +965,7 @@ impl AdsReport {
             tb_rows: 0,
             chart_rows: None,
             dimension_rows: None,
+            denomination_rows: None,
             units: Vec::new(),
             failures: Vec::new(),
         }
@@ -976,6 +984,43 @@ pub fn verify_ads(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
+    verify_ads_with_units(
+        AdsFiles {
+            certificate,
+            chart_of_accounts,
+            gl_detail,
+            trial_balance,
+        },
+        bundle,
+        trusted_keys,
+        receipt,
+        None,
+    )
+}
+
+/// Text files from one ADS package.
+pub struct AdsFiles<'a> {
+    pub certificate: &'a str,
+    pub chart_of_accounts: &'a str,
+    pub gl_detail: &'a str,
+    pub trial_balance: &'a str,
+}
+
+/// Verify an ADS package, optionally requiring all monetary rows to use the
+/// recipient's unit IDs, codes and decimal scales.
+pub fn verify_ads_with_units(
+    files: AdsFiles<'_>,
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
+    definitions: Option<&UnitDefinitions>,
+) -> Result<AdsReport, BundleError> {
+    let AdsFiles {
+        certificate,
+        chart_of_accounts,
+        gl_detail,
+        trial_balance,
+    } = files;
     let (report, authenticated) = prove(bundle, trusted_keys, receipt)?;
     let mut out = AdsReport::new(
         report,
@@ -1028,7 +1073,7 @@ pub fn verify_ads(
         balances: ads_balances(trial_balance, escaped),
         chart: ads_chart(chart_of_accounts, escaped),
     };
-    Ok(judge(out, authenticated, stated, &ADS_PARTS))
+    Ok(judge(out, authenticated, stated, &ADS_PARTS, definitions))
 }
 
 fn escaped_format(certificate: &str) -> Result<bool, String> {
@@ -1053,6 +1098,7 @@ pub(crate) fn judge(
     authenticated: Authenticated,
     stated: Stated,
     parts: &Parts,
+    definitions: Option<&UnitDefinitions>,
 ) -> AdsReport {
     let Authenticated { records, balances } = authenticated;
     let scoped = stated.account_scope;
@@ -1212,9 +1258,18 @@ pub(crate) fn judge(
             .flat_map(|(seq, entries)| entries.into_iter().map(move |entry| (seq, entry))),
         manifest.book_id,
     );
+    // Resolve every denomination before selecting among equal-mantissa
+    // postings at the same sequence. Their authenticated unit IDs may differ.
+    let expected = match definitions.map(|defs| defs.resolve(&extract)).transpose() {
+        Ok(units) => units,
+        Err(why) => {
+            out.failures.push(why);
+            return out;
+        }
+    };
     let mut units = Units::default();
     for entry in &extract {
-        match proven.take(entry, &units, |_| {}) {
+        match proven.take(entry, expected.as_ref().unwrap_or(&units), |_| {}) {
             Some(matched) => {
                 for (row, leg) in entry.rows.iter().zip(&matched.legs) {
                     units.by_code.insert(row.unit.clone(), leg.unit);
@@ -1270,6 +1325,9 @@ pub(crate) fn judge(
         }
     }
     out.units = units.by_code.into_iter().collect();
+    if out.failures.is_empty() && definitions.is_some() {
+        out.denomination_rows = Some(out.rows);
+    }
     if out.failures.is_empty() && stated.dimension_encoding {
         out.dimension_rows = Some(out.rows);
     }
@@ -1882,6 +1940,29 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn recipient_units_select_equal_postings_by_id_before_matching_and_require_their_scales() {
+        let book = [8; 16];
+        let usd = balanced_matching_record(&book, &[0]);
+        let eur = balanced_matching_record(&book, &[1]);
+        let rows = [
+            balanced_matching_extract(&eur, &["EUR"], false),
+            balanced_matching_extract(&usd, &["USD"], false),
+        ];
+        let defs = UnitDefinitions::new([(0, "USD".into(), 2), (1, "EUR".into(), 2)]).unwrap();
+        let units = defs.resolve(&rows).unwrap();
+        let mut proven = ProvenMatcher::new([(7, usd.clone()), (7, eur.clone())], book);
+        assert_eq!(proven.take(&rows[0], &units, |_| {}), Some(eur));
+        assert_eq!(proven.take(&rows[1], &units, |_| {}), Some(usd));
+
+        let mut wrong = rows.clone();
+        wrong[0].rows[1].scale = 3;
+        assert!(defs.resolve(&wrong).is_err());
+        wrong[0].rows[1].scale = 2;
+        wrong[0].rows[1].unit = "GBP".into();
+        assert!(defs.resolve(&wrong).is_err());
     }
 
     fn assert_matching_agrees_with_literal_scan(

@@ -502,6 +502,18 @@ pub fn verify_saft(
     trusted_keys: &[[u8; 32]],
     receipt: Option<&[u8]>,
 ) -> Result<AdsReport, BundleError> {
+    verify_saft_with_units(xml, bundle, trusted_keys, receipt, None)
+}
+
+/// Verify a SAF-T package, optionally requiring all monetary rows to use the
+/// recipient's unit IDs, codes and decimal scales.
+pub fn verify_saft_with_units(
+    xml: &str,
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    receipt: Option<&[u8]>,
+    definitions: Option<&ads::UnitDefinitions>,
+) -> Result<AdsReport, BundleError> {
     let (report, authenticated) = ads::prove(bundle, trusted_keys, receipt)?;
     let doc = read(xml);
     let header = doc.as_ref().ok().and_then(|d| d.child("Header").ok());
@@ -522,7 +534,7 @@ pub fn verify_saft(
         return Ok(out);
     }
     match doc.and_then(|doc| stated(&doc)) {
-        Ok(stated) => Ok(ads::judge(out, authenticated, stated, &PARTS)),
+        Ok(stated) => Ok(ads::judge(out, authenticated, stated, &PARTS, definitions)),
         Err(why) => {
             out.failures.push(why);
             Ok(out)
