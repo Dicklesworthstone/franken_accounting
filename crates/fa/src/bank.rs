@@ -44,7 +44,9 @@ pub use fa_model::bank_csv::{BankCsvAmounts, BankCsvDateFormat, BankCsvLayout};
 mod confirmation;
 mod kiting;
 mod reconciliation;
-pub use confirmation::{BankConfirmationRequest, BankConfirmationStatus, BankStatusRequest};
+pub use confirmation::{
+    BankConfirmationRequest, BankConfirmationStatus, BankLineEligibility, BankStatusRequest,
+};
 pub use fa_journal::bank::{
     BankDecisionRef, BankMatchConfirmation, BankMatchHistory, BankMatchLineage, BankMatchRecorded,
     BankOutstandingItem, BankOutstandingLeg, BankReconciliationRecorded, BankReconciliationState,

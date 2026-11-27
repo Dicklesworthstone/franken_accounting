@@ -15,7 +15,6 @@ use fa::bank::{
 use fa_model::{Oid, account_vid};
 use fa_money::{Amount, Side};
 use fa_policy::Op;
-use fa_registers::reconciliation::pinned_bank_candidate;
 
 use crate::args::Args;
 use crate::cli::{Ctx, Fail, hex, known_at_flag, untrusted_text_json, usage};
@@ -539,37 +538,10 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         .iter()
         .map(|recorded| (recorded.confirmation.line_ordinal, recorded))
         .collect();
-    let mut eligible_counts = vec![0_usize; report.lines.len()];
-    let mut competing = vec![false; report.lines.len()];
-    let window = i32::try_from(report.date_window_days)
-        .map_err(|_| Fail::Internal("admitted bank date window exceeds i32".into()))?;
-    for candidate in &report.candidates {
-        if consumed_cash_legs.contains(&(candidate.candidate.entry_ref.vid, candidate.leg_ordinal))
-        {
-            continue;
-        }
-        let mut first_line = None;
-        for (index, line) in report.lines.iter().enumerate() {
-            if occupied_bank_lines.contains(&(report.manifest.statement_oid, line.line_ordinal)) {
-                continue;
-            }
-            if pinned_bank_candidate(line, &candidate.candidate, window)
-                .map_err(|error| Fail::Internal(format!("bank candidate law: {error}")))?
-            {
-                eligible_counts[index] += 1;
-                if let Some(first) = first_line {
-                    competing[first] = true;
-                    competing[index] = true;
-                } else {
-                    first_line = Some(index);
-                }
-            }
-        }
-    }
-    let ambiguous_count = eligible_counts
+    let eligibility = report.pinned_eligibility()?;
+    let ambiguous_count = eligibility
         .iter()
-        .zip(&competing)
-        .filter(|(count, contested)| **count > 1 || **contested)
+        .filter(|line| line.cash_legs > 1 || line.competing_lines)
         .count();
     let mut consumed = BTreeSet::new();
     let mut confirmed_count = 0_usize;
@@ -577,6 +549,7 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     let mut unmatched_count = 0_usize;
     let mut rows = Vec::with_capacity(report.lines.len());
     for (index, (line, proposal)) in report.lines.iter().zip(&report.proposals).enumerate() {
+        let review = eligibility[index];
         let recorded = confirmed_by_line.get(&line.line_ordinal).copied();
         let occupied =
             occupied_bank_lines.contains(&(report.manifest.statement_oid, line.line_ordinal));
@@ -629,8 +602,8 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             .map(|recorded| recorded.confirmation.candidate_ordinal)
             .or_else(|| selected.map(|candidate| candidate.candidate.entry_ordinal));
         let confirmation_command = if selected.is_some()
-            && eligible_counts[index] == 1
-            && !competing[index]
+            && review.cash_legs == 1
+            && !review.competing_lines
         {
             s(format!(
                 "fa bank confirm --import {} --line-ordinal {} --proposal-digest {proposal_digest} --source-known-at {} --date-window {} --proposer {proposer} --grant privileged --json",
@@ -646,12 +619,12 @@ fn match_statement(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
             ("line_ordinal", Json::Int(i128::from(line.line_ordinal))),
             (
                 "eligible_candidate_count",
-                Json::Int(eligible_counts[index] as i128),
+                Json::Int(review.cash_legs as i128),
             ),
-            ("competing_bank_lines", Json::Bool(competing[index])),
+            ("competing_bank_lines", Json::Bool(review.competing_lines)),
             (
                 "ambiguous",
-                Json::Bool(eligible_counts[index] > 1 || competing[index]),
+                Json::Bool(review.cash_legs > 1 || review.competing_lines),
             ),
             (
                 "line_document_oid",
