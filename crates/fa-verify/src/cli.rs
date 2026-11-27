@@ -127,7 +127,7 @@ commands:
   report       <bundle> --key K... [--checkpoint C] [--receipt R] [--expect H]
                [--units N,N,... | --base-unit N | --equity-diff-request Q] [--view detail]
                [--subledger CODE --control-account A --through D --known-at N]
-               [--external-feed FEED --control-account A --through D --known-at N [--population-manifest FILE]]
+               [--external-feed FEED --control-account A --through D --known-at N [--population-manifest FILE | --reviewed-population-manifest FILE]]
                                                 independently recompute native or dimension-filtered
                                                 trial balances, summary groups, statements, open items, balance explanations,
                                                 statement comparisons and complete native publication traces,
@@ -202,6 +202,8 @@ options:
   --receipt R    a bundle's detached production receipt
   --population-manifest FILE  external feed: compare authenticated child Workpapers, row count
                  and gross cells with the recipient's source-extract declaration.
+  --reviewed-population-manifest FILE  also require the binary declaration's original intake
+                 and a later Reviewed record by a distinct principal at --known-at.
   --units N,N,...  V1 statements require 1..=4096 strictly ascending unique native unit IDs;
                  obtain the complete list independently. For V1 it is a report premise,
                  not proof of unit registration or labels. For V2 the list is optional;
@@ -264,7 +266,7 @@ const COMMANDS: [&str; 14] = [
 ];
 
 /// Flags that take a value, and the switches.
-const VALUE_FLAGS: [&str; 34] = [
+const VALUE_FLAGS: [&str; 35] = [
     "--state",
     "--book",
     "--branch",
@@ -296,6 +298,7 @@ const VALUE_FLAGS: [&str; 34] = [
     "--subledger",
     "--external-feed",
     "--population-manifest",
+    "--reviewed-population-manifest",
     "--control-account",
     "--through",
     "--known-at",
@@ -372,6 +375,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--subledger",
             "--external-feed",
             "--population-manifest",
+            "--reviewed-population-manifest",
             "--control-account",
             "--through",
             "--known-at",
@@ -1618,22 +1622,33 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 ));
             }
             let external_feed_request = external_feed::request(args)?;
-            let manifest = if let Some(path) = args.one("--population-manifest") {
+            let declared_path = args.one("--population-manifest");
+            let reviewed_path = args.one("--reviewed-population-manifest");
+            if declared_path.is_some() && reviewed_path.is_some() {
+                return Err(usage(
+                    "choose one population manifest option",
+                    "use --reviewed-population-manifest to require the parent's recorded intake and review",
+                ));
+            }
+            let manifest = if let Some(path) = reviewed_path.or(declared_path) {
                 if external_feed_request.is_none() {
                     return Err(usage(
-                        "--population-manifest requires the external-feed question",
+                        "a population manifest requires the external-feed question",
                         "supply --external-feed, --control-account, --through and --known-at",
                     ));
                 }
                 let bytes = load(read, path, false)?;
-                Some(
-                    crate::report::ExternalFeedManifest::parse(&bytes).map_err(|reason| {
-                        usage(
-                            reason,
-                            "supply the independently retained v1 source population manifest",
-                        )
-                    })?,
-                )
+                let parsed = if reviewed_path.is_some() {
+                    crate::report::ExternalFeedManifest::parse_reviewed_workpaper(&bytes)
+                } else {
+                    crate::report::ExternalFeedManifest::parse(&bytes)
+                };
+                Some(parsed.map_err(|reason| {
+                    usage(
+                        reason,
+                        "supply the independently retained source population manifest",
+                    )
+                })?)
             } else {
                 None
             };
@@ -1675,14 +1690,26 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 .map(|p| load(read, p, args.hex))
                 .transpose()?;
             let verified = if let Some(expected) = &external_feed_request {
-                crate::report::verify_report_external_feed_expected(
-                    &bytes,
-                    &keys,
-                    expected_checkpoint.as_ref(),
-                    receipt.as_deref(),
-                    expected,
-                    expected_digest.as_ref(),
-                )
+                if let Some(manifest) = manifest.as_ref().filter(|_| reviewed_path.is_some()) {
+                    crate::report::verify_report_external_feed_with_reviewed_manifest(
+                        &bytes,
+                        &keys,
+                        expected_checkpoint.as_ref(),
+                        receipt.as_deref(),
+                        expected,
+                        expected_digest.as_ref(),
+                        manifest,
+                    )
+                } else {
+                    crate::report::verify_report_external_feed_expected(
+                        &bytes,
+                        &keys,
+                        expected_checkpoint.as_ref(),
+                        receipt.as_deref(),
+                        expected,
+                        expected_digest.as_ref(),
+                    )
+                }
             } else if let Some(expected) = &native_subledger_request {
                 crate::report::verify_report_native_subledger_expected(
                     &bytes,

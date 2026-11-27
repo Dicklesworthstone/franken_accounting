@@ -134,6 +134,22 @@ pub(super) fn checks(report: &VerifiedExternalFeed) -> Vec<Check> {
             ("economic_truth", s("not_judged")),
         ],
     )];
+    if let Some(parent) = &report.manifest_review {
+        checks.push(Check::pass(
+            "external_feed_manifest_review",
+            "authenticated_journal_prefix",
+            vec![
+                ("document_oid", h(&parent.document_oid)),
+                ("document_commitment", h(&parent.doc_commit)),
+                ("received_by", s(format!("{:032x}", parent.received_by))),
+                ("intake_seq", n(parent.intake_position.0)),
+                ("intake_ordinal", n(u64::from(parent.intake_position.1))),
+                ("reviewed_by", s(format!("{:032x}", parent.reviewed_by))),
+                ("review_seq", n(parent.review_position.0)),
+                ("review_ordinal", n(u64::from(parent.review_position.1))),
+            ],
+        ));
+    }
     for batch in &report.batches {
         checks.push(Check::pass(
             "external_feed_batch",

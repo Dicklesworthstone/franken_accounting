@@ -13,6 +13,7 @@ type Cell = (u128, u32, Vec<(u32, u128)>);
 #[derive(Debug)]
 pub struct ExternalFeedManifest {
     book: [u8; 16],
+    workpaper_commit: Option<[u8; 32]>,
     feed: String,
     pub(crate) extract: String,
     pub(crate) from: i32,
@@ -96,6 +97,7 @@ impl ExternalFeedManifest {
         }
         let mut manifest = Self {
             book: hex(book)?,
+            workpaper_commit: None,
             feed: feed.to_string(),
             extract: extract.to_string(),
             from,
@@ -137,6 +139,29 @@ impl ExternalFeedManifest {
             }
         }
         Ok(manifest)
+    }
+
+    /// Parse the exact binary declaration whose journaled review is required.
+    pub fn parse_reviewed_workpaper(bytes: &[u8]) -> Result<Self, String> {
+        if !bytes.starts_with(WORKPAPER_FORMAT) {
+            return Err(
+                "a reviewed population requires the canonical binary manifest Workpaper".into(),
+            );
+        }
+        Self::parse_workpaper(bytes).map_err(|error| error.detail)
+    }
+
+    pub(super) fn workpaper_identity(&self) -> Result<([u8; 32], [u8; 32]), ReportError> {
+        let commit = self.workpaper_commit.ok_or_else(|| {
+            crate::report::failed(
+                "external_feed_manifest_review",
+                "a reviewed population requires the canonical binary manifest Workpaper",
+            )
+        })?;
+        Ok((
+            framed_digest(b"fa:oid:document:v1", &[&self.book, &commit]),
+            commit,
+        ))
     }
 
     /// Decode the canonical Workpaper emitted by `fa subledger manifest`.
@@ -210,6 +235,7 @@ impl ExternalFeedManifest {
         r.finish("external-feed manifest")?;
         Ok(Self {
             book,
+            workpaper_commit: Some(crate::document::doc_commit(21, bytes)),
             feed: feed.to_string(),
             extract: extract.to_string(),
             from,

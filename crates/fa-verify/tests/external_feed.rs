@@ -337,6 +337,22 @@ fn population_result(
     digest: &str,
     hex_bundle: bool,
 ) -> fa_verify::cli::Output {
+    manifest_result(
+        manifest,
+        bundle,
+        digest,
+        hex_bundle,
+        "--population-manifest",
+    )
+}
+
+fn manifest_result(
+    manifest: impl AsRef<[u8]>,
+    bundle: &[u8],
+    digest: &str,
+    hex_bundle: bool,
+    option: &str,
+) -> fa_verify::cli::Output {
     let mut args = vec![
         "report".into(),
         "bundle".into(),
@@ -352,7 +368,7 @@ fn population_result(
         "20".into(),
         "--known-at".into(),
         "5".into(),
-        "--population-manifest".into(),
+        option.into(),
         "source.manifest".into(),
         "--json".into(),
     ];
@@ -534,4 +550,56 @@ fn external_feed_cli_verifies_native_source_workpaper_and_distinguishes_commitme
         let result = check(&malformed);
         assert_eq!(result.exit, 2, "{}{}", result.stdout, result.stderr);
     }
+}
+
+#[test]
+fn signed_prefix_authenticates_the_exact_parent_and_distinct_review_at_its_ordinal() {
+    // The public test signer commits to two additional leaves of sequence 5.
+    // The report, registry closure, certificate digest and child stay identical.
+    let bundle = attach_existing_registries(unhex(include_str!(
+        "external_feed/reviewed-parent.head.hex"
+    )));
+    let commit = fixed("007c73d2365a9465bb0874d13e8ce3cf6a2e2c592d9a57838a4be17bea9d6f10");
+    let bytes = workpaper(commit, 3, 100);
+    let reviewed = |manifest: &[u8], bundle: &[u8]| {
+        manifest_result(
+            manifest,
+            bundle,
+            VALID_DIGEST,
+            false,
+            "--reviewed-population-manifest",
+        )
+    };
+    let valid = reviewed(&bytes, &bundle);
+    assert_eq!(valid.exit, 0, "{}{}", valid.stdout, valid.stderr);
+    for evidence in [
+        r#""check":"external_feed_manifest_review""#,
+        "92c859af5fc5dafcec7c82cbaa3d4fbb4b26fd07803d0d2ea51d81dc830edfd7",
+        r#""intake_ordinal":1"#,
+        r#""review_ordinal":2"#,
+        r#""received_by":"00000000000000000000000000000007""#,
+        r#""reviewed_by":"00000000000000000000000000000008""#,
+    ] {
+        assert!(valid.stdout.contains(evidence), "{}", valid.stdout);
+    }
+    let no_parent = reviewed(&bytes, &unhex(VALID));
+    assert_eq!(no_parent.exit, 8, "{}", no_parent.stdout);
+    assert!(no_parent.stdout.contains("external_feed_manifest_review"));
+    let mut renamed = bytes.clone();
+    let i = renamed
+        .windows(9)
+        .position(|label| label == b"extract-1")
+        .unwrap();
+    renamed[i] = b'E';
+    assert_eq!(
+        population_result(&renamed, &bundle, VALID_DIGEST, false).exit,
+        0
+    );
+    let changed = reviewed(&renamed, &bundle);
+    assert_eq!(changed.exit, 8, "{}", changed.stdout);
+    assert!(changed.stdout.contains("external_feed_manifest_review"));
+    let mismatched = reviewed(&workpaper(commit, 3, 101), &bundle);
+    assert_eq!(mismatched.exit, 8, "{}", mismatched.stdout);
+    assert!(mismatched.stdout.contains("external_feed_population"));
+    assert_eq!(reviewed(MANIFEST.as_bytes(), &bundle).exit, 2);
 }

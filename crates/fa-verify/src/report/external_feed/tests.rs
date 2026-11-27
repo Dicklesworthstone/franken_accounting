@@ -303,6 +303,7 @@ fn expected(
     unattributed.sort_by_key(|r| (r.entry, r.ordinal));
     let reconciled = unattributed.is_empty() && posted == detail && pending == 0;
     VerifiedExternalFeed {
+        manifest_review: None,
         book_id: BOOK,
         known_at,
         effective_through: cutoff,
@@ -406,6 +407,7 @@ fn verify(
         &BTreeSet::new(),
         &resolved,
         &control_rows,
+        None,
     )
     .map(|(report, _)| report)
 }
@@ -704,5 +706,52 @@ fn external_feed_certificate_and_recipient_question_are_independent() {
     assert_eq!(
         decode(&w.buf).err().unwrap().predicate,
         "certificate_digest"
+    );
+}
+
+#[test]
+fn parent_workpaper_review_uses_exact_subject_distinct_principals_and_prefix_order() {
+    let parent = b"parent workpaper";
+    let (oid, commit) = citation(parent);
+    let verify = |intake: Record, review: Record, known_at: u64| {
+        let envelopes = [intake.envelope, review.envelope];
+        let payloads = [
+            (intake.len, intake.bytes.as_slice()),
+            (review.len, review.bytes.as_slice()),
+        ];
+        let evidence = source::Evidence::read(&envelopes, &payloads, &BOOK, known_at).unwrap();
+        evidence.manifest_review(oid, commit)
+    };
+    let receipt = verify(intake(parent, 2), review(parent, 4, 8), 4).unwrap();
+    assert_eq!((receipt.received_by, receipt.reviewed_by), (7, 8));
+    assert_eq!(
+        (receipt.intake_position, receipt.review_position),
+        ((2, 0), (4, 0))
+    );
+    for refused in [
+        verify(intake(parent, 2), review(parent, 4, 8), 3),
+        verify(intake(parent, 2), review(parent, 4, 7), 4),
+        verify(intake(parent, 4), review(parent, 2, 8), 4),
+        verify(intake(b"other", 2), review(parent, 4, 8), 4),
+        verify(intake(parent, 2), review(b"other", 4, 8), 4),
+    ] {
+        assert_eq!(
+            refused.unwrap_err().predicate,
+            "external_feed_manifest_review"
+        );
+    }
+    let mut later = review(parent, 4, 8);
+    later.envelope.within_commit_ordinal = 1;
+    assert_eq!(
+        verify(intake(parent, 4), later, 4).unwrap().review_position,
+        (4, 1)
+    );
+    let mut late_intake = intake(parent, 4);
+    late_intake.envelope.within_commit_ordinal = 1;
+    assert_eq!(
+        verify(late_intake, review(parent, 4, 8), 4)
+            .unwrap_err()
+            .predicate,
+        "external_feed_manifest_review"
     );
 }

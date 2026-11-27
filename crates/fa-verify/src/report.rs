@@ -203,7 +203,7 @@ pub use explain::{
 pub use external_feed::{
     ExternalFeedManifest, ExternalFeedRequest, VerifiedExternalFeed, VerifiedExternalFeedBatch,
     VerifiedExternalFeedContribution, VerifiedExternalFeedLeg, VerifiedExternalFeedRow,
-    VerifiedExternalFeedSummaryLeg, VerifiedExternalFeedTotal,
+    VerifiedExternalFeedSummaryLeg, VerifiedExternalFeedTotal, VerifiedManifestReview,
 };
 pub use functional::{
     VerifiedFunctionalCell, VerifiedFunctionalStatement, VerifiedFunctionalTrialBalance,
@@ -983,7 +983,33 @@ pub fn verify_report_external_feed_expected(
         None,
         None,
         None,
-        Some(expected),
+        Some((expected, None)),
+        verify_checkpoint,
+    )
+}
+
+/// Verify the exact recipient-declared population, its parent Workpaper's original
+/// intake and its distinct recorded reviewer at the report's known-at.
+pub fn verify_report_external_feed_with_reviewed_manifest(
+    bundle: &[u8],
+    trusted_keys: &[[u8; 32]],
+    expected_checkpoint: Option<&Checkpoint>,
+    receipt: Option<&[u8]>,
+    expected: &ExternalFeedRequest,
+    expected_certificate: Option<&[u8; 32]>,
+    manifest: &ExternalFeedManifest,
+) -> Result<VerifiedReport, ReportError> {
+    verify_report_with_subledger_inputs(
+        bundle,
+        trusted_keys,
+        expected_checkpoint,
+        receipt,
+        expected_certificate,
+        None,
+        None,
+        None,
+        None,
+        Some((expected, Some(manifest))),
         verify_checkpoint,
     )
 }
@@ -1163,7 +1189,7 @@ fn verify_report_with_subledger_inputs(
     recipient_base_unit: Option<u32>,
     recipient_equity_diff: Option<&EquityRollForwardDiffRequest>,
     recipient_native_subledger: Option<&NativeSubledgerRequest>,
-    recipient_external_feed: Option<&ExternalFeedRequest>,
+    recipient_external_feed: Option<(&ExternalFeedRequest, Option<&ExternalFeedManifest>)>,
     authenticate: impl FnOnce(&[u8], &[[u8; 32]]) -> Result<SignedCheckpoint, VerifyError>,
 ) -> Result<VerifiedReport, ReportError> {
     if let Some(units) = recipient_units {
@@ -1194,7 +1220,9 @@ fn verify_report_with_subledger_inputs(
         None
     };
     match (&external_feed, recipient_external_feed) {
-        (Some(certificate), Some(expected)) => external_feed::bind_request(certificate, expected)?,
+        (Some(certificate), Some((expected, _))) => {
+            external_feed::bind_request(certificate, expected)?
+        }
         (None, None) => {}
         _ => {
             return Err(failed(
@@ -3776,6 +3804,7 @@ fn verify_report_with_subledger_inputs(
             &visible_migrations,
             &resolved,
             &rows,
+            recipient_external_feed.and_then(|(_, manifest)| manifest),
         )?;
         (Some(report), output)
     } else {

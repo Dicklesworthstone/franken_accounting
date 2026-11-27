@@ -86,7 +86,7 @@ fn reopened_external_feed_export_preserves_historical_and_unreconciled_gross_rep
     let document_oid = text(&document, "oid");
     assert_eq!(document_oid, text(&detail, "document_oid"));
     f.ok(&["attest", "review", &document_oid, "--as", "reviewer"]);
-    f.ok(&[
+    let posted = data(&f.ok(&[
         "subledger",
         "feed",
         "--document",
@@ -95,9 +95,43 @@ fn reopened_external_feed_export_preserves_historical_and_unreconciled_gross_rep
         "2026-03-15",
         "--key",
         "portable-external-summary",
-    ]);
+    ]));
+    let recorded = data(&f.ok(&["subledger", "verify-feed", &text(&posted, "vid")]));
+    let payable = rows(&recorded, "summary_legs")
+        .iter()
+        .find(|leg| text(leg, "side") == "credit")
+        .unwrap();
+    let dimensions = payable.get("dimension_set").unwrap().render();
+    let child_commit = text(&detail, "doc_commit");
+    let parent_input = f.file("population.json", &format!(
+        r#"{{"feed":"vendor-ap","extract_id":"source-march","from":"2026-03-01","through":"2026-03-31","detail_rows":3,"children":[{{"batch_key":"portable-march-001","doc_commit":"{child_commit}"}}],"totals":[{{"account":"6000","debits":"100.00 USD","credits":"0.00 USD"}},{{"account":"2000","debits":"0.00 USD","credits":"100.00 USD","dimension_set":{dimensions}}}]}}"#,
+    ));
+    let parent_path = f.dir.join("population.bin");
+    let parent_path = parent_path.to_str().unwrap();
+    let prepared = data(&f.ok(&[
+        "subledger",
+        "manifest",
+        "--input",
+        &parent_input,
+        "--out",
+        parent_path,
+    ]));
+    let parent = data(&f.ok(&[
+        "document",
+        "add",
+        parent_path,
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+        "--mime",
+        &text(&prepared, "mime"),
+    ]));
+    let parent_oid = text(&parent, "oid");
     let original_at = f.head();
     let original = certify(&f, &original_at, "original-external");
+    f.ok(&["attest", "review", &parent_oid, "--as", "reviewer"]);
+    let review_at = f.head();
 
     // Both sides contaminate the same dimension cell. Their zero net effect
     // cannot hide the absence of corresponding reviewed external detail.
@@ -254,7 +288,9 @@ fn reopened_external_feed_export_preserves_historical_and_unreconciled_gross_rep
         // registry checkout, document store or certificate cache is available.
         let offline = |path: &str| {
             assert!(
-                path == bundle_path.to_str().unwrap() || path == receipt_path.to_str().unwrap()
+                path == bundle_path.to_str().unwrap()
+                    || path == receipt_path.to_str().unwrap()
+                    || path == parent_path
             );
             std::fs::read(path)
         };
@@ -280,6 +316,47 @@ fn reopened_external_feed_export_preserves_historical_and_unreconciled_gross_rep
                 .stdout
                 .contains("\"source_system_completeness\":\"not_judged\"")
         );
+        let mut with_parent = args.to_vec();
+        with_parent.extend(["--reviewed-population-manifest".into(), parent_path.into()]);
+        let result = fa_verify::cli::run(&with_parent, &offline);
+        assert!(
+            result.stdout.contains("external_feed_manifest_review"),
+            "{}{}",
+            result.stdout,
+            result.stderr
+        );
+        if reconciled {
+            // The signed checkpoint is newer than the report. Its later
+            // review cannot satisfy the independently selected earlier prefix.
+            assert_eq!(result.exit, 8, "{}", result.stdout);
+        } else {
+            assert_eq!(result.exit, 0, "{}{}", result.stdout, result.stderr);
+            assert!(result.stdout.contains(&parent_oid));
+            assert!(
+                result
+                    .stdout
+                    .contains(&format!("\"review_seq\":{review_at}"))
+            );
+            assert!(result.stdout.contains("external_feed_population"));
+            // Renaming the extract leaves every source total and child intact
+            // but changes the exact Workpaper that needs its own review.
+            let changed = |path: &str| {
+                let mut bytes = offline(path)?;
+                if path == parent_path {
+                    let at = bytes
+                        .windows(b"source-march".len())
+                        .position(|s| s == b"source-march")
+                        .unwrap();
+                    bytes[at] = b'S';
+                }
+                Ok(bytes)
+            };
+            let result = fa_verify::cli::run(&with_parent, &changed);
+            assert_eq!(result.exit, 8, "{}", result.stdout);
+            assert!(result.stdout.contains("external_feed_manifest_review"));
+            with_parent[args.len()] = "--population-manifest".into();
+            assert_eq!(fa_verify::cli::run(&with_parent, &changed).exit, 0);
+        }
         let generic = args[..8]
             .iter()
             .cloned()

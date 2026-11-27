@@ -125,10 +125,23 @@ pub struct VerifiedExternalFeedTotal {
     pub register_credits_pending: i128,
 }
 
+/// Journal positions and recorded principals for the recipient's exact parent Workpaper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedManifestReview {
+    pub document_oid: [u8; 32],
+    pub doc_commit: [u8; 32],
+    pub received_by: u128,
+    pub intake_position: (u64, u32),
+    pub reviewed_by: u128,
+    pub review_position: (u64, u32),
+}
+
 /// Exact gross source/control reconciliation; an unreconciled report is a
 /// valid verified result when it faithfully exposes uncovered or pending legs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedExternalFeed {
+    /// Present when the recipient required the parent declaration's journaled review.
+    pub manifest_review: Option<VerifiedManifestReview>,
     pub book_id: [u8; 16],
     pub known_at: u64,
     pub effective_through: i32,
@@ -377,6 +390,7 @@ pub(super) fn replay(
     visible_migrations: &BTreeSet<u64>,
     resolved: &BTreeSet<usize>,
     control_rows: &[ReportRow],
+    reviewed_manifest: Option<&ExternalFeedManifest>,
 ) -> Result<(VerifiedExternalFeed, Vec<u8>), ReportError> {
     bind_source(certificate, source_certificate)?;
     let request = &certificate.request;
@@ -608,7 +622,8 @@ pub(super) fn replay(
                 && r.pending_debits == r.register_debits_pending
                 && r.pending_credits == r.register_credits_pending
         });
-    let report = VerifiedExternalFeed {
+    let mut report = VerifiedExternalFeed {
+        manifest_review: None,
         book_id: source_certificate.book,
         known_at: request.known_at,
         effective_through: request.effective_through,
@@ -628,6 +643,13 @@ pub(super) fn replay(
             "report_recomputation",
             "external-feed detail, sources, gross control population or reconciliation output differs",
         ));
+    }
+    if let Some(manifest) = reviewed_manifest {
+        manifest
+            .verify(&report)
+            .map_err(|reason| failed("external_feed_population", reason))?;
+        let (oid, commit) = manifest.workpaper_identity()?;
+        report.manifest_review = Some(evidence.manifest_review(oid, commit)?);
     }
     Ok((report, output))
 }

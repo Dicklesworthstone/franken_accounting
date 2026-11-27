@@ -1,7 +1,8 @@
 //! Bounded retained detail and its original authenticated evidence records.
 
 use super::{
-    VerifiedExternalFeedBatch, VerifiedExternalFeedSummaryLeg, framed_digest, identifier, invalid,
+    VerifiedExternalFeedBatch, VerifiedExternalFeedSummaryLeg, VerifiedManifestReview,
+    framed_digest, identifier, invalid,
 };
 use crate::codec::Reader;
 use crate::envelope::{KIND_ATTESTATION, KIND_IMPORT_RECEIPT, LeafEnvelope, skip_erasable};
@@ -327,8 +328,8 @@ impl Evidence {
                     ));
                 }
                 r.finish("external source review")?;
-                // The stored profile is an authenticated statement, not proof
-                // that a real person held an independent historical capability.
+                // The checkpoint commits to the subject and principal in the body.
+                // The stored profile in the trailer is a structural check.
                 let human_profile = payload.get(len + 33) == Some(&0);
                 if result
                     .reviews
@@ -349,6 +350,38 @@ impl Evidence {
             }
         }
         Ok(result)
+    }
+
+    /// Authenticate the original intake and subsequent review at the report prefix.
+    pub(super) fn manifest_review(
+        &self,
+        document_oid: [u8; 32],
+        doc_commit: [u8; 32],
+    ) -> Result<VerifiedManifestReview, ReportError> {
+        let refuse = |reason| failed("external_feed_manifest_review", reason);
+        let intake = self.intakes.get(&document_oid).ok_or_else(|| {
+            refuse("the manifest Workpaper has no original intake at the report prefix")
+        })?;
+        let review = self.reviews.get(&document_oid).ok_or_else(|| {
+            refuse("the manifest Workpaper has no Reviewed attestation at the report prefix")
+        })?;
+        if intake.doc_commit != doc_commit
+            || intake.position >= review.position
+            || intake.principal == review.principal
+            || !review.human_profile
+        {
+            return Err(refuse(
+                "manifest commitment, intake/review order, recorded profile or reviewer identity differs",
+            ));
+        }
+        Ok(VerifiedManifestReview {
+            document_oid,
+            doc_commit,
+            received_by: intake.principal,
+            intake_position: intake.position,
+            reviewed_by: review.principal,
+            review_position: review.position,
+        })
     }
 
     pub(super) fn bind(
