@@ -480,7 +480,7 @@ fn render_table_markdown(table: &MarkdownTable) -> String {
         .collect();
     for (row, cells) in table.rows.iter().zip(&rows) {
         for (idx, cell) in cells.iter().enumerate() {
-            let extra = match (idx >= 2, row.footing) {
+            let extra = match (table.alignments[idx] == ColumnAlignment::Right, row.footing) {
                 (true, FootingRule::Double) => 4, // `=== ` prefix or suffix marker
                 (true, FootingRule::Single) => 2,
                 _ => 0,
@@ -532,7 +532,7 @@ fn render_table_markdown(table: &MarkdownTable) -> String {
         out.push('|');
         for (idx, cell) in cells.iter().enumerate() {
             let w = widths[idx];
-            let decorated = match (idx >= 2, row.footing) {
+            let decorated = match (table.alignments[idx] == ColumnAlignment::Right, row.footing) {
                 (true, FootingRule::Double) => format!("=={cell}=="),
                 (true, FootingRule::Single) => format!("_{cell}_"),
                 _ => cell.clone(),
@@ -591,6 +591,26 @@ fn column_header(label: &str, periods: &[String]) -> String {
     } else {
         format!("{label} ({scope})")
     }
+}
+
+fn statement_amounts<'a>(
+    statement: &'a Statement,
+    code: &str,
+    unit_id: u32,
+) -> Result<&'a [i128], StatementError> {
+    let line = statement
+        .lines
+        .iter()
+        .find(|line| line.code == code && line.unit_id == unit_id)
+        .ok_or_else(|| {
+            StatementError::Input(format!("statement missing line `{code}` in unit {unit_id}"))
+        })?;
+    if line.amounts.len() != statement.columns.len() {
+        return Err(StatementError::Input(format!(
+            "statement missing primary amount or comparative column count mismatch for line `{code}` in unit {unit_id}"
+        )));
+    }
+    Ok(&line.amounts)
 }
 
 /// Build the deterministic Markdown IR for a `Statement` (`fa-9ae`, `fa-cet`).
@@ -736,31 +756,46 @@ pub fn render_restatement_diff_ir(
             originally_reported.known_at, currently_stated.known_at
         )));
     }
-    if originally_reported.columns.is_empty() || currently_stated.columns.is_empty() {
+    let columns = &originally_reported.columns;
+    if columns.is_empty() || columns.len() != currently_stated.columns.len() {
         return Err(StatementError::Input(
-            "restatement diff requires non-empty primary columns".into(),
+            "restatement diff requires the same non-empty column set".into(),
         ));
     }
-    if originally_reported.columns[0].periods != currently_stated.columns[0].periods {
-        return Err(StatementError::Input(
-            "restatement diff primary columns must cover the same period set".into(),
-        ));
-    }
-    if originally_reported.columns[0].effective_from != currently_stated.columns[0].effective_from
-        || originally_reported.columns[0].effective_through
-            != currently_stated.columns[0].effective_through
-    {
-        return Err(StatementError::Input(
-            "restatement diff primary columns must cover the same effective bounds".into(),
-        ));
+    for (before, after) in columns.iter().zip(&currently_stated.columns) {
+        if before.label != after.label || before.periods != after.periods {
+            return Err(StatementError::Input(
+                "restatement diff columns must identify the same period set".into(),
+            ));
+        }
+        if before.effective_from != after.effective_from
+            || before.effective_through != after.effective_through
+        {
+            return Err(StatementError::Input(
+                "restatement diff columns must cover the same effective bounds".into(),
+            ));
+        }
     }
 
     let unit_map = validate_unit_specs(units)?;
-    let mut distinct_units: Vec<u32> = currently_stated.lines.iter().map(|l| l.unit_id).collect();
+    let mut distinct_units: Vec<u32> = currently_stated
+        .lines
+        .iter()
+        .chain(&originally_reported.lines)
+        .map(|l| l.unit_id)
+        .collect();
     distinct_units.sort_unstable();
     distinct_units.dedup();
 
-    let headers = vec![
+    // A separate period column keeps comparative exhibits within the document
+    // width and column bounds even at the full certified selection size.
+    let comparative = columns.len() > 1;
+    let header_periods = if comparative {
+        &[][..]
+    } else {
+        columns[0].periods.as_slice()
+    };
+    let mut headers = vec![
         "Code".to_string(),
         "Line".to_string(),
         column_header(
@@ -768,21 +803,25 @@ pub fn render_restatement_diff_ir(
                 "As Originally Reported (seq {})",
                 originally_reported.known_at
             ),
-            &originally_reported.columns[0].periods,
+            header_periods,
         ),
         column_header(
             &format!("As Currently Stated (seq {})", currently_stated.known_at),
-            &currently_stated.columns[0].periods,
+            header_periods,
         ),
         "Restatement Delta".to_string(),
     ];
-    let alignments = vec![
+    let mut alignments = vec![
         ColumnAlignment::Left,
         ColumnAlignment::Left,
         ColumnAlignment::Right,
         ColumnAlignment::Right,
         ColumnAlignment::Right,
     ];
+    if comparative {
+        headers.insert(2, "Reporting period".into());
+        alignments.insert(2, ColumnAlignment::Left);
+    }
 
     let mut tables = Vec::with_capacity(distinct_units.len());
     for unit_id in distinct_units {
@@ -793,46 +832,32 @@ pub fn render_restatement_diff_ir(
         })?;
         let mut rows = Vec::with_capacity(definition.lines().len());
         for def_line in definition.lines() {
-            let orig_amt = originally_reported
-                .lines
-                .iter()
-                .find(|l| l.code == def_line.code && l.unit_id == unit_id)
-                .and_then(|line| line.amounts.first().copied())
-                .ok_or_else(|| {
-                    StatementError::Input(format!(
-                        "originally_reported missing primary amount for line `{}` in unit {unit_id}",
-                        def_line.code
-                    ))
-                })?;
-            let curr_amt = currently_stated
-                .lines
-                .iter()
-                .find(|l| l.code == def_line.code && l.unit_id == unit_id)
-                .and_then(|line| line.amounts.first().copied())
-                .ok_or_else(|| {
-                    StatementError::Input(format!(
-                        "currently_stated missing primary amount for line `{}` in unit {unit_id}",
-                        def_line.code
-                    ))
-                })?;
-            let delta = curr_amt
-                .checked_sub(orig_amt)
-                .ok_or(StatementError::Overflow {
-                    line: def_line.code.clone(),
-                    column: "Restatement Delta".into(),
-                    unit_id,
-                })?;
-            rows.push(MarkdownRow {
-                line_code: def_line.code.clone(),
-                footing: classify_footing(definition, &def_line.code, &def_line.source),
-                cells: vec![
-                    def_line.code.clone(),
-                    def_line.label.clone(),
+            let before = statement_amounts(originally_reported, &def_line.code, unit_id)?;
+            let after = statement_amounts(currently_stated, &def_line.code, unit_id)?;
+            for ((column, &orig_amt), &curr_amt) in columns.iter().zip(before).zip(after) {
+                let delta =
+                    curr_amt
+                        .checked_sub(orig_amt)
+                        .ok_or_else(|| StatementError::Overflow {
+                            line: def_line.code.clone(),
+                            column: column.label.clone(),
+                            unit_id,
+                        })?;
+                let mut cells = vec![def_line.code.clone(), def_line.label.clone()];
+                if comparative {
+                    cells.push(column_header(&column.label, &column.periods));
+                }
+                cells.extend([
                     format_scaled_i128(orig_amt, spec.scale)?,
                     format_scaled_i128(curr_amt, spec.scale)?,
                     format_scaled_i128(delta, spec.scale)?,
-                ],
-            });
+                ]);
+                rows.push(MarkdownRow {
+                    line_code: def_line.code.clone(),
+                    footing: classify_footing(definition, &def_line.code, &def_line.source),
+                    cells,
+                });
+            }
         }
         tables.push(MarkdownTable {
             unit_id,
@@ -1603,6 +1628,69 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn restatement_exhibits_show_changes_confined_to_a_comparative_period() {
+        let (def, mut before) = sample_statement(10, 50_025, 12_005);
+        let mut after = before.clone();
+        after.known_at = 25;
+        let (_, prior) = sample_statement(10, 20_000, 4_000);
+        let (_, corrected_prior) = sample_statement(25, 20_000, 4_650);
+        for (statement, comparative) in [(&mut before, prior), (&mut after, corrected_prior)] {
+            let mut column = comparative.columns[0].clone();
+            column.label = "comparative".into();
+            column.periods = vec!["FY2026-P02".into()];
+            column.effective_through = DateDay(59);
+            statement.columns.push(column);
+            for (line, comparative_line) in statement.lines.iter_mut().zip(comparative.lines) {
+                line.amounts.push(comparative_line.amounts[0]);
+            }
+        }
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let diff = render_restatement_diff_ir(&before, &after, &def, &units).unwrap();
+        let rows: Vec<_> = diff.tables[0]
+            .rows
+            .iter()
+            .filter(|r| r.line_code == "unclosed_earnings")
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].cells[2..],
+            ["FY2026-P03", "380.20", "380.20", "0.00"]
+        );
+        assert_eq!(
+            rows[1].cells[2..],
+            ["comparative (FY2026-P02)", "160.00", "153.50", "-6.50"]
+        );
+        assert_eq!(
+            StatementMarkdownIr::decode(&diff.canonical_bytes().unwrap()).unwrap(),
+            diff
+        );
+        let html = String::from_utf8(crate::render::render_html(&diff, 0).unwrap()).unwrap();
+        assert!(html.contains(
+            "class=\"footing-single delta-nonzero\"><td class=\"align-left\">unclosed_earnings"
+        ));
+        let original_ir = render_statement_ir(&before, &def, &units).unwrap();
+        let mut restated_ir = render_statement_ir(&after, &def, &units).unwrap();
+        let html = String::from_utf8(
+            crate::render::render_semantic_diff_html(&original_ir, &restated_ir, 0).unwrap(),
+        )
+        .unwrap();
+        assert!(html.contains("comparative (FY2026-P02)</th>"));
+        assert!(html.contains("<td class=\"align-left\">RESTATED</td><td class=\"align-right\">380.20</td><td class=\"align-right\"><del>160.00</del><ins>153.50</ins>"));
+        restated_ir.tables[0].rows[0].cells.pop();
+        assert!(crate::render::render_semantic_diff_html(&original_ir, &restated_ir, 0).is_err());
+
+        after.columns[1].effective_through = DateDay(60);
+        assert!(render_restatement_diff_ir(&before, &after, &def, &units).is_err());
+        after.columns[1].effective_through = DateDay(59);
+        after.lines[0].amounts.pop();
+        assert!(render_restatement_diff_ir(&before, &after, &def, &units).is_err());
     }
 
     #[test]

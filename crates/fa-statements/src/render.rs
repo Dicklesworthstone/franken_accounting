@@ -235,7 +235,7 @@ pub fn render_html(
                 FootingRule::Double => row_classes.push("footing-double"),
             }
             if is_restatement_diff
-                && let Some(delta_cell) = row.cells.get(4)
+                && let Some(delta_cell) = row.cells.last()
                 && delta_cell.chars().any(|c| matches!(c, '1'..='9'))
             {
                 row_classes.push("delta-nonzero");
@@ -277,9 +277,16 @@ pub fn render_semantic_diff_html(
 ) -> Result<Vec<u8>, StatementError> {
     if originally_reported.book_id != currently_stated.book_id
         || originally_reported.branch_id != currently_stated.branch_id
+        || originally_reported.definition_digest != currently_stated.definition_digest
+        || originally_reported.definition_name != currently_stated.definition_name
+        || originally_reported.definition_version != currently_stated.definition_version
+        || originally_reported.known_at > currently_stated.known_at
+        || originally_reported.compared_known_at.is_some()
+        || currently_stated.compared_known_at.is_some()
+        || originally_reported.tables.len() != currently_stated.tables.len()
     {
         return Err(StatementError::Input(
-            "semantic diff requires both Markdown IRs to share book_id and branch_id".into(),
+            "semantic diff requires ordered statement snapshots of the same book, branch, definition and units".into(),
         ));
     }
     let orig_digest = hex_bytes(&originally_reported.digest()?.0);
@@ -318,63 +325,76 @@ pub fn render_semantic_diff_html(
         currently_stated.known_at
     ));
 
-    for curr_table in &currently_stated.tables {
-        let orig_table = originally_reported
-            .tables
-            .iter()
-            .find(|t| t.unit_id == curr_table.unit_id)
-            .ok_or_else(|| {
-                StatementError::Input(format!(
-                    "originally_reported IR missing table for unit_id {}",
-                    curr_table.unit_id
-                ))
-            })?;
+    for (orig_table, curr_table) in originally_reported
+        .tables
+        .iter()
+        .zip(&currently_stated.tables)
+    {
+        if orig_table.unit_id != curr_table.unit_id
+            || orig_table.unit_code != curr_table.unit_code
+            || orig_table.unit_scale != curr_table.unit_scale
+            || orig_table.headers != curr_table.headers
+            || curr_table.headers.len() < 3
+            || orig_table.rows.len() != curr_table.rows.len()
+        {
+            return Err(StatementError::Input(
+                "semantic diff requires matching units, column scopes and line sets".into(),
+            ));
+        }
         html.push_str(&format!(
             "<h2>Unit: {} (scale={})</h2>\n<table>\n<thead>\n<tr>\
              <th class=\"align-left\">Code</th>\
              <th class=\"align-left\">Line</th>\
-             <th class=\"align-left\">Status</th>\
-             <th class=\"align-right\">Semantic Comparison</th>\
-             </tr>\n</thead>\n<tbody>\n",
+             <th class=\"align-left\">Status</th>",
             escape_html(&curr_table.unit_code),
             curr_table.unit_scale
         ));
-        for curr_row in &curr_table.rows {
-            let orig_row = orig_table
-                .rows
-                .iter()
-                .find(|r| r.line_code == curr_row.line_code);
-            let curr_val = curr_row.cells.get(2).map(String::as_str).unwrap_or("0");
-            let orig_val = orig_row
-                .and_then(|r| r.cells.get(2))
-                .map(String::as_str)
-                .unwrap_or("0");
-            let changed = orig_val != curr_val;
-            let (status, row_cls, cell_html) = if changed {
-                (
-                    "RESTATED",
-                    "status-restated",
-                    format!(
-                        "<del>{}</del><ins>{}</ins>",
-                        escape_html(orig_val),
-                        escape_html(curr_val)
-                    ),
-                )
+        for column in &curr_table.headers[2..] {
+            html.push_str(&format!(
+                "<th class=\"align-right\">{}</th>",
+                escape_html(column)
+            ));
+        }
+        html.push_str("</tr>\n</thead>\n<tbody>\n");
+        for (orig_row, curr_row) in orig_table.rows.iter().zip(&curr_table.rows) {
+            if orig_row.cells.len() != curr_table.headers.len()
+                || curr_row.cells.len() != curr_table.headers.len()
+                || orig_row.line_code != curr_row.line_code
+                || orig_row.cells[..2] != curr_row.cells[..2]
+            {
+                return Err(StatementError::Input(
+                    "semantic diff requires matching statement lines and complete period amounts"
+                        .into(),
+                ));
+            }
+            let (status, row_cls) = if orig_row.cells[2..] != curr_row.cells[2..] {
+                ("RESTATED", "status-restated")
             } else {
-                ("UNCHANGED", "status-unchanged", escape_html(curr_val))
+                ("UNCHANGED", "status-unchanged")
             };
-            let label = curr_row.cells.get(1).map(String::as_str).unwrap_or("");
             html.push_str(&format!(
                 "<tr data-line=\"{}\" class=\"{row_cls}\">\
                  <td class=\"align-left\">{}</td>\
                  <td class=\"align-left\">{}</td>\
-                 <td class=\"align-left\">{status}</td>\
-                 <td class=\"align-right\">{cell_html}</td>\
-                 </tr>\n",
+                 <td class=\"align-left\">{status}</td>",
                 escape_html(&curr_row.line_code),
                 escape_html(&curr_row.line_code),
-                escape_html(label),
+                escape_html(&curr_row.cells[1]),
             ));
+            for (before, after) in orig_row.cells[2..].iter().zip(&curr_row.cells[2..]) {
+                html.push_str("<td class=\"align-right\">");
+                if before == after {
+                    html.push_str(&escape_html(after));
+                } else {
+                    html.push_str(&format!(
+                        "<del>{}</del><ins>{}</ins>",
+                        escape_html(before),
+                        escape_html(after)
+                    ));
+                }
+                html.push_str("</td>");
+            }
+            html.push_str("</tr>\n");
         }
         html.push_str("</tbody>\n</table>\n");
     }
