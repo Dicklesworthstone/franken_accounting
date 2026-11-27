@@ -301,8 +301,9 @@ pub use fa_statements::custom::{
 };
 pub use fa_statements::markdown::{
     OpenItemIrRow, OpenItemsIrInput, RegisterIrInput, RegisterIrRow, StatementMarkdownIr,
-    TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec, render_open_items_ir,
-    render_register_ir, render_restatement_diff_ir, render_statement_ir, render_trial_balance_ir,
+    StatementRenderDefinition, TrialBalanceIrInput, TrialBalanceIrRow, UnitFormatSpec,
+    render_open_items_ir, render_register_ir, render_restatement_diff_ir, render_statement_ir,
+    render_trial_balance_ir,
 };
 pub use fa_statements::regulatory::{
     RegulatoryEditSet, RegulatoryScheduleDefinition, regulatory_edit_set, regulatory_edits,

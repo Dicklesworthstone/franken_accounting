@@ -698,6 +698,48 @@ fn register_open_items_lineage_trace_and_case_diff_render_end_to_end() {
     let dir = temporary();
     let book = book(&dir);
 
+    let mut layout = fa::CustomStatementDefinition::from_builtin(
+        &fa::StatementDefinition::embedded("income-statement").unwrap(),
+    );
+    layout.name = "company-income".into();
+    layout.lines[0].label = "Company revenue & fees".into();
+    let source = dir.join("company-income.toml");
+    let plan = dir.join("company-income.plan");
+    std::fs::write(&source, layout.to_toml().unwrap()).unwrap();
+    let planned = ok(
+        &book,
+        &[
+            "statement",
+            "define",
+            "--file",
+            source.to_str().unwrap(),
+            "--from",
+            "2026-01-01",
+            "--key",
+            "exhibit-layout",
+            "--plan-out",
+            plan.to_str().unwrap(),
+        ],
+    );
+    let proposal = text(data(&planned[0]), "proposal_digest");
+    let approve = |name| {
+        let approved = ok(&book, &["approve", "--proposal", proposal, "--as", name]);
+        text(data(&approved[0]), "approval_vid").to_string()
+    };
+    ok(
+        &book,
+        &[
+            "statement",
+            "activate",
+            "--plan",
+            plan.to_str().unwrap(),
+            "--approval",
+            &approve("layout-controller"),
+            "--approval",
+            &approve("layout-reviewer"),
+        ],
+    );
+
     let sale_intent = dir.join("sale-trace.json");
     std::fs::write(
         &sale_intent,
@@ -1011,6 +1053,30 @@ fn register_open_items_lineage_trace_and_case_diff_render_end_to_end() {
         diff_html_body.contains("<del>") && diff_html_body.contains("<ins>"),
         "{diff_html_body}"
     );
+    let company_html = dir.join("company-restatement.html");
+    let company = ok(
+        &book,
+        &[
+            "case",
+            "diff",
+            "1",
+            "--statements",
+            "--period",
+            "FY2026-P03",
+            "--definition",
+            "company-income",
+            "--certify",
+            "--render",
+            "html",
+            "--out",
+            company_html.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(text(rendered(&company), "format"), "html");
+    let html = std::fs::read_to_string(company_html).unwrap();
+    assert!(html.contains("Semantic Restatement Diff: company-income"));
+    assert!(html.contains("Company revenue &amp; fees"));
+    assert!(html.contains("<del>") && html.contains("<ins>"));
 
     // 6. `--fmd-bin` missing binary refuses cleanly with exit 4 (environment) without creating `--out`.
     let missing_out = dir.join("missing-fmd.html");

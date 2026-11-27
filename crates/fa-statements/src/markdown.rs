@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use fa_model::{DecodeError, EncodeError, Id128, Oid, Reader, Writer, domain_digest};
 
+use crate::custom::{CustomLineSource, CustomStatementDefinition};
 use crate::{LineSource, Statement, StatementDefinition, StatementError};
 
 pub const MARKDOWN_IR_FORMAT: &[u8] = b"fa:statement-markdown-ir:v1";
@@ -434,16 +435,74 @@ pub fn format_scaled_i128(mantissa: i128, scale: u8) -> Result<String, Statement
     Ok(format!("{sign}{whole}.{frac:0width$}"))
 }
 
-fn classify_footing(
-    definition: &StatementDefinition,
-    line_code: &str,
-    source: &LineSource,
-) -> FootingRule {
-    if definition.check_lines().contains(&line_code.to_string())
-        || matches!(line_code, "total_equity" | "net_income")
-    {
+/// A document uses the source report's actual definition and its digest,
+/// including the activated company layout when one was used for the fold.
+#[derive(Clone, Copy)]
+pub enum StatementRenderDefinition<'a> {
+    Builtin(&'a StatementDefinition),
+    Custom(&'a CustomStatementDefinition),
+}
+
+impl<'a> From<&'a StatementDefinition> for StatementRenderDefinition<'a> {
+    fn from(definition: &'a StatementDefinition) -> Self {
+        Self::Builtin(definition)
+    }
+}
+
+impl<'a> From<&'a CustomStatementDefinition> for StatementRenderDefinition<'a> {
+    fn from(definition: &'a CustomStatementDefinition) -> Self {
+        Self::Custom(definition)
+    }
+}
+
+impl<'a> StatementRenderDefinition<'a> {
+    fn identity(self) -> Result<(&'a str, u32, [u8; 32]), StatementError> {
+        match self {
+            Self::Builtin(d) => Ok((d.name(), d.version(), d.digest()?)),
+            Self::Custom(d) => {
+                d.validate()?;
+                Ok((&d.name, d.version, d.digest()?.0))
+            }
+        }
+    }
+
+    fn lines(self) -> Vec<(&'a str, &'a str, FootingRule)> {
+        match self {
+            Self::Builtin(d) => d
+                .lines()
+                .iter()
+                .map(|line| {
+                    let check = d.check_lines().contains(&line.code)
+                        || matches!(line.code.as_str(), "total_equity" | "net_income");
+                    (
+                        line.code.as_str(),
+                        line.label.as_str(),
+                        classify_footing(check, matches!(line.source, LineSource::Formula { .. })),
+                    )
+                })
+                .collect(),
+            Self::Custom(d) => d
+                .lines
+                .iter()
+                .map(|line| {
+                    (
+                        line.code.as_str(),
+                        line.label.as_str(),
+                        classify_footing(
+                            d.check_lines.contains(&line.code),
+                            matches!(line.source, CustomLineSource::Formula { .. }),
+                        ),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+fn classify_footing(check: bool, formula: bool) -> FootingRule {
+    if check {
         FootingRule::Double
-    } else if matches!(source, LineSource::Formula { .. }) {
+    } else if formula {
         FootingRule::Single
     } else {
         FootingRule::None
@@ -614,15 +673,16 @@ fn statement_amounts<'a>(
 }
 
 /// Build the deterministic Markdown IR for a `Statement` (`fa-9ae`, `fa-cet`).
-pub fn render_statement_ir(
+pub fn render_statement_ir<'a>(
     statement: &Statement,
-    definition: &StatementDefinition,
+    definition: impl Into<StatementRenderDefinition<'a>>,
     units: &[UnitFormatSpec],
 ) -> Result<StatementMarkdownIr, StatementError> {
-    let def_digest = definition.digest()?;
-    if statement.definition_digest != def_digest
-        || statement.definition_name != definition.name()
-        || statement.definition_version != definition.version()
+    let definition = definition.into();
+    let (name, version, digest) = definition.identity()?;
+    if statement.definition_digest != digest
+        || statement.definition_name != name
+        || statement.definition_version != version
     {
         return Err(StatementError::Input(
             "statement does not match supplied StatementDefinition".into(),
@@ -646,6 +706,7 @@ pub fn render_statement_ir(
         statement.columns.len(),
     ));
 
+    let lines = definition.lines();
     let mut tables = Vec::with_capacity(distinct_units.len());
     for unit_id in distinct_units {
         let spec = unit_map.get(&unit_id).ok_or_else(|| {
@@ -653,32 +714,18 @@ pub fn render_statement_ir(
                 "statement uses unit_id {unit_id} missing from UnitFormatSpec list"
             ))
         })?;
-        let mut rows = Vec::with_capacity(definition.lines().len());
-        for def_line in definition.lines() {
-            let stmt_line = statement
-                .lines
-                .iter()
-                .find(|l| l.code == def_line.code && l.unit_id == unit_id)
-                .ok_or_else(|| {
-                    StatementError::Input(format!(
-                        "statement missing line `{}` for unit {unit_id}",
-                        def_line.code
-                    ))
-                })?;
-            if stmt_line.amounts.len() != statement.columns.len() {
-                return Err(StatementError::Input(
-                    "statement line amount count disagrees with column count".into(),
-                ));
-            }
-            let mut cells = Vec::with_capacity(2 + stmt_line.amounts.len());
-            cells.push(def_line.code.clone());
-            cells.push(def_line.label.clone());
-            for &amount in &stmt_line.amounts {
+        let mut rows = Vec::with_capacity(lines.len());
+        for &(code, label, footing) in &lines {
+            let amounts = statement_amounts(statement, code, unit_id)?;
+            let mut cells = Vec::with_capacity(2 + amounts.len());
+            cells.push(code.to_owned());
+            cells.push(label.to_owned());
+            for &amount in amounts {
                 cells.push(format_scaled_i128(amount, spec.scale)?);
             }
             rows.push(MarkdownRow {
-                line_code: def_line.code.clone(),
-                footing: classify_footing(definition, &def_line.code, &def_line.source),
+                line_code: code.to_owned(),
+                footing,
                 cells,
             });
         }
@@ -723,10 +770,10 @@ pub fn render_statement_ir(
 
 /// Build a deterministic restatement comparison Markdown IR (`as_originally_reported`
 /// vs `as_currently_stated`, plan §12.5, `fa-9ae`, `fa-cet`).
-pub fn render_restatement_diff_ir(
+pub fn render_restatement_diff_ir<'a>(
     originally_reported: &Statement,
     currently_stated: &Statement,
-    definition: &StatementDefinition,
+    definition: impl Into<StatementRenderDefinition<'a>>,
     units: &[UnitFormatSpec],
 ) -> Result<StatementMarkdownIr, StatementError> {
     if originally_reported.book_id != currently_stated.book_id
@@ -737,13 +784,14 @@ pub fn render_restatement_diff_ir(
                 .into(),
         ));
     }
-    let def_digest = definition.digest()?;
-    if originally_reported.definition_digest != def_digest
-        || currently_stated.definition_digest != def_digest
-        || originally_reported.definition_name != definition.name()
-        || currently_stated.definition_name != definition.name()
-        || originally_reported.definition_version != definition.version()
-        || currently_stated.definition_version != definition.version()
+    let definition = definition.into();
+    let (name, version, digest) = definition.identity()?;
+    if originally_reported.definition_digest != digest
+        || currently_stated.definition_digest != digest
+        || originally_reported.definition_name != name
+        || currently_stated.definition_name != name
+        || originally_reported.definition_version != version
+        || currently_stated.definition_version != version
     {
         return Err(StatementError::Input(
             "restatement diff requires both statements to share the same StatementDefinition"
@@ -823,6 +871,7 @@ pub fn render_restatement_diff_ir(
         alignments.insert(2, ColumnAlignment::Left);
     }
 
+    let lines = definition.lines();
     let mut tables = Vec::with_capacity(distinct_units.len());
     for unit_id in distinct_units {
         let spec = unit_map.get(&unit_id).ok_or_else(|| {
@@ -830,20 +879,20 @@ pub fn render_restatement_diff_ir(
                 "statement uses unit_id {unit_id} missing from UnitFormatSpec list"
             ))
         })?;
-        let mut rows = Vec::with_capacity(definition.lines().len());
-        for def_line in definition.lines() {
-            let before = statement_amounts(originally_reported, &def_line.code, unit_id)?;
-            let after = statement_amounts(currently_stated, &def_line.code, unit_id)?;
+        let mut rows = Vec::with_capacity(lines.len() * columns.len());
+        for &(code, label, footing) in &lines {
+            let before = statement_amounts(originally_reported, code, unit_id)?;
+            let after = statement_amounts(currently_stated, code, unit_id)?;
             for ((column, &orig_amt), &curr_amt) in columns.iter().zip(before).zip(after) {
                 let delta =
                     curr_amt
                         .checked_sub(orig_amt)
                         .ok_or_else(|| StatementError::Overflow {
-                            line: def_line.code.clone(),
+                            line: code.to_owned(),
                             column: column.label.clone(),
                             unit_id,
                         })?;
-                let mut cells = vec![def_line.code.clone(), def_line.label.clone()];
+                let mut cells = vec![code.to_owned(), label.to_owned()];
                 if comparative {
                     cells.push(column_header(&column.label, &column.periods));
                 }
@@ -853,8 +902,8 @@ pub fn render_restatement_diff_ir(
                     format_scaled_i128(delta, spec.scale)?,
                 ]);
                 rows.push(MarkdownRow {
-                    line_code: def_line.code.clone(),
-                    footing: classify_footing(definition, &def_line.code, &def_line.source),
+                    line_code: code.to_owned(),
+                    footing,
                     cells,
                 });
             }
@@ -1563,6 +1612,57 @@ mod tests {
                 "{field}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn activated_layout_exhibits_retain_company_labels_footings_and_identity() {
+        use crate::custom::{CustomStatementDefinition, evaluate_custom};
+
+        let builtin = StatementDefinition::embedded("balance-sheet").unwrap();
+        let mut layout = CustomStatementDefinition::from_builtin(&builtin);
+        layout.name = "company-position".into();
+        layout.version = 3;
+        layout.lines[0].label = "Operating | assets".into();
+        let mut input = StatementInput {
+            book_id: Id128([4; 16]),
+            branch_id: Id128::TRUNK,
+            known_at: 10,
+            accounts: vec![],
+            units: vec![1],
+            columns: vec![ColumnInput {
+                label: "current".into(),
+                periods: vec!["FY2026-P03".into()],
+                effective_from: None,
+                effective_through: DateDay(90),
+                balances: vec![],
+            }],
+        };
+        let before = evaluate_custom(&layout, &input).unwrap();
+        input.known_at = 20;
+        let after = evaluate_custom(&layout, &input).unwrap();
+        let units = [UnitFormatSpec {
+            unit_id: 1,
+            code: "USD".into(),
+            scale: 2,
+        }];
+        let snapshot = render_statement_ir(&before, &layout, &units).unwrap();
+        let comparison = render_restatement_diff_ir(&before, &after, &layout, &units).unwrap();
+        for ir in [snapshot, comparison] {
+            assert_eq!(ir.definition_digest, layout.digest().unwrap());
+            assert_eq!(ir.definition_version, 3);
+            assert!(ir.markdown.contains("Operating \\| assets"));
+            assert!(
+                ir.tables[0]
+                    .rows
+                    .iter()
+                    .any(|row| layout.check_lines.contains(&row.line_code)
+                        && row.footing == FootingRule::Double)
+            );
+        }
+        let mut next = layout;
+        next.lines[0].label.push_str(" (revised)");
+        assert!(render_statement_ir(&before, &next, &units).is_err());
+        assert!(render_restatement_diff_ir(&before, &after, &builtin, &units).is_err());
     }
 
     #[test]

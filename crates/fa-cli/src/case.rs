@@ -762,11 +762,7 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
                 .statement_metadata()
                 .map_err(|error| Fail::Internal(format!("case statement metadata: {error}")))?
                 .ok_or_else(|| Fail::Internal("case selected a non-statement report".into()))?;
-            let matches_def = meta.definition_name == def_filter
-                || (def_filter == "balance-sheet" && meta.kind == fa::StatementKind::BalanceSheet)
-                || (def_filter == "income-statement"
-                    && meta.kind == fa::StatementKind::IncomeStatement);
-            if matches_def {
+            if meta.definition_name == def_filter {
                 filtered.push(item);
             }
         }
@@ -786,7 +782,7 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
     {
         return Err(usage(
             format!(
-                "`fa case diff {ordinal} --statements --render` with `--out` requires selecting one statement comparison ({} matched): narrow with `--period <code>` and `--definition balance-sheet|income-statement`",
+                "`fa case diff {ordinal} --statements --render` with `--out` requires selecting one statement comparison ({} matched): narrow with `--period <code>` and `--definition <layout-name>`",
                 selected.len()
             ),
             STATEMENTS_EXAMPLE,
@@ -860,19 +856,24 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
                                          diff: &fa::StatementDiff,
                                          req: &crate::cli::RenderRequest<'_>|
          -> Result<crate::cli::Rendering, Fail> {
-            if diff.is_custom() {
-                return Err(usage(
-                    "`fa case diff --statements --render` supports built-in statement layouts only",
-                    STATEMENTS_EXAMPLE,
-                ));
-            }
-            let def = fa::StatementDefinition::decode(&diff.after().definition_bytes)
-                .map_err(|e| Fail::Internal(format!("case statement definition decode: {e}")))?;
+            let def = match &request.selection {
+                fa::ReportSelection::Statement(s) | fa::ReportSelection::FunctionalStatement(s) => {
+                    fa::StatementRenderDefinition::Builtin(&s.definition)
+                }
+                fa::ReportSelection::CustomStatement(s) => {
+                    fa::StatementRenderDefinition::Custom(&s.definition)
+                }
+                _ => {
+                    return Err(Fail::Internal(
+                        "case selected a non-statement layout".into(),
+                    ));
+                }
+            };
             let specs = crate::cli::unit_format_specs(
                 &book.context().units,
                 diff.lines().iter().map(|line| line.unit_id),
             )?;
-            let diff_ir = fa::render_restatement_diff_ir(diff.before(), diff.after(), &def, &specs)
+            let diff_ir = fa::render_restatement_diff_ir(diff.before(), diff.after(), def, &specs)
                 .map_err(|e| Fail::Internal(format!("restatement diff IR: {e}")))?;
             if req.fmd_bin.is_none() && req.format == fa::StatementRenderFormat::Html {
                 let tick = book
@@ -883,9 +884,9 @@ fn posted_statements(ctx: &mut Ctx<'_>, args: &Args, ordinal: u32) -> Result<(),
                                 diff_ir.known_at
                             ))
                         })?;
-                let orig_ir = fa::render_statement_ir(diff.before(), &def, &specs)
+                let orig_ir = fa::render_statement_ir(diff.before(), def, &specs)
                     .map_err(|e| Fail::Internal(format!("original statement IR: {e}")))?;
-                let curr_ir = fa::render_statement_ir(diff.after(), &def, &specs)
+                let curr_ir = fa::render_statement_ir(diff.after(), def, &specs)
                     .map_err(|e| Fail::Internal(format!("restated statement IR: {e}")))?;
                 let bytes = fa::render_semantic_diff_html(
                     &orig_ir,
