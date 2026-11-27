@@ -17,6 +17,7 @@ members = [
     "crates/fa-escrow",
     "crates/fa-formats",
     "crates/fa-money",
+    "crates/fa-money-core",
 
     "crates/fa-time",
     "crates/fa-registry",

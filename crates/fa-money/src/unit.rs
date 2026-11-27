@@ -6,9 +6,7 @@ use core::fmt;
 
 use crate::rounding::RoundingLaw;
 
-/// Index into a [`UnitRegistry`]. Stable for the life of the registry epoch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct UnitId(pub u32);
+pub use fa_money_core::UnitId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BalancePolicy {
@@ -316,12 +314,6 @@ impl UnitRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
-    }
-}
-
-impl fmt::Display for UnitId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unit#{}", self.0)
     }
 }
 

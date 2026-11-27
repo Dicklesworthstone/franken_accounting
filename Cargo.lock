@@ -1078,12 +1078,17 @@ name = "fa-money"
 version = "0.0.1"
 dependencies = [
  "asupersync",
+ "fa-money-core",
  "fa-registry",
  "fgdb-bigint",
  "fsym-bigint",
  "fsym-budget",
  "fsym-rational",
 ]
+
+[[package]]
+name = "fa-money-core"
+version = "0.0.1"
 
 [[package]]
 name = "fa-notary"

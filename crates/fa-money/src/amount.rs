@@ -98,7 +98,63 @@ impl From<crate::rate::MeterError> for AmountError {
     }
 }
 
+impl From<fa_money_core::Amount> for Amount {
+    fn from(value: fa_money_core::Amount) -> Self {
+        Self::new(value.unit, value.mantissa)
+    }
+}
+
+impl From<Amount> for fa_money_core::Amount {
+    fn from(value: Amount) -> Self {
+        Self::new(value.unit, value.mantissa)
+    }
+}
+
+impl From<fa_money_core::AmountError> for AmountError {
+    fn from(error: fa_money_core::AmountError) -> Self {
+        match error {
+            fa_money_core::AmountError::ZeroWeights => {
+                Self::Malformed("allocation weights sum to zero".into())
+            }
+            fa_money_core::AmountError::InvariantViolation(why) => Self::InvariantViolation(why),
+            fa_money_core::AmountError::Overflow => Self::Overflow,
+            fa_money_core::AmountError::InvalidScale(_) => {
+                Self::InvariantViolation("registry scale exceeds 38")
+            }
+        }
+    }
+}
+
 impl Amount {
+    /// Multiply by a bounded signed rate using stack-only exact arithmetic.
+    pub fn mul_signed_rate(
+        self,
+        rate: crate::SignedRate,
+        law: RoundingLaw,
+    ) -> Result<Self, AmountError> {
+        Ok(fa_money_core::Amount::from(self)
+            .mul_signed_rate(rate, law)?
+            .into())
+    }
+
+    /// Convert at a bounded signed rate under the registered unit scales.
+    pub fn convert_signed_rate(
+        self,
+        to: UnitId,
+        rate: crate::SignedRate,
+        law: RoundingLaw,
+        reg: &UnitRegistry,
+    ) -> Result<Self, AmountError> {
+        let scale = |unit: UnitId| {
+            reg.get(unit)
+                .map(|u| u.scale)
+                .ok_or_else(|| AmountError::UnknownUnit(unit.to_string()))
+        };
+        Ok(fa_money_core::Amount::from(self)
+            .convert_signed_rate(to, scale(self.unit)?, scale(to)?, rate, law)?
+            .into())
+    }
+
     pub const fn new(unit: UnitId, mantissa: i128) -> Self {
         Self { unit, mantissa }
     }
@@ -331,18 +387,11 @@ impl Amount {
 
     /// Canonical encoding: `unit_id: u32 LE ‖ mantissa: i128 LE` (plan §6.6).
     pub fn encode(self) -> [u8; 20] {
-        let mut out = [0u8; 20];
-        out[..4].copy_from_slice(&self.unit.0.to_le_bytes());
-        out[4..].copy_from_slice(&self.mantissa.to_le_bytes());
-        out
+        fa_money_core::Amount::from(self).encode()
     }
 
     pub fn decode(bytes: &[u8; 20]) -> Self {
-        let mut u = [0u8; 4];
-        u.copy_from_slice(&bytes[..4]);
-        let mut m = [0u8; 16];
-        m.copy_from_slice(&bytes[4..]);
-        Self::new(UnitId(u32::from_le_bytes(u)), i128::from_le_bytes(m))
+        fa_money_core::Amount::decode(bytes).into()
     }
 }
 
@@ -779,6 +828,34 @@ mod tests {
             })
         );
         assert!(Amount::new(usd, 5).as_leg(Side::Debit).is_ok());
+    }
+
+    #[test]
+    fn bounded_and_metered_rates_agree_for_every_rounding_law() {
+        use crate::SignedRate;
+        use core::num::NonZeroU128;
+        let cx = asupersync::Cx::detached_cancel_context();
+        let mut budget = crate::test_budget(&cx);
+        let registry = reg();
+        let usd = registry.lookup("USD").unwrap();
+        let jpy = registry.lookup("JPY").unwrap();
+        for (n, d) in [(0, 7), (1, 2), (2, 3), (3, 40), (i128::MAX, u128::MAX)] {
+            let bounded = SignedRate::new(n, NonZeroU128::new(d).unwrap());
+            let metered = Rate::new(&mut budget, n as u128, d).unwrap();
+            for m in [i128::MIN, -75, -1, 0, 1, 75, i128::MAX] {
+                let amount = Amount::new(usd, m);
+                for law in RoundingLaw::ALL {
+                    assert_eq!(
+                        amount.mul_signed_rate(bounded, law),
+                        amount.mul_rate(&mut budget, &metered, law)
+                    );
+                    assert_eq!(
+                        amount.convert_signed_rate(jpy, bounded, law, &registry),
+                        amount.convert(&mut budget, jpy, &metered, law, &registry)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

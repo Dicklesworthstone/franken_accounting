@@ -53,7 +53,7 @@ description = "Flip cross-scale conversion direction in Amount::convert."
 
 [[mutant]]
 id = "MUT-004"
-file = "crates/fa-money/src/rounding.rs"
+file = "crates/fa-money-core/src/rounding.rs"
 find = "Equal => q % 2 == 1,"
 replace = "Equal => q % 2 == 0,"
 law = "FA-INV-06.core"
@@ -62,7 +62,7 @@ description = "Round HalfEven ties to odd instead of even."
 
 [[mutant]]
 id = "MUT-005"
-file = "crates/fa-money/src/rounding.rs"
+file = "crates/fa-money-core/src/rounding.rs"
 find = "Self::Ceiling => !negative,"
 replace = "Self::Ceiling => negative,"
 law = "FA-INV-06.core"
@@ -71,7 +71,7 @@ description = "Invert signed direction of RoundingLaw::Ceiling."
 
 [[mutant]]
 id = "MUT-006"
-file = "crates/fa-money/src/rounding.rs"
+file = "crates/fa-money-core/src/rounding.rs"
 find = "if d == 0 || r >= d {"
 replace = "if d == 0 {"
 law = "FA-INV-06.core"
@@ -80,7 +80,7 @@ description = "Drop remainder < denominator precondition in RoundingLaw::apply_m
 
 [[mutant]]
 id = "MUT-007"
-file = "crates/fa-money/src/rounding.rs"
+file = "crates/fa-money-core/src/rounding.rs"
 find = "Self::HalfAwayFromZero => cmp_half != Less,"
 replace = "Self::HalfAwayFromZero => cmp_half == Greater,"
 law = "FA-INV-06.core"
@@ -91,7 +91,7 @@ description = "Make HalfAwayFromZero round ties toward zero instead of away from
 
 [[mutant]]
 id = "MUT-008"
-file = "crates/fa-money/src/allocation.rs"
+file = "crates/fa-money-core/src/allocation.rs"
 find = "remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));"
 replace = "remainders.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));"
 law = "FA-INV-06.core"
@@ -100,7 +100,7 @@ description = "Break largest-remainder fractional ties toward highest index inst
 
 [[mutant]]
 id = "MUT-009"
-file = "crates/fa-money/src/allocation.rs"
+file = "crates/fa-money-core/src/allocation.rs"
 find = "shares[i] = shares[i].checked_add(1).ok_or(AmountError::Overflow)?;"
 replace = "shares[i] = shares[i].checked_add(0).ok_or(AmountError::Overflow)?;"
 law = "FA-INV-06.core"

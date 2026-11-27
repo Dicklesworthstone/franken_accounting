@@ -1176,7 +1176,7 @@ Method: every gate has a bench binary, a committed baseline, a variance budget, 
 
 | Layer | Crates |
 |---|---|
-| Foundation | `fa-types` (ids, handles, canonical encodings, claim re-exports), `fa-money` (Abacus), `fa-time` (Almanac calendars and selectors), `fa-registry` (generated registry readers), `fa-claim` (thin re-export of `fgdb-claim` with FA ids), `fa-sim-harness` (the lab-runtime harness every later crate's tests run under — present before the first kernel line) |
+| Foundation | `fa-types` (ids, handles, canonical encodings, claim re-exports), `fa-money-core`, `fa-money` (Abacus), `fa-time` (Almanac calendars and selectors), `fa-registry` (generated registry readers), `fa-claim` (thin re-export of `fgdb-claim` with FA ids), `fa-sim-harness` (the lab-runtime harness every later crate's tests run under — present before the first kernel line) |
 | Model | `fa-model` (REA schema, symbols, entry classes, admissibility, labels/edges as typed builders, control payloads) |
 | Laws (pure; no I/O; stripped `Cx`) | `fa-canon` (language, type checker, IR, interim evaluator, VM adapter), `fa-policy` (caveat evaluation, SoD policy evaluation, ceilings, evidence-minimum policy), `fa-intents` (intent schemas and plan types) |
 | Kernel | `fa-journal` (Folio posting kernel: calls *down* into Laws for rule evaluation and authorization; write path; projections), `fa-registers` (maintainer, checkpoints, folds), `fa-escrow` (balance-limit and usage reservation cells), `fa-palimpsest` (supersession, netting, case and lifecycle state machines — produces no reports) |

@@ -42,6 +42,7 @@ pub mod wide;
 
 pub use allocation::largest_remainder;
 pub use amount::{Amount, AmountError, Side};
+pub use fa_money_core::{self as bounded, SignedRate};
 pub use lot::{
     AccountingRegime, ConversionError, LotCandidate, LotError, LotLaw, LotReliefOutcome,
     LotReliefSlice, convert_with_law, relieve_lots,

@@ -23,6 +23,13 @@ path = "crates/fa-types"
 planned = true
 
 [[crate]]
+name = "fa-money-core"
+layer = "foundation"
+path = "crates/fa-money-core"
+planned = false
+allowlist = []
+
+[[crate]]
 name = "fa-money"
 layer = "foundation"
 path = "crates/fa-money"

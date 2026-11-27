@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+fa-money-core = { path = "../fa-money-core", version = "=0.0.1", features = ["alloc"] }
 fa-registry = { path = "../fa-registry", version = "=0.0.1" }
 asupersync.workspace = true
 fsym-bigint.workspace = true
