@@ -1301,6 +1301,15 @@ pub fn extend_reconciliation_history<V: Vfs + Clone>(
     if history.at > at || history.marker.is_none() || marker_at(db, history.at)? != history.marker {
         return Ok(None);
     }
+    // The marker comparison above authenticates the complete basis. All members
+    // of one transaction use this branch, including after ordered overlay writes.
+    if history.at == at {
+        return Ok(Some(ReconciliationHistory {
+            carried_rows: Some(0),
+            lock_candidates_examined: 0,
+            ..history.clone()
+        }));
+    }
     let mut through = history.at.0;
     let mut examined = 0u64;
     for batch in db.delta_since(history.at)? {

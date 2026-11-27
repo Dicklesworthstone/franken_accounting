@@ -679,6 +679,9 @@ pub(crate) struct Mints {
     accounts: BTreeMap<VId, AccountRow>,
     tracker: crate::batch::TemplateByteTracker,
     capacity: crate::register_capacity::ScheduledReversalCapacity,
+    // Every mint has the same committed basis. Each still witnesses the accounts
+    // and attestations it actually touches through the posting transaction.
+    reconciliation: Option<crate::bank::ReconciliationHistory>,
     /// Corroborated tick used by an Open preparation, including an empty
     /// candidate population. Other minting paths do not use this field.
     pub(crate) opening_tick: Option<VId>,
@@ -696,6 +699,7 @@ impl Mints {
             accounts: BTreeMap::new(),
             tracker: crate::batch::TemplateByteTracker::default(),
             capacity: crate::register_capacity::ScheduledReversalCapacity::default(),
+            reconciliation: None,
             opening_tick: None,
             minted: Vec::new(),
             blocked: Vec::new(),
@@ -1151,7 +1155,7 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         capability,
         schedule.reverse_on,
         &proposal.legs,
-        &mut None,
+        &mut mints.reconciliation,
     )? {
         Ok(citations) => citations,
         Err(refusal) => return execution_refusal(mints, schedule, trigger, refusal),
