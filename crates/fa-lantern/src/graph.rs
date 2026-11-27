@@ -4,6 +4,8 @@
 //! Amounts are exact allocated shares, legal entities never share a path,
 //! and every citation resolves. A motif is a score, never a finding of fact.
 
+#[cfg(test)]
+mod cycle_runtime_tests;
 mod cycles;
 mod louvain;
 mod maxflow;
