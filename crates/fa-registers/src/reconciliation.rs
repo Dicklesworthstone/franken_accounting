@@ -7,9 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(test)]
-use fa_model::EntryRef;
-use fa_model::{Oid, Writer, domain_digest};
+use fa_model::{EntryRef, Oid, Writer, domain_digest};
 #[cfg(test)]
 use fa_money::Side;
 use fa_money::{Amount, UnitId};
@@ -133,10 +131,16 @@ pub fn fold_reconciliation_register(
                 actual: line.amount.unit,
             });
         }
-        bank_by_id.insert(line.oid()?, line.clone());
+        if bank_by_id.insert(line.oid()?, line.clone()).is_some() {
+            return Err(ReconciliationError::InvalidField("duplicate bank line"));
+        }
     }
 
-    let mut book_by_ref = BTreeMap::new();
+    // The matcher numbers cash legs, not journal entries. Several candidate
+    // legs can therefore carry the same authenticated EntryRef. A grouped
+    // match or fee without an ordinal needs an unambiguous reference.
+    let mut book_by_ref = BTreeMap::<EntryRef, Option<&BookCandidateEntry>>::new();
+    let mut book_by_ordinal = BTreeMap::new();
     for entry in book_entries {
         if entry.amount.unit != unit {
             return Err(ReconciliationError::UnitMismatch {
@@ -144,38 +148,96 @@ pub fn fold_reconciliation_register(
                 actual: entry.amount.unit,
             });
         }
-        book_by_ref.insert(entry.entry_ref, entry.clone());
+        if entry.amount.mantissa <= 0 {
+            return Err(ReconciliationError::InvalidField("cash leg amount"));
+        }
+        if book_by_ordinal.insert(entry.entry_ordinal, entry).is_some() {
+            return Err(ReconciliationError::InvalidField(
+                "duplicate cash leg ordinal",
+            ));
+        }
+        book_by_ref
+            .entry(entry.entry_ref)
+            .and_modify(|unique| *unique = None)
+            .or_insert(Some(entry));
     }
 
     // Filter out matches superseded by a later match (`supersedes_match_id`).
     let mut superseded_ids = BTreeSet::new();
     for m in matches {
-        if let Some(old_id) = m.supersedes_match_id {
-            superseded_ids.insert(old_id);
+        if let Some(old_id) = m.supersedes_match_id
+            && !superseded_ids.insert(old_id)
+        {
+            return Err(ReconciliationError::InvalidField(
+                "forked match supersession",
+            ));
         }
     }
 
     let mut active_matches = Vec::new();
     let mut matched_bank_ids = BTreeSet::new();
-    let mut matched_book_refs = BTreeSet::new();
+    let mut matched_book_ordinals = BTreeSet::new();
+    let mut match_ids = BTreeSet::new();
 
     for m in matches {
-        let oid = m.validate(enforced_policy_epoch, &bank_by_id, &book_by_ref)?;
+        let mut selected = BTreeMap::new();
+        if m.matched_entry_ordinal.is_some() && m.book_entry_refs.len() != 1 {
+            return Err(ReconciliationError::InvalidField(
+                "ambiguous matched_entry_ordinal",
+            ));
+        }
+        for reference in &m.book_entry_refs {
+            let candidate = match m.matched_entry_ordinal {
+                Some(ordinal) => book_by_ordinal
+                    .get(&ordinal)
+                    .copied()
+                    .filter(|leg| leg.entry_ref == *reference),
+                None => book_by_ref.get(reference).copied().flatten(),
+            }
+            .ok_or(ReconciliationError::InvalidField(
+                "unknown or ambiguous matched cash leg",
+            ))?;
+            selected.insert(*reference, candidate.clone());
+        }
+        if let Some(residual) = &m.residual {
+            let leg = book_by_ref
+                .get(&residual.residual_entry_ref)
+                .copied()
+                .flatten()
+                .ok_or(ReconciliationError::InvalidField(
+                    "unknown or ambiguous residual cash leg",
+                ))?;
+            selected.insert(leg.entry_ref, leg.clone());
+        }
+        let oid = m.validate(enforced_policy_epoch, &bank_by_id, &selected)?;
+        if !match_ids.insert(oid) {
+            return Err(ReconciliationError::InvalidField("duplicate match"));
+        }
         if superseded_ids.contains(&oid) {
             continue;
         }
         if !m.book_entry_refs.is_empty() {
             for bid in &m.bank_line_ids {
-                matched_bank_ids.insert(*bid);
+                if !matched_bank_ids.insert(*bid) {
+                    return Err(ReconciliationError::InvalidField(
+                        "bank line matched more than once",
+                    ));
+                }
             }
-            for bref in &m.book_entry_refs {
-                matched_book_refs.insert(*bref);
-            }
-            if let Some(res) = &m.residual {
-                matched_book_refs.insert(res.residual_entry_ref);
+            for leg in selected.values() {
+                if !matched_book_ordinals.insert(leg.entry_ordinal) {
+                    return Err(ReconciliationError::InvalidField(
+                        "cash leg matched more than once",
+                    ));
+                }
             }
         }
         active_matches.push(m.clone());
+    }
+    if !superseded_ids.is_subset(&match_ids) {
+        return Err(ReconciliationError::InvalidField(
+            "unknown superseded match",
+        ));
     }
 
     let mut unmatched_bank_lines = Vec::new();
@@ -205,7 +267,7 @@ pub fn fold_reconciliation_register(
     let mut outstanding_book_sum: i128 = 0;
 
     for entry in book_entries {
-        if !matched_book_refs.contains(&entry.entry_ref) {
+        if !matched_book_ordinals.contains(&entry.entry_ordinal) {
             outstanding_book_sum = outstanding_book_sum
                 .checked_add(entry.signed_cash_delta())
                 .ok_or(ReconciliationError::InvalidField(
@@ -312,9 +374,9 @@ pub fn verify_reconciliation_register(
         stored.evaluated_known_at,
     )?;
 
-    if refolded.fold_digest != stored.fold_digest {
+    if refolded != *stored {
         return Err(ReconciliationError::VerificationFailed(
-            "stored reconciliation fold digest drifted from journal refold".into(),
+            "stored reconciliation register differs from its journal refold".into(),
         ));
     }
     if !refolded.unposted_residuals.is_empty() {
@@ -877,6 +939,136 @@ mod tests {
     }
 
     #[test]
+    fn split_cash_legs_fold_and_verify_at_their_selected_ordinals() {
+        let unit = UnitId(1);
+        let amount = |mantissa| Amount::new(unit, mantissa);
+        let line = BankStatementLine {
+            statement_oid: Oid([1; 32]),
+            statement_seq: 1,
+            line_ordinal: 1,
+            booking_date: DateDay(12),
+            value_date: DateDay(12),
+            side: Side::Credit,
+            amount: amount(40),
+            counterparty: String::new(),
+            reference: "B".into(),
+        };
+        let leg = BookCandidateEntry {
+            entry_ref: EntryRef {
+                vid: VId(3),
+                entry_digest: [4; 32],
+            },
+            entry_ordinal: 7,
+            effective_date: DateDay(12),
+            side: Side::Debit,
+            amount: amount(40),
+            counterparty: String::new(),
+            reference: "B".into(),
+        };
+        let other = BookCandidateEntry {
+            entry_ordinal: 19,
+            amount: amount(60),
+            reference: "A".into(),
+            ..leg.clone()
+        };
+        // Ordinals remain the original candidate numbers after earlier
+        // confirmations remove candidates; neither need be a slice index.
+        let entries = vec![other.clone(), leg.clone()];
+        let lines = vec![line];
+        let epoch = fixture_epoch();
+        let config = MatcherConfig {
+            policy_epoch: None,
+            enforced_policy_epoch: epoch,
+            max_date_window_days: 1,
+            pinned_fallback_only: true,
+            advisory_learned_scores_bps: BTreeMap::new(),
+        };
+        let matches = match_bank_lines(&lines, &entries, &config, VId(8)).unwrap();
+        let fold = |lines: &[BankStatementLine],
+                    entries: &[BookCandidateEntry],
+                    matches: &[ReconciliationMatch]| {
+            fold_reconciliation_register(
+                VId(5),
+                "2026-01",
+                unit,
+                amount(0),
+                amount(100),
+                amount(0),
+                amount(40),
+                lines,
+                entries,
+                matches,
+                epoch,
+                CommitSeq(13),
+            )
+        };
+        let mut register = fold(&lines, &entries, &matches).unwrap();
+        assert!(register.is_reconciled);
+        assert_eq!(register.outstanding_book_entries, [other.clone()]);
+        assert_eq!(register.adjusted_book_balance, amount(40));
+        verify_reconciliation_register(&register, &lines, &entries, &matches, epoch).unwrap();
+        register.outstanding_book_entries[0] = leg;
+        assert!(
+            verify_reconciliation_register(&register, &lines, &entries, &matches, epoch).is_err()
+        );
+
+        let mut mismatched = matches[0].clone();
+        mismatched.matched_entry_ordinal = None;
+        assert!(fold(&lines, &entries, &[mismatched.clone()]).is_err());
+        mismatched.matched_entry_ordinal = Some(other.entry_ordinal);
+        assert!(fold(&lines, &entries, &[mismatched]).is_err());
+
+        // An equal amount and common EntryRef cannot substitute for the
+        // actual winning cash leg. Give the alternative the same amount
+        // but a conflicting reference, then also test an eligible tied leg.
+        for alternative_reference in ["A", "B"] {
+            let mut alternatives = entries.clone();
+            alternatives[0].amount = lines[0].amount;
+            alternatives[0].reference = alternative_reference.into();
+            let genuine = match_bank_lines(&lines, &alternatives, &config, VId(8)).unwrap();
+            assert_eq!(genuine[0].matched_entry_ordinal, Some(7));
+            fold(&lines, &alternatives, &genuine).unwrap();
+            let mut substituted = genuine[0].clone();
+            substituted.matched_entry_ordinal = Some(19);
+            assert!(matches!(
+                fold(&lines, &alternatives, &[substituted]),
+                Err(ReconciliationError::InvalidField(
+                    "bank match decision winner"
+                ))
+            ));
+        }
+        // A valid, independently replayable card from another source line
+        // cannot authorize clearing this one, even with identical amounts.
+        let other_line = BankStatementLine {
+            line_ordinal: 37,
+            ..lines[0].clone()
+        };
+        let unrelated = match_bank_lines(&[other_line], &entries, &config, VId(8)).unwrap();
+        let mut transplanted = matches[0].clone();
+        transplanted.decision_card = unrelated[0].decision_card.clone();
+        assert!(matches!(
+            fold(&lines, &entries, &[transplanted]),
+            Err(ReconciliationError::InvalidField(
+                "bank match decision subject"
+            ))
+        ));
+
+        let second = BankStatementLine {
+            line_ordinal: 2,
+            ..lines[0].clone()
+        };
+        let mut competing =
+            match_bank_lines(core::slice::from_ref(&second), &entries, &config, VId(8)).unwrap();
+        competing.push(matches[0].clone());
+        assert!(matches!(
+            fold(&[lines[0].clone(), second], &entries, &competing),
+            Err(ReconciliationError::InvalidField(
+                "cash leg matched more than once"
+            ))
+        ));
+    }
+
+    #[test]
     fn planted_negatives_missing_fallback_modified_amount_and_unposted_fee_residual() {
         let epoch = fixture_epoch();
         let usd = UnitId(1);
@@ -975,6 +1167,37 @@ mod tests {
             verify_reconciliation_register(&reg_unposted, &all_bank, &all_book, &matches, epoch)
                 .unwrap_err();
         assert!(matches!(err, ReconciliationError::VerificationFailed(_)));
+
+        // A claimed fee must resolve to its own committed cash leg. It
+        // cannot clear the line merely by supplying a law and signed number.
+        let deposit = &all_bank[0];
+        let mut combined = matches[0].clone();
+        combined.bank_line_ids.push(all_bank[1].oid().unwrap());
+        let fee_leg = BookCandidateEntry {
+            entry_ref: EntryRef {
+                vid: VId(202),
+                entry_digest: [0xB2; 32],
+            },
+            entry_ordinal: 2,
+            side: Side::Credit,
+            amount: all_bank[1].amount,
+            ..all_book[0].clone()
+        };
+        combined.residual = Some(ResidualExplanation {
+            residual_entry_ref: fee_leg.entry_ref,
+            signed_cash_delta: -2_500,
+            law_id: "explicit fee".into(),
+        });
+        let by_line = BTreeMap::from([
+            (deposit.oid().unwrap(), deposit.clone()),
+            (all_bank[1].oid().unwrap(), all_bank[1].clone()),
+        ]);
+        let mut by_ref = BTreeMap::from([(all_book[0].entry_ref, all_book[0].clone())]);
+        assert!(combined.validate(epoch, &by_line, &by_ref).is_err());
+        by_ref.insert(fee_leg.entry_ref, fee_leg.clone());
+        combined.validate(epoch, &by_line, &by_ref).unwrap();
+        by_ref.get_mut(&fee_leg.entry_ref).unwrap().side = Side::Debit;
+        assert!(combined.validate(epoch, &by_line, &by_ref).is_err());
     }
 
     #[test]

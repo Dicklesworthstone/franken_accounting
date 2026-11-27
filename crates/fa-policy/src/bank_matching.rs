@@ -11,8 +11,8 @@ use fa_time::DateDay;
 use fgdb_types::VId;
 
 use crate::{
-    BenefitInterval, DecisionCandidate, DecisionCard, DecisionFeature, DecisionReplayError,
-    amounts_preserved, decide_bank_match,
+    BenefitInterval, DecisionCandidate, DecisionCard, DecisionFeature, DecisionKind,
+    DecisionReplayError, amounts_preserved, decide_bank_match,
 };
 
 pub const BANK_LINE_DOC_DOMAIN: &[u8] = b"fa:bank-line-doc:v1";
@@ -328,6 +328,11 @@ impl ReconciliationMatch {
     ) -> Result<Oid, ReconciliationError> {
         self.decision_card.validate_fallback()?;
         self.decision_card.verify_replay(enforced_policy_epoch)?;
+        if self.decision_card.decision_kind != DecisionKind::BankMatchHeuristic {
+            return Err(ReconciliationError::InvalidField(
+                "bank match decision kind",
+            ));
+        }
 
         if self.bank_line_ids.is_empty() {
             return Err(ReconciliationError::InvalidField("bank_line_ids"));
@@ -335,10 +340,17 @@ impl ReconciliationMatch {
 
         let mut bank_net: i128 = 0;
         let mut expected_unit: Option<UnitId> = None;
+        let mut seen_lines = BTreeSet::new();
         for id in &self.bank_line_ids {
+            if !seen_lines.insert(id) {
+                return Err(ReconciliationError::InvalidField("duplicate bank_line_id"));
+            }
             let Some(line) = bank_lines_by_id.get(id) else {
                 return Err(ReconciliationError::InvalidField("unknown bank_line_id"));
             };
+            if line.oid()? != *id {
+                return Err(ReconciliationError::InvalidField("bank line identity"));
+            }
             if let Some(u) = expected_unit {
                 if line.amount.unit != u {
                     return Err(ReconciliationError::UnitMismatch {
@@ -356,10 +368,22 @@ impl ReconciliationMatch {
 
         let mut book_net: i128 = 0;
         let mut committed_amounts = Vec::with_capacity(self.book_entry_refs.len());
+        let mut seen_entries = BTreeSet::new();
         for eref in &self.book_entry_refs {
+            if !seen_entries.insert(eref) {
+                return Err(ReconciliationError::InvalidField(
+                    "duplicate book_entry_ref",
+                ));
+            }
             let Some(entry) = book_entries_by_ref.get(eref) else {
                 return Err(ReconciliationError::InvalidField("unknown book_entry_ref"));
             };
+            if entry.entry_ref != *eref {
+                return Err(ReconciliationError::InvalidField("cash leg identity"));
+            }
+            if entry.amount.mantissa <= 0 {
+                return Err(ReconciliationError::InvalidField("cash leg amount"));
+            }
             if let Some(u) = expected_unit
                 && entry.amount.unit != u
             {
@@ -377,12 +401,51 @@ impl ReconciliationMatch {
         if !amounts_preserved(&committed_amounts, &committed_amounts, &self.decision_card) {
             return Err(ReconciliationError::InvalidField("amounts_preserved"));
         }
+        let single_leg = match self.book_entry_refs.as_slice() {
+            [reference] => book_entries_by_ref.get(reference),
+            _ => None,
+        };
+        if let Some(ordinal) = self.matched_entry_ordinal
+            && single_leg.is_none_or(|leg| leg.entry_ordinal != ordinal)
+        {
+            return Err(ReconciliationError::InvalidField(
+                "matched cash leg ordinal",
+            ));
+        }
+        if let [id] = self.bank_line_ids.as_slice() {
+            if self.decision_card.state.as_slice() != id.0 {
+                return Err(ReconciliationError::InvalidField(
+                    "bank match decision subject",
+                ));
+            }
+            // A grouped match or explicitly posted difference has its own
+            // conservation check. An explicit superseding unmatch releases
+            // the old claim even when the original candidate still exists.
+            if self.book_entry_refs.len() <= 1
+                && self.residual.is_none()
+                && !(single_leg.is_none() && self.supersedes_match_id.is_some())
+            {
+                self.verify_single_selection(&bank_lines_by_id[id], single_leg)?;
+            }
+        }
 
         let residual_delta = if let Some(res) = &self.residual {
             if res.law_id.trim().is_empty() {
                 return Err(ReconciliationError::MissingResidualLaw);
             }
-            res.signed_cash_delta
+            let leg = book_entries_by_ref.get(&res.residual_entry_ref).ok_or(
+                ReconciliationError::InvalidField("unknown residual cash leg"),
+            )?;
+            if seen_entries.is_empty()
+                || seen_entries.contains(&res.residual_entry_ref)
+                || leg.entry_ref != res.residual_entry_ref
+                || Some(leg.amount.unit) != expected_unit
+                || leg.amount.mantissa <= 0
+                || leg.signed_cash_delta() != res.signed_cash_delta
+            {
+                return Err(ReconciliationError::InvalidField("residual cash leg"));
+            }
+            leg.signed_cash_delta()
         } else {
             0
         };
@@ -395,12 +458,93 @@ impl ReconciliationMatch {
                 return Err(ReconciliationError::UnexplainedResidual {
                     bank_net_mantissa: bank_net,
                     book_net_mantissa: total_book_with_residual,
-                    unexplained_delta: bank_net - total_book_with_residual,
+                    unexplained_delta: bank_net
+                        .checked_sub(total_book_with_residual)
+                        .ok_or(ReconciliationError::Overflow("unexplained residual"))?,
                 });
             }
         }
 
         self.oid()
+    }
+
+    /// Generic card replay verifies the policy's choice. For a pinned card
+    /// that choice is the fallback *action*; its cash leg is the lowest
+    /// recorded reference-compatible ordinal. Bind that decision and its
+    /// analytic features to the identified source leg before clearing it.
+    fn verify_single_selection(
+        &self,
+        line: &BankStatementLine,
+        leg: Option<&BookCandidateEntry>,
+    ) -> Result<(), ReconciliationError> {
+        let card = &self.decision_card;
+        let feature = |ordinal: u64, field: &str| {
+            let name = format!("cand.{ordinal}.{field}");
+            let index = card.features.partition_point(|f| f.name < name);
+            let value = card
+                .features
+                .get(index)
+                .filter(|f| f.name == name && !f.advisory);
+            if card
+                .features
+                .get(index.saturating_add(1))
+                .is_some_and(|f| f.name == name)
+            {
+                return Err(ReconciliationError::InvalidField(
+                    "duplicate bank candidate feature",
+                ));
+            }
+            value
+                .map(|f| f.value)
+                .ok_or(ReconciliationError::InvalidField(
+                    "missing bank candidate feature",
+                ))
+        };
+        let reference = normalize_reference(&line.reference);
+        let expected = if card.used_fallback() {
+            let mut winner = None;
+            for candidate in &card.candidates {
+                let ordinal = u64::try_from(candidate.parameter)
+                    .map_err(|_| ReconciliationError::InvalidField("bank candidate ordinal"))?;
+                if candidate.action != "match_entry_ordinal" {
+                    return Err(ReconciliationError::InvalidField("bank candidate action"));
+                }
+                if reference.is_empty() || feature(ordinal, "ref_exact")? == 1 {
+                    winner = Some(winner.map_or(ordinal, |prior: u64| prior.min(ordinal)));
+                }
+            }
+            winner
+        } else {
+            if card.chosen.action != "match_entry_ordinal" {
+                return Err(ReconciliationError::InvalidField("bank candidate action"));
+            }
+            Some(
+                u64::try_from(card.chosen.parameter)
+                    .map_err(|_| ReconciliationError::InvalidField("bank candidate ordinal"))?,
+            )
+        };
+        if expected != leg.map(|entry| entry.entry_ordinal) {
+            return Err(ReconciliationError::InvalidField(
+                "bank match decision winner",
+            ));
+        }
+        if let Some(leg) = leg {
+            let ordinal = leg.entry_ordinal;
+            let ref_exact =
+                !reference.is_empty() && normalize_reference(&leg.reference) == reference;
+            let party = normalize_counterparty(&line.counterparty);
+            let cp_exact = !party.is_empty() && normalize_counterparty(&leg.counterparty) == party;
+            let days = (i64::from(line.booking_date.0) - i64::from(leg.effective_date.0)).abs();
+            if feature(ordinal, "ref_exact")? != i128::from(ref_exact)
+                || feature(ordinal, "cp_exact")? != i128::from(cp_exact)
+                || feature(ordinal, "date_delta_days")? != i128::from(days)
+            {
+                return Err(ReconciliationError::InvalidField(
+                    "bank match source features",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ReconciliationError> {

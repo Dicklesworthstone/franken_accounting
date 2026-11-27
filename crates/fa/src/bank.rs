@@ -1399,14 +1399,6 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 "the matcher produced an extra source-line proposal",
             ));
         }
-        let bank_by_id = lines
-            .iter()
-            .map(|line| {
-                line.oid()
-                    .map(|id| (id, line.clone()))
-                    .map_err(|e| corrupt(e.to_string()))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
         for proposal in &proposals {
             let card = proposal
                 .decision_card
@@ -1421,76 +1413,32 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     "narrow --date-window, or supply specific references on cash-leg memos and statement lines; no candidates were discarded",
                 )));
             }
-            // Validate against the selected leg, not a map that overwrites
-            // earlier cash legs sharing the same EntryRef.
-            let mut selected = BTreeMap::new();
-            if let Some(ordinal) = proposal.matched_entry_ordinal {
-                let candidate = candidates
-                    .get(
-                        usize::try_from(ordinal)
-                            .map_err(|_| corrupt("invalid candidate ordinal"))?,
-                    )
-                    .ok_or_else(|| corrupt("missing selected candidate"))?;
-                fa_policy::bank_matching::verify_match_preserves_committed_amounts(
-                    &candidate.candidate,
-                    candidate.candidate.amount,
-                    &proposal.decision_card,
-                )
-                .map_err(|e| corrupt(e.to_string()))?;
-                selected.insert(candidate.candidate.entry_ref, candidate.candidate.clone());
-            }
-            proposal
-                .validate(decision_epoch, &bank_by_id, &selected)
-                .map_err(|e| corrupt(e.to_string()))?;
         }
-        let unique_entry_refs = native
-            .iter()
-            .map(|c| c.entry_ref)
-            .collect::<BTreeSet<_>>()
-            .len()
-            == native.len();
-        let unposted_residuals = if unique_entry_refs {
-            let register: ReconciliationRegister = fold_reconciliation_register(
-                manifest.account,
-                format!("statement-{}", manifest.sequence_number),
-                unit,
-                fa_money::Amount::new(unit, manifest.opening_balance),
-                fa_money::Amount::new(unit, book_closing_balance),
-                fa_money::Amount::new(unit, manifest.opening_balance),
-                fa_money::Amount::new(unit, manifest.closing_balance),
+        let register = fold_reconciliation_register(
+            manifest.account,
+            format!("statement-{}", manifest.sequence_number),
+            unit,
+            fa_money::Amount::new(unit, manifest.opening_balance),
+            fa_money::Amount::new(unit, book_closing_balance),
+            fa_money::Amount::new(unit, manifest.opening_balance),
+            fa_money::Amount::new(unit, manifest.closing_balance),
+            &available_lines,
+            &native,
+            &available_proposal_list,
+            decision_epoch,
+            seq,
+        )
+        .map_err(|e| corrupt(e.to_string()))?;
+        if register.is_reconciled {
+            verify_reconciliation_register(
+                &register,
                 &available_lines,
                 &native,
                 &available_proposal_list,
                 decision_epoch,
-                seq,
             )
             .map_err(|e| corrupt(e.to_string()))?;
-            if register.is_reconciled && register.unposted_residuals.is_empty() {
-                verify_reconciliation_register(
-                    &register,
-                    &available_lines,
-                    &native,
-                    &available_proposal_list,
-                    decision_epoch,
-                )
-                .map_err(|e| corrupt(e.to_string()))?;
-            }
-            register.unposted_residuals
-        } else {
-            let mut residuals = Vec::new();
-            for (line, proposal) in available_lines.iter().zip(&available_proposal_list) {
-                if proposal.book_entry_refs.is_empty() {
-                    residuals.push(UnpostedResidualFinding {
-                        bank_line_id: line.oid().map_err(|e| corrupt(e.to_string()))?,
-                        booking_date: line.booking_date,
-                        signed_cash_delta: line.signed_cash_delta(),
-                        counterparty: line.counterparty.clone(),
-                        reference: line.reference.clone(),
-                    });
-                }
-            }
-            residuals
-        };
+        }
         let closing_difference = manifest
             .closing_balance
             .checked_sub(book_closing_balance)
@@ -1521,7 +1469,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             consumed_cash_legs: consumed_cash_legs.into_iter().collect(),
             occupied_bank_lines: occupied_bank_lines.into_iter().collect(),
             proposals,
-            unposted_residuals,
+            unposted_residuals: register.unposted_residuals,
             book_closing_balance,
             closing_difference,
             progress,
