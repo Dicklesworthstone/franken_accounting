@@ -546,6 +546,19 @@ fn load_checkpoint<V: asupersync::fs::Vfs + Clone>(
     }
 }
 
+/// Compare the full checkpoint body at the original publication to a witness's
+/// retained body. The caller verifies the chain and selects the ancestor first.
+pub fn matches_published_body<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    state: &StoredState,
+    body: &CheckpointBody,
+) -> Result<bool, KernelError> {
+    Ok(matches!(
+        load_checkpoint(db, &state.oid, state.recorded_at)?,
+        Ok(published) if published.checkpoint.body == *body
+    ))
+}
+
 /// A checkpoint is published beside its state once. In particular, accepting
 /// historical unbound checkpoints must not let a later rewrite masquerade as
 /// that old form by stripping a TimeEvidence reference and re-signing it.

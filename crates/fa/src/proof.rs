@@ -548,7 +548,8 @@ pub(crate) fn export<V: Vfs + Clone>(
 pub struct WitnessRequest<'a> {
     /// The recorded state (default: the latest, or the one `onto` names).
     pub state: Option<Oid>,
-    /// The cosigned checkpoint this witness key produced last.
+    /// The cosigned checkpoint this witness key produced last. Its full signed
+    /// body must occur on the selected state's verified checkpoint chain.
     pub previous: Option<&'a [u8]>,
     /// A checkpoint of the same state already cosigned by other witnesses,
     /// to add this signature to (as a checkpoint circulates among its
@@ -677,7 +678,7 @@ pub(crate) fn witness<V: Vfs + Clone>(
                     "--previous is a checkpoint of another book".into(),
                 )));
             }
-            Some(prior.body.statement)
+            Some(prior.body)
         }
     };
     let verified = fa_notary::verify_accumulator(db, ctx, book, signer)?;
@@ -695,7 +696,8 @@ pub(crate) fn witness<V: Vfs + Clone>(
         Ok(state) => state,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Some(prior) = &remembered {
+    if let Some(prior_body) = &remembered {
+        let prior = &prior_body.statement;
         let diverged = || {
             Refusal::new(
                 fa_notary::code::NOT_EXTENDED,
@@ -710,6 +712,18 @@ pub(crate) fn witness<V: Vfs + Clone>(
                 "keep both checkpoints as evidence of the divergence and report it; do not cosign",
             )
         };
+        // Equal MMR roots do not bind the scope index, substrate chain or
+        // other signed metadata. Require the exact previously signed body
+        // in the selected state's verified ancestry, even for an exact retry.
+        // Other witnesses can have signed that same body independently.
+        let Some(ancestor) = states.iter().find(|stored| {
+            stored.oid == prior_body.state_oid && stored.recorded_at <= checkpoint.recorded_at
+        }) else {
+            return Ok(Err(diverged()));
+        };
+        if !fa_notary::state::matches_published_body(db, ancestor, prior_body)? {
+            return Ok(Err(diverged()));
+        }
         // A consistency proof exists only when the recomputed journal's
         // prefix at the remembered size has the remembered root: that is the
         // extension the witness requires. (An outsider re-checks it with
@@ -792,7 +806,7 @@ pub(crate) fn witness<V: Vfs + Clone>(
         checkpoint,
         cosigned: bytes,
         witness_key_id,
-        extends: remembered,
+        extends: remembered.map(|body| body.statement),
     }))
 }
 

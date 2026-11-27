@@ -187,6 +187,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::named("Portable proof fixture")
+    }
+
+    fn named(name: &str) -> Self {
         let dir = temp_dir();
         let book = dir.join("book");
         let units = fa_money::UnitRegistry::embedded().expect("units");
@@ -196,7 +200,7 @@ impl Fixture {
             keys.clone(),
             BookSpec {
                 book_id: BOOK_ID,
-                name: "Portable proof fixture".into(),
+                name: name.into(),
                 base_unit: units.lookup("USD").expect("USD"),
                 calendar: fa_time::FiscalCalendar::monthly("fiscal", 1, 1).expect("calendar"),
                 time_zone_policy: None,
@@ -2743,6 +2747,67 @@ fn witnesses_cosign_an_extending_history_and_refuse_a_rewritten_one() {
         refused.render()
     );
     assert!(!f.dir.join("x4.cp").exists());
+}
+
+/// The accounting MMR excludes the genesis BookSpec. Both books have genuine
+/// signatures and the same empty accounting statement, yet the substrate chain
+/// binds different genesis bytes. This must fail both on retry and on advance.
+#[test]
+fn witness_requires_the_complete_signed_body_on_the_selected_chain() {
+    let original = Fixture::new();
+    let fork = Fixture::named("Different genesis");
+    let first = original.checkpoint();
+    let other = fork.checkpoint();
+    assert_eq!(text(&first, "public_key"), text(&other, "public_key"));
+    assert_eq!(
+        integer(&first, "through_seq"),
+        integer(&other, "through_seq")
+    );
+    assert_eq!(integer(&first, "leaf_count"), 0);
+    assert_eq!(text(&first, "root"), text(&other, "root"));
+    assert_ne!(
+        text(&first, "checkpoint_oid"),
+        text(&other, "checkpoint_oid")
+    );
+
+    let path = |name: &str| original.dir.join(name).display().to_string();
+    let key = path("witness.key");
+    let previous = path("previous.cp");
+    ok(
+        &original.book,
+        &["checkpoint", "witness-key", "--out", &key],
+    );
+    let witness = |book: &Path, file: &str, extra: &[&str]| {
+        let mut args = vec![
+            "checkpoint",
+            "witness",
+            "--grant",
+            "witness",
+            "--key",
+            key.as_str(),
+            "--out",
+            file,
+        ];
+        args.extend_from_slice(extra);
+        run(book, &args)
+    };
+    assert_eq!(witness(&original.book, &previous, &[]).0, 0);
+    let retained = std::fs::read(&previous).unwrap();
+    let extension = ["--previous", previous.as_str()];
+    let retry = path("retry.cp");
+    assert_eq!(witness(&original.book, &retry, &extension).0, 0);
+    assert_eq!(std::fs::read(&retry).unwrap(), retained);
+    let assert_diverged = |name: &str| {
+        let out = path(name);
+        let (code, refused) = witness(&fork.book, &out, &extension);
+        assert_eq!(code, 8, "{}", refused.render());
+        assert_eq!(text(&refused, "refusal_id"), "FA-REF-124");
+        assert!(!Path::new(&out).exists());
+    };
+    assert_diverged("fork-retry.cp");
+    fork.checkpoint();
+    assert_diverged("fork-advance.cp");
+    assert_eq!(std::fs::read(&previous).unwrap(), retained);
 }
 
 /// FA-INV-14.witnessed, the negative (planted): a witness that signed a
