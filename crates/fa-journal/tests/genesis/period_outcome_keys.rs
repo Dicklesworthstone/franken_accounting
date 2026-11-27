@@ -602,3 +602,29 @@ fn period_creation_authority_precedes_malformed_claim_observation() {
         assert_eq!(h.db.frontier().unwrap(), head);
     }
 }
+
+#[test]
+fn an_identical_open_retry_after_soft_close_acknowledges_the_original_transition() {
+    let mut h = harness();
+    let period = h.march.clone();
+    let opened = h
+        .transition(&period, PeriodTransition::Open, b"open-march")
+        .unwrap();
+    h.transition(&period, PeriodTransition::SoftClose, b"soft-close-march")
+        .unwrap();
+    let head = h.db.frontier().unwrap();
+    let retry = h
+        .transition(&period, PeriodTransition::Open, b"open-march")
+        .unwrap();
+    assert!(retry.already_recorded);
+    assert_eq!(retry.control_entry, opened.control_entry);
+    assert_eq!(retry.recorded_at, opened.recorded_at);
+    assert_eq!(
+        (retry.from, retry.to),
+        (PeriodState::Future, PeriodState::Open)
+    );
+    assert_eq!(retry.minted, opened.minted);
+    assert_eq!(retry.blocked, opened.blocked);
+    assert_eq!(h.period_state(&period), PeriodState::SoftClosed);
+    assert_eq!(h.db.frontier().unwrap(), head);
+}

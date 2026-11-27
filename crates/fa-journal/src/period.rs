@@ -606,20 +606,9 @@ fn recorded_proposal_or_conflict<V: asupersync::fs::Vfs + Clone>(
     if !same {
         return Ok(Err(conflict()));
     }
-    let pvid = period_vid(&book.calendar.id, period_code);
-    if let Some(period_row) = db.vertex(pvid)? {
-        let current = state_from_scalar(crate::rows::prop(&period_row, property::STATE))
-            .ok_or_else(|| KernelError::Corrupt(format!("period `{period_code}` state mirror")))?;
-        if current != stored_to {
-            return Ok(Err(Refusal::new(
-                code::STRUCTURE,
-                exit::USAGE,
-                "a control entry with this idempotency key already exists",
-                "plan §4.9",
-                "use a fresh idempotency key",
-            )));
-        }
-    }
+    // A retry acknowledges the immutable transition, including after a later
+    // transition changed the period again. Its from/to describe that recorded
+    // publication; replay never stages another period state change.
     let (minted, blocked) = if let Some(effects) = reviewed_opening {
         (effects.minted.clone(), effects.blocked.clone())
     } else if t == PeriodTransition::Open {
