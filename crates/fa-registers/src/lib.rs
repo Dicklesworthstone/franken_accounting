@@ -1473,6 +1473,7 @@ pub(crate) struct Reads<'a, V: asupersync::fs::Vfs + Clone> {
     vertices: Option<RegisterRows>,
     memberships: Option<Memberships>,
     entry_rows: BTreeMap<CommitSeq, BTreeMap<VId, VertexRow>>,
+    retained_lags: RetainedEntryLags,
     projection_work: ProjectionReadWork,
 }
 
@@ -1486,6 +1487,7 @@ impl<'a, V: asupersync::fs::Vfs + Clone> Reads<'a, V> {
             vertices: None,
             memberships: None,
             entry_rows: BTreeMap::new(),
+            retained_lags: RetainedEntryLags::default(),
             projection_work: ProjectionReadWork::default(),
         }
     }
@@ -1620,7 +1622,7 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
         );
     }
     let retained_lag = if basis < head {
-        retained_entry_lag(db, cx, basis, head)?
+        reads.retained_lags.count(db, cx, basis, head)?
     } else {
         None
     };
@@ -1671,6 +1673,30 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
     Ok(result)
 }
 
+/// A cohort shares one immutable database observation. Book-wide birth counts
+/// depend on the two frontiers, so periods with the same processed cursor can
+/// reuse the result. Cache an unavailable suffix too, without caching errors.
+#[derive(Default)]
+struct RetainedEntryLags(BTreeMap<(CommitSeq, CommitSeq), Option<usize>>);
+
+impl RetainedEntryLags {
+    fn count<V: asupersync::fs::Vfs + Clone>(
+        &mut self,
+        db: &Database<V>,
+        cx: Option<&QueryCx>,
+        from: CommitSeq,
+        at: CommitSeq,
+    ) -> Result<Option<usize>, RegisterError> {
+        report_checkpoint(cx)?;
+        match self.0.entry((from, at)) {
+            btree_map::Entry::Occupied(entry) => Ok(*entry.get()),
+            btree_map::Entry::Vacant(entry) => {
+                Ok(*entry.insert(retained_entry_lag(db, cx, from, at)?))
+            }
+        }
+    }
+}
+
 /// Both register verifiers count book-wide Entry births, including controls
 /// and staged migration entries. A contiguous native delta enumerates every
 /// identity whose Entry membership or version could have changed. Compare
@@ -1685,7 +1711,6 @@ fn retained_entry_lag<V: asupersync::fs::Vfs + Clone>(
 ) -> Result<Option<usize>, RegisterError> {
     use fgdb_delta_types::{DeltaRow, ElementId};
 
-    report_checkpoint(cx)?;
     if from == at {
         return Ok(Some(0));
     }

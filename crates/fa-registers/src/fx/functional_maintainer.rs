@@ -1199,7 +1199,7 @@ pub fn verify<V: Vfs + Clone>(
 ) -> Result<Verification, RegisterError> {
     context(cx)?;
     let at = crate::resolve_known_at(db, known_at)?;
-    verify_at(db, cx, book, period, at, &mut None)
+    verify_at(db, cx, book, period, at, &mut LagReads::default())
 }
 
 /// Verify selected periods at one observation, sharing the current Entry
@@ -1217,10 +1217,10 @@ pub fn verify_each<V: Vfs + Clone>(
     }
     context(cx)?;
     let at = crate::resolve_known_at(db, known_at)?;
-    let mut current = None;
+    let mut reads = LagReads::default();
     periods
         .iter()
-        .map(|period| verify_at(db, cx, book, period, at, &mut current))
+        .map(|period| verify_at(db, cx, book, period, at, &mut reads))
         .collect()
 }
 
@@ -1239,22 +1239,28 @@ fn entry_inventory<V: Vfs + Clone>(
     Ok(entries)
 }
 
+#[derive(Default)]
+struct LagReads {
+    current: Option<BTreeMap<VId, VertexRow>>,
+    retained: crate::RetainedEntryLags,
+}
+
 fn entry_lag<V: Vfs + Clone>(
     db: &Database<V>,
     cx: &QueryCx,
     through: Option<CommitSeq>,
     at: CommitSeq,
-    current: &mut Option<BTreeMap<VId, VertexRow>>,
+    reads: &mut LagReads,
 ) -> Result<(usize, Vec<String>), RegisterError> {
     if let Some(basis) = through
-        && let Some(lag) = crate::retained_entry_lag(db, Some(cx), basis, at)?
+        && let Some(lag) = reads.retained.count(db, Some(cx), basis, at)?
     {
         return Ok((lag, Vec::new()));
     }
-    if current.is_none() {
-        *current = Some(entry_inventory(db, cx, at)?);
+    if reads.current.is_none() {
+        reads.current = Some(entry_inventory(db, cx, at)?);
     }
-    let current = current
+    let current = reads.current
         .as_ref()
         .ok_or_else(|| drift("the selected Entry inventory was not loaded"))?;
     let mut lag = if through.is_none() { current.len() } else { 0 };
@@ -1301,7 +1307,7 @@ fn verify_at<V: Vfs + Clone>(
     book: &BookContext,
     period: &str,
     at: CommitSeq,
-    current: &mut Option<BTreeMap<VId, VertexRow>>,
+    reads: &mut LagReads,
 ) -> Result<Verification, RegisterError> {
     context(cx)?;
     crate::period_at(db, book, period, at)?;
@@ -1320,7 +1326,7 @@ fn verify_at<V: Vfs + Clone>(
         Err(error) => return Err(error),
     };
     let Some((snapshot, reference)) = loaded else {
-        let (lag_entries, drift) = entry_lag(db, cx, None, at, current)?;
+        let (lag_entries, drift) = entry_lag(db, cx, None, at, reads)?;
         return Ok(Verification {
             available: false,
             through: None,
@@ -1330,7 +1336,7 @@ fn verify_at<V: Vfs + Clone>(
         });
     };
     let (literal, _) = rebuilt(db, book, period, reference.through)?;
-    let (lag_entries, mut drift) = entry_lag(db, cx, Some(reference.through), at, current)?;
+    let (lag_entries, mut drift) = entry_lag(db, cx, Some(reference.through), at, reads)?;
     if snapshot.state != literal {
         drift.push("complete functional state disagrees with its literal journal prefix".into());
     }

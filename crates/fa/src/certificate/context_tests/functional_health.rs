@@ -46,6 +46,19 @@ fn functional_verification_counts_retained_births_without_rescanning_the_book() 
             work.vertex_scans, refold_scans,
             "only the independent prefix refold scans the book at {at:?}: {work:?}"
         );
+        if at == head {
+            let census = fa_journal::op_witness::begin();
+            let cohort = maintained::verify_each(
+                &h.book.db, &cx.query(), h.book.context(), &[PERIOD, PERIOD], Some(at),
+            ).unwrap();
+            let shared = census.finish();
+            assert_eq!(cohort, [result.clone(), result]);
+            assert!(work.point_reads > 0);
+            assert!(
+                shared.point_reads < work.point_reads.saturating_mul(2),
+                "a repeated processed prefix must share its suffix point reads: {shared:?} vs {work:?}"
+            );
+        }
     }
 }
 
