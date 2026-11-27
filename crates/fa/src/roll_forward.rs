@@ -248,60 +248,42 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     return Ok(Err(invalid("roll-forward unit is not registered")));
                 }
             }
-            let stock = |through| -> Result<Vec<AccountBalance>, BookError> {
-                balances(
-                    fa_registers::balance_as_of(&self.db, self.context(), through, Some(at))?,
+            let window = match fa_registers::stock_window(
+                &self.db,
+                &query,
+                self.context(),
+                request.effective_from,
+                request.effective_through,
+                at,
+            ) {
+                Ok(window) => window,
+                Err(RegisterError::InvalidSelection(message)) => return Ok(Err(invalid(message))),
+                Err(error) => return Err(error.into()),
+            };
+            let opening = match window.opening {
+                Some(stock) => balances(
+                    stock,
                     at,
-                    through,
+                    DateDay(request.effective_from.0.saturating_sub(1)),
                     &account_ids,
                     &units,
-                )
+                )?,
+                None => Vec::new(),
             };
-            let opening = match request.effective_from.0.checked_sub(1) {
-                Some(before) => stock(DateDay(before)),
-                None => Ok(Vec::new()), // no representable earlier civil day
-            };
-            let opening = match opening {
-                Ok(rows) => rows,
-                Err(BookError::Registers(RegisterError::InvalidSelection(message))) => {
-                    return Ok(Err(invalid(message)));
-                }
-                Err(error) => return Err(error),
-            };
-            query.checkpoint().map_err(BookError::Context)?;
-            let closing = match stock(request.effective_through) {
-                Ok(rows) => rows,
-                Err(BookError::Registers(RegisterError::InvalidSelection(message))) => {
-                    return Ok(Err(invalid(message)));
-                }
-                Err(error) => return Err(error),
-            };
+            let closing = balances(
+                window.closing,
+                at,
+                request.effective_through,
+                &account_ids,
+                &units,
+            )?;
             let mut movements = Vec::new();
-            let mut runs = BTreeMap::new();
-            for (index, row) in fa_journal::op_witness::vertices_at(&self.db, at)
-                .map_err(KernelError::from)?
-                .into_iter()
-                .enumerate()
-            {
+            for (index, (_, entry, recorded)) in window.entries.into_iter().enumerate() {
                 if index % 256 == 0 {
                     query.checkpoint().map_err(BookError::Context)?;
                 }
-                if !row.labels.contains(&label::ENTRY) {
-                    continue;
-                }
-                let entry = fa_journal::entry_storage::decode_at(&self.db, &row, at)?;
                 let p = &entry.proposal;
-                if p.book_id != self.context().book_id
-                    || p.branch_id != Id128::TRUNK
-                    || row.created_at.0 == 0
-                    || row.created_at > at
-                {
-                    return Err(corrupt(
-                        "roll-forward source entry has a different coordinate",
-                    ));
-                }
-                if !fa_journal::migration::visible_at(&self.db, &entry, at, &mut runs)?
-                    || p.class.is_control()
+                if p.class.is_control()
                     || p.class == EntryClass::PENDING
                     || p.effective_date < request.effective_from
                     || p.effective_date > request.effective_through
@@ -329,7 +311,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                         entry_digest: entry.entry_digest,
                         leg_index: u32::try_from(ordinal)
                             .map_err(|_| corrupt("roll-forward leg ordinal overflow"))?,
-                        recorded_seq: row.created_at.0,
+                        recorded_seq: recorded.0,
                         effective_day: p.effective_date,
                         account_id: leg.account_ref.0,
                         unit_id: leg.amount.unit.0,
@@ -1053,6 +1035,36 @@ mod tests {
         assert_eq!((capital.opening, capital.closing), (-100, -130));
         assert_eq!(row(&report, h.id("6100"), h.usd).closing, 0);
         assert_eq!(h.head(), head);
+    }
+
+    #[test]
+    fn stock_window_reads_one_prefix_and_matches_both_literal_stocks() {
+        let mut h = Harness::new();
+        h.post(1, b"opening-source", h.usd, 100);
+        h.post(10, b"inside-source", h.usd, -30);
+        let at = h.head();
+        h.post(12, b"later-posted-backdate", h.usd, 200);
+        let cx = h.cx();
+        let query = cx.query();
+        query.with_restriction(|| {
+            let census = fa_journal::op_witness::begin();
+            let stocks = fa_registers::stock_window(
+                &h.book.db,
+                &query,
+                h.book.context(),
+                day(10),
+                day(20),
+                at,
+            )
+            .unwrap();
+            assert_eq!(census.finish().vertex_scans, 1);
+            let literal = |day| {
+                fa_registers::balance_as_of(&h.book.db, h.book.context(), day, Some(at)).unwrap()
+            };
+            assert_eq!(stocks.opening, Some(literal(day(9))));
+            assert_eq!(stocks.closing, literal(day(20)));
+            assert!(stocks.entries.iter().all(|(_, _, seq)| *seq <= at));
+        });
     }
 
     #[test]

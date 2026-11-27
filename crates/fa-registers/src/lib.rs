@@ -2699,6 +2699,89 @@ pub fn balance_as_of<V: asupersync::fs::Vfs + Clone>(
     balance_as_of_filtered(db, book, day, known_at, None)
 }
 
+/// Two independent inception-to-date stock folds and their visible journal
+/// entries, all at one recorded prefix. The opening stock is absent only when
+/// the inclusive interval starts at the first representable civil day.
+pub struct StockWindow {
+    pub opening: Option<TrialBalance>,
+    pub closing: TrialBalance,
+    pub entries: Vec<(VId, Entry, CommitSeq)>,
+}
+
+/// Select and authenticate the native prefix once for a movement report.
+/// Its stock folds retain the same pending-release, migration and overflow
+/// laws as [`balance_as_of`]. Callers independently reconcile their movements.
+pub fn stock_window<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: &QueryCx,
+    book: &BookContext,
+    from: DateDay,
+    through: DateDay,
+    at: CommitSeq,
+) -> Result<StockWindow, RegisterError> {
+    if from > through {
+        return Err(RegisterError::InvalidSelection(
+            "stock window starts after its closing day".into(),
+        ));
+    }
+    report_checkpoint(Some(cx))?;
+    let seq = resolve_known_at(db, Some(at))?;
+    let mut periods = Vec::new();
+    let mut entries = Vec::new();
+    let mut runs = BTreeMap::new();
+    for row in fa_journal::op_witness::vertices_at(db, seq)? {
+        report_checkpoint(Some(cx))?;
+        if row.labels.contains(&label::PERIOD) {
+            let period = PeriodRow::decode(&row)?;
+            if period.calendar_id == book.calendar.id && period.start <= through {
+                periods.push((period.start, period.code));
+            }
+        }
+        let Some(entry) = entry_from_row(db, &row, book, seq)? else {
+            continue;
+        };
+        if row.created_at.0 == 0 || row.created_at > seq {
+            return Err(KernelError::Corrupt(
+                "stock window entry has an invalid recorded sequence".into(),
+            )
+            .into());
+        }
+        if fa_journal::migration::visible_at(db, &entry, seq, &mut runs)? {
+            entries.push((row.vid, entry, row.created_at));
+        }
+    }
+    entries.sort_by_key(|(vid, _, recorded)| (*recorded, vid.0));
+    let fold = |day| {
+        report_checkpoint(Some(cx))?;
+        let selected: BTreeSet<_> = periods
+            .iter()
+            .filter(|(start, _)| *start <= day)
+            .map(|(_, code)| code.clone())
+            .collect();
+        report_from_entries(
+            db,
+            book,
+            selected.into_iter().collect(),
+            seq,
+            Some(day),
+            &[],
+            None,
+            &entries,
+        )
+    };
+    let opening = from
+        .0
+        .checked_sub(1)
+        .map(|day| fold(DateDay(day)))
+        .transpose()?;
+    let closing = fold(through)?;
+    Ok(StockWindow {
+        opening,
+        closing,
+        entries,
+    })
+}
+
 /// Read a civil-date stock position from complete maintained periods at one
 /// recorded frontier. A cutoff inside any selected period or an unusable
 /// register falls back to the literal date predicate. Admit the whole book
@@ -2923,9 +3006,32 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
     excluded_classes: &[EntryClass],
     filter: Option<&DimensionFilter>,
 ) -> Result<TrialBalance, RegisterError> {
-    let mut sums: BTreeMap<(VId, u32), [i128; 4]> = BTreeMap::new();
     let entries = entries_at(db, book, seq)?;
-    let resolved = resolutions(&entries)?;
+    report_from_entries(
+        db,
+        book,
+        periods,
+        seq,
+        through,
+        excluded_classes,
+        filter,
+        &entries,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_from_entries<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    book: &BookContext,
+    periods: Vec<String>,
+    seq: CommitSeq,
+    through: Option<DateDay>,
+    excluded_classes: &[EntryClass],
+    filter: Option<&DimensionFilter>,
+    entries: &[(VId, Entry, CommitSeq)],
+) -> Result<TrialBalance, RegisterError> {
+    let mut sums: BTreeMap<(VId, u32), [i128; 4]> = BTreeMap::new();
+    let resolved = resolutions(entries)?;
     let by_id: BTreeMap<_, _> = if excluded_classes.is_empty() {
         BTreeMap::new()
     } else {
@@ -2934,7 +3040,7 @@ fn report_at<V: asupersync::fs::Vfs + Clone>(
             .map(|(vid, entry, at)| (*vid, (entry, *at)))
             .collect()
     };
-    for (vid, entry, recorded_at) in &entries {
+    for (vid, entry, recorded_at) in entries {
         if entry.proposal.legs.is_empty() {
             continue;
         }
