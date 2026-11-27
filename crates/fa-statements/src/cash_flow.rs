@@ -394,7 +394,7 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
 
     // Net intra-entry cash movements per (entry_digest, unit_id, classification).
     let mut seen_cash_legs = BTreeSet::new();
-    let mut entry_activity_net: BTreeMap<([u8; 32], u32, CashFlowClassification), Sum> =
+    let mut entry_activity_net: BTreeMap<(u32, CashFlowClassification, [u8; 32]), Sum> =
         BTreeMap::new();
     let mut transfers: BTreeMap<([u8; 32], u32), (Sum, BTreeSet<u128>)> = BTreeMap::new();
 
@@ -431,7 +431,7 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
             }
             other => {
                 let slot = entry_activity_net
-                    .entry((mov.entry_digest, mov.unit_id, other))
+                    .entry((mov.unit_id, other, mov.entry_digest))
                     .or_insert(Sum::ZERO);
                 slot.add(mov.debits, false).ok_or_else(failed)?;
                 slot.add(mov.credits, true).ok_or_else(failed)?;
@@ -503,10 +503,11 @@ pub fn evaluate_cash_flow(source: &CashFlowInput) -> Result<CashFlowStatement, S
         let mut inflows_wide = U256::ZERO;
         let mut outflows_wide = U256::ZERO;
         let failed = || overflow("cash_section", &source.label, unit_id);
-        for ((_digest, u, cls), sum) in &entry_activity_net {
-            if *u != unit_id || *cls != classification {
-                continue;
-            }
+        // The entry groups for this section are contiguous. Each group is
+        // visited once across the report, in its original digest order.
+        let start = (unit_id, classification, [0; 32]);
+        let end = (unit_id, classification, [u8::MAX; 32]);
+        for (_, sum) in entry_activity_net.range(start..=end) {
             let net = sum.value().ok_or_else(failed)?;
             if net > 0 {
                 inflows_wide = inflows_wide
@@ -1503,6 +1504,44 @@ mod tests {
 
         let bytes = cf.canonical_bytes().unwrap();
         assert_eq!(CashFlowStatement::decode(&bytes).unwrap(), cf);
+
+        // The same digest can have legs in another currency and activity.
+        // Both ends of the digest range belong to the selected section.
+        let mut mixed = cf_input;
+        mixed.units.extend([2, 3]);
+        mixed.net_income_by_unit.insert(2, 30);
+        let mut leg = mixed.cash_movements[0].clone();
+        leg.unit_id = 2;
+        leg.entry_digest = [0; 32];
+        leg.leg_index = 0;
+        leg.debits = 30;
+        leg.credits = 0;
+        leg.classification = CashFlowClassification::Operating;
+        mixed.cash_movements.push(leg.clone());
+        leg.leg_index = 1;
+        leg.entry_digest = [u8::MAX; 32];
+        leg.classification = CashFlowClassification::Financing;
+        leg.debits = 0;
+        leg.credits = 12;
+        mixed.cash_movements.push(leg.clone());
+        leg.unit_id = 1;
+        leg.leg_index = 2;
+        leg.classification = CashFlowClassification::ExchangeEffect;
+        mixed.cash_movements.push(leg);
+        mixed.closing_cash_balances[0].debits = 438;
+        mixed.closing_cash_balances.push(AccountBalance {
+            account_id: 1,
+            unit_id: 2,
+            debits: 18,
+            credits: 0,
+        });
+        let report = evaluate_cash_flow(&mixed).unwrap();
+        assert_eq!(report.units[0].exchange_effects.outflows, 12);
+        assert_eq!(report.units[0].operating, u.operating);
+        assert_eq!(report.units[1].operating.inflows, 30);
+        assert_eq!(report.units[1].financing.outflows, 12);
+        assert_eq!(report.units[1].closing_cash, 18);
+        assert_eq!(report.units[2].net_cash_change, 0);
     }
 
     #[test]
