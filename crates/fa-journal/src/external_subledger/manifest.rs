@@ -26,7 +26,8 @@ use super::{
 };
 use crate::attestation::{Review, review_vid};
 use crate::evidence::{doc_commit, document_oid, document_vid, verify_row};
-use crate::{BookContext, Outcome, Refusal};
+use crate::refusal::Outcome;
+use crate::{BookContext, Refusal};
 
 pub const EXTERNAL_FEED_MANIFEST_FORMAT: &[u8] = b"fa:external-feed-manifest:v1";
 pub const EXTERNAL_FEED_MANIFEST_MIME: &str = "application/vnd.franken.subledger-manifest.v1";

@@ -80,7 +80,7 @@ pub(crate) fn admit(
             return Err(nonreciprocal_pair(
                 "an intercompany pair requires distinct accounts, equal positive amounts and opposite debit/credit sides",
             )
-            .at("pair_key", &pair.pair_key)
+            .at("pair_key", pair.pair_key.as_str())
             .at("left_leg", left)
             .at("right_leg", right));
         }
@@ -88,11 +88,11 @@ pub(crate) fn admit(
             (entities.get(left), entities.get(right))
         else {
             return Err(nonreciprocal_pair("both intercompany legs must belong to declared legal entities")
-                .at("pair_key", &pair.pair_key));
+                .at("pair_key", pair.pair_key.as_str()));
         };
         if left_entity == right_entity {
             return Err(nonreciprocal_pair("intercompany counterpart legs must belong to different legal entities")
-                .at("pair_key", &pair.pair_key));
+                .at("pair_key", pair.pair_key.as_str()));
         }
     }
     Ok(())
