@@ -839,12 +839,12 @@ example = "fa exhibit mark <oid> --label Px-12 --matter SEC-v-Acme --book ./book
 name = "subledger"
 summary = "Native receivable/payable subledgers (plan §5.6): designate one control leaf whose legs must name parties, inspect its journaled definition, and reconcile party detail with the control account at an explicit coordinate."
 writes = true
-subcommands = ["add", "list", "show", "verify", "detail", "feed", "verify-feed", "reconcile-feed"]
+subcommands = ["add", "list", "show", "verify", "detail", "feed", "verify-feed", "reconcile-feed", "manifest", "verify-manifest"]
 flags = ["--input", "--out", "--document", "--description", "--plan-out", "--control", "--kind", "--name", "--date", "--key", "--as-of", "--as-known-at", "--certificate-out", "--draft"]
 switches = ["--dry-run", "--certify"]
-events = ["subledger_recorded", "subledgers", "subledger_reconciled", "external_subledger_detail", "external_subledger_reconciled", "external_feed_reconciled", "report_certificate", "posted", "recorded", "plan", "draft_planned"]
+events = ["subledger_recorded", "subledgers", "subledger_reconciled", "external_subledger_detail", "external_subledger_reconciled", "external_feed_reconciled", "external_feed_manifest", "external_feed_manifest_verified", "report_certificate", "posted", "recorded", "plan", "draft_planned"]
 exits = [0, 2, 3, 4, 5, 6, 7, 8]
-usage = ["subledger reconcile-feed <feed> --control <account> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>] [--certify | --certificate-out <new-file>]   (all reviewed source batches and exact reversal descendants for the feed, compared by unit and dimensions against every control-account posting and an independent stock trial balance. Gross debit/credit and pending columns remain separate; unmatched legs are cited even when they net to zero. Certification retains the full historical reconciliation; replay and status require its separately retained external-feed-reconciliation --expect request.)", "subledger detail --input <batch.json|-> [--out <new-file>]   (canonical detail Workpaper bytes; JSON has feed, batch_key, effective_date and rows: each source_digest is unique nonzero 64-hex, account is a GL code, side is debit|credit, amount is an exact unit-bearing string, entity and party are optional codes. Include every counterpart explicitly. Rows are sorted by source digest without deduplication; maximum 128 rows, 32 summary legs and 8192 canonical bytes.)", "Retain those bytes with fa document add <detail-file> --kind Workpaper --mime application/vnd.franken.subledger-detail.v1; an independent Human reviews the document with fa attest review <oid> --as <reviewer>. The source remains evidence rather than a second posting universe.", "subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--description <text>] [--draft <name> | --dry-run [--plan-out <new-file>]]   (derive every summary leg from retained independently reviewed detail, then run the ordinary posting kernel. Complete gross sides by account/unit/dimensions must match; no netting, implicit counterpart, FX, pending or settlement effects. Each feed/batch_key is consumed once across posting keys; unchanged retries remain idempotent. Saved plans commit with fa commit --plan.)", "subledger verify-feed <entry> [--as-known-at HEAD|<seq>]   (recompute the entry against its exact source and independent review at the original publication prefix, plus its immutable unique-batch guard. Later reviews or corrections never rewrite the original assertion.)", "subledger add <code> --control <account> --kind receivables|payables [--name <name>] [--date YYYY-MM-DD] [--key K]   (AR requires an Asset leaf, AP a Liability leaf; needs read and schema_change. Every existing control leg, including staged migration history, must already name a valid party. Registration journals one immutable definition and never adds a posting. The default key is subledger:<code>; an identical retry writes nothing.)", "subledger list [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger show <code> [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger verify <code> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]   (literal native-unit journal fold by party, compared with an independent control-account trial balance; posted debits/credits and pending debits/credits remain separate. Reversals and reservation releases keep their original party attribution. Certification selects HEAD or a recorded sequence and requires whole-book read plus produce; the retained native-subledger-reconciliation certificate replays complete original sources and every party/control column. Replay/status require the separately retained code, control_account, through and fixed known_at --expect. Scoped requests refuse before data is observed.) Export the retained native certificate with fa bundle produce --certificate C:<oid> --expect using that same separately retained question; fa-verify report independently reconstructs the party and control columns offline.", "Native reconciliation and matched external-feed reconciliation are read-only folds. verify-feed verifies one reviewed source batch and its summary; reconcile-feed compares all matching batches with the complete selected control account. Neither asserts source-system completeness or reserves a whole control account exclusively for external feeds."]
+usage = ["subledger reconcile-feed <feed> --control <account> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>] [--certify | --certificate-out <new-file>]   (all reviewed source batches and exact reversal descendants for the feed, compared by unit and dimensions against every control-account posting and an independent stock trial balance. Gross debit/credit and pending columns remain separate; unmatched legs are cited even when they net to zero. Certification retains the full historical reconciliation; replay and status require its separately retained external-feed-reconciliation --expect request.)", "subledger detail --input <batch.json|-> [--out <new-file>]   (canonical detail Workpaper bytes; JSON has feed, batch_key, effective_date and rows: each source_digest is unique nonzero 64-hex, account is a GL code, side is debit|credit, amount is an exact unit-bearing string, entity and party are optional codes. Include every counterpart explicitly. Rows are sorted by source digest without deduplication; maximum 128 rows, 32 summary legs and 8192 canonical bytes.)", "Retain those bytes with fa document add <detail-file> --kind Workpaper --mime application/vnd.franken.subledger-detail.v1; an independent Human reviews the document with fa attest review <oid> --as <reviewer>. The source remains evidence rather than a second posting universe.", "subledger feed --document D:<oid> --date YYYY-MM-DD --key K [--description <text>] [--draft <name> | --dry-run [--plan-out <new-file>]]   (derive every summary leg from retained independently reviewed detail, then run the ordinary posting kernel. Complete gross sides by account/unit/dimensions must match; no netting, implicit counterpart, FX, pending or settlement effects. Each feed/batch_key is consumed once across posting keys; unchanged retries remain idempotent. Saved plans commit with fa commit --plan.)", "subledger verify-feed <entry> [--as-known-at HEAD|<seq>]   (recompute the entry against its exact source and independent review at the original publication prefix, plus its immutable unique-batch guard. Later reviews or corrections never rewrite the original assertion.)", "subledger add <code> --control <account> --kind receivables|payables [--name <name>] [--date YYYY-MM-DD] [--key K]   (AR requires an Asset leaf, AP a Liability leaf; needs read and schema_change. Every existing control leg, including staged migration history, must already name a valid party. Registration journals one immutable definition and never adds a posting. The default key is subledger:<code>; an identical retry writes nothing.)", "subledger list [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger show <code> [--as-known-at HEAD|<seq>|<RFC3339>]", "subledger verify <code> --as-of YYYY-MM-DD [--as-known-at HEAD|<seq>|<RFC3339>] [--certify | --certificate-out <new-file>]   (literal native-unit journal fold by party, compared with an independent control-account trial balance; posted debits/credits and pending debits/credits remain separate. Reversals and reservation releases keep their original party attribution. Certification selects HEAD or a recorded sequence and requires whole-book read plus produce; the retained native-subledger-reconciliation certificate replays complete original sources and every party/control column. Replay/status require the separately retained code, control_account, through and fixed known_at --expect. Scoped requests refuse before data is observed.) Export the retained native certificate with fa bundle produce --certificate C:<oid> --expect using that same separately retained question; fa-verify report independently reconstructs the party and control columns offline.", "Native reconciliation and matched external-feed reconciliation are read-only folds. verify-feed verifies one reviewed source batch and its summary; reconcile-feed compares all matching batches with the complete selected control account. Neither asserts source-system completeness or reserves a whole control account exclusively for external feeds.", "subledger manifest --input <source.json|-> [--out <new-file>]   (prepare the parent extract as a canonical Workpaper with MIME application/vnd.franken.subledger-manifest.v1; retain and independently review it)", "subledger verify-manifest D:<reviewed-parent-oid> [--as-known-at HEAD|<seq>]   (verify every original posted child against the independently retained parent window and gross control totals. Read status for complete, incomplete, or mismatch.)"]
 example = "fa subledger verify AR --as-of 2026-03-31 --book ./books/myco --json"
 
 [[verb]]
@@ -7451,6 +7451,28 @@ doc = "A fixed monthly schedule and its next unexecuted occurrence."
 fields = ["name:string", "schedule:hex", "principal:hex", "start:date", "end:date?", "every_months:int", "month_end:string", "created_at:seq", "cancelled_at:seq?", "next_index:int", "next_date:date?", "blocked:string?"]
 
 [[event]]
+name = "external_feed_manifest"
+book = true
+doc = "Canonical independently supplied parent delivery declaration prepared for Workpaper retention and independent review."
+fields = ["feed:string", "extract_id:string", "document_oid:hex", "mime:string", "bytes:hex", "file:string?"]
+
+[[event]]
+name = "external_feed_manifest_verified"
+book = true
+doc = "Every original delivery in the inclusive window compared with a retained reviewed source population. Missing and unexpected keys are explicit. Gross amounts in the differing cells are exact integer mantissas."
+fields = ["document_oid:hex", "review:hex", "feed:string", "extract_id:string", "from:date", "through:date", "status:string", "observed_children:int", "expected_rows:int", "actual_rows:int", "missing:[string]", "unexpected:[string]", "digest_mismatches:[manifest_digest_mismatch]", "cell_mismatches:[manifest_cell_mismatch]"]
+
+[[shape]]
+name = "manifest_digest_mismatch"
+doc = "A declared child has a different Workpaper commitment."
+fields = ["batch_key:string", "expected_commit:hex", "actual_commit:hex"]
+
+[[shape]]
+name = "manifest_cell_mismatch"
+doc = "Declared and observed gross native minor-unit totals for a single account, unit and dimension set."
+fields = ["account:hex", "unit_id:int", "dimension_set:[batch_plan_dimension]", "expected_debits:string", "expected_credits:string", "actual_debits:string", "actual_credits:string"]
+
+[[event]]
 name = "external_subledger_detail"
 book = true
 doc = "Canonical source detail to retain as a Workpaper with MIME application/vnd.franken.subledger-detail.v1 and independently review. Nothing is posted or retained by this preparation command. Source digests are opaque caller assertions; summary sides are grouped without netting."
@@ -7533,8 +7555,35 @@ ops = ["read"]
 
 [[bound]]
 verbs = ["subledger"]
-subcommands = ["detail", "verify-feed"]
+subcommands = ["detail", "verify-feed", "manifest", "verify-manifest"]
 ops = ["read"]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "manifest"
+verb = "subledger"
+subcommands = ["manifest"]
+positionals = []
+flags = ["--input"]
+switches = []
+stdin_property = "manifest"
+stdin_kind = "object"
+stdin_via = "--input"
+required = ["--input"]
+dont = ["Supply an independently retained source population with feed, extract_id, from, through, detail_rows, children and totals. Retain the canonical bytes as a Workpaper with the returned media type and obtain an independent review."]
+mistakes = ["Generating the expected population from the delivered journal or treating preparation as document retention."]
+
+[[mcp.tool]]
+cluster = "fa.subledger"
+name = "verify_manifest"
+verb = "subledger"
+subcommands = ["verify-manifest"]
+positionals = ["document"]
+flags = ["--as-known-at"]
+switches = []
+required = ["document"]
+dont = ["Name the independently reviewed manifest Workpaper. Read status and any missing, unexpected or mismatching inputs in the report before asserting agreement with the extract."]
+mistakes = ["Treating an arithmetic tie-out as evidence that every source child arrived."]
 
 [[bound]]
 verbs = ["subledger"]

@@ -1104,6 +1104,21 @@ impl Book {
         ))
     }
 
+    /// Compare a reviewed external-feed manifest with every recorded delivery
+    /// in its effective window under the caller's current authority.
+    pub fn verify_external_feed_manifest(
+        &mut self,
+        principal: VId,
+        capability: &fa_policy::Capability,
+        document: fa_model::Oid,
+        known_at: Option<CommitSeq>,
+    ) -> Outcome<crate::external_subledger::VerifiedFeedManifest> {
+        let purposes = self.purposes();
+        with_store!(&mut self.store, core => self.runtime.block_on(core.verify_external_feed_manifest(
+            &purposes, principal, capability, document, known_at,
+        )))
+    }
+
     /// Prepare a fixed-effects recurring schedule for independent approval.
     pub fn plan_recurring(
         &self,

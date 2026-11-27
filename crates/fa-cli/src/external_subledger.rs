@@ -1,5 +1,7 @@
 //! Canonical external detail, reviewed summary posting, and source reconciliation.
 
+mod manifest;
+
 use fa::{Book, ExternalSubledgerBatch, ExternalSubledgerDetail};
 use fa_model::{EntryClass, EntryPayload, Oid, account_vid};
 use fa_money::{Amount, Side};
@@ -154,6 +156,8 @@ fn parse_batch(value: &Json, book: &Book) -> Result<ExternalSubledgerBatch, Fail
 
 pub(crate) fn command(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
     match args.positional.get(1).map(String::as_str) {
+        Some("manifest") => manifest::prepare(ctx, args),
+        Some("verify-manifest") => manifest::verify(ctx, args),
         Some("detail") => detail(ctx, args),
         Some("feed") => feed(ctx, args),
         Some("verify-feed") => verify(ctx, args),

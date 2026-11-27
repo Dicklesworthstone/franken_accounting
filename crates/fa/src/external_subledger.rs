@@ -1,8 +1,10 @@
 //! Retained external-detail documents and matched native summary proposals.
 
 mod certificate;
+mod manifest;
 mod reconciliation;
 
+pub use manifest::VerifiedFeedManifest;
 pub use certificate::{
     CertifiedExternalFeed, EXTERNAL_FEED_CERTIFICATE_FORMAT, ExternalFeedCertificate,
     MAX_EXTERNAL_FEED_CERTIFICATE_BYTES,

@@ -47,4 +47,34 @@ Count all original deliveries in the window, including batches subsequently reve
 | 8 | A verification check failed. A population difference identifies an unexpected or missing child, a Workpaper mismatch, a row-count difference, or a gross cell that differs. A book, feed, or cutoff mismatch also fails verification. |
 | 2 | The manifest syntax or command arguments are invalid. Correct the indicated field and rerun. |
 
-The JSON check named `external_feed_population` records the extract identifier, window, and BLAKE3 digest of the exact manifest bytes. Its result establishes agreement with that recipient-held declaration. The source system's own extraction controls establish which upstream records the declaration covers. This version supports the offline file check. A journal-retained parent extract and a live `fa subledger verify-manifest` command remain future work.
+The JSON check named `external_feed_population` records the extract identifier, window, and BLAKE3 digest of the exact manifest bytes. Its result establishes agreement with that recipient-held declaration. The source system's own extraction controls establish which upstream records the declaration covers.
+
+## Retain and check the declaration in a live book
+
+Use the source extract to prepare a JSON declaration. Each child names its batch key and detail Workpaper commitment (`doc_commit` from `fa subledger detail`). Each gross cell names a GL code and two exact unit-bearing amounts. Include `dimension_set` when the cell has dimensions, using objects with an integer `dimension` and its hex vertex `value`. Include all offsetting cells.
+
+```json
+{
+  "feed": "ERP:AR",
+  "extract_id": "export-310",
+  "from": "2026-03-01",
+  "through": "2026-03-31",
+  "detail_rows": 2,
+  "children": [
+    {"batch_key": "batch-17", "doc_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ],
+  "totals": [
+    {"account": "1200", "debits": "125.00 USD", "credits": "0.00 USD"},
+    {"account": "4000", "debits": "0.00 USD", "credits": "125.00 USD"}
+  ]
+}
+```
+
+```bash
+fa subledger manifest --input extract.json --out extract.bin
+fa document add extract.bin --kind Workpaper --grade HumanUpload --mime application/vnd.franken.subledger-manifest.v1
+fa attest review "$MANIFEST_OID" --as reviewer
+fa subledger verify-manifest "$MANIFEST_OID" --as-known-at HEAD --json
+```
+
+Use the OID returned by document admission for `MANIFEST_OID`. The independent review must exist by the selected sequence. The comparison event reports `complete`, `incomplete`, or `mismatch` in `data.status`. A complete match exits zero. A difference exits 8 and identifies missing or unexpected keys, changed commitments, row counts, and differing gross cells. Repeat at the original recorded sequence to see the same source comparison after later deliveries. The retained comparison uses the journaled Workpaper and live journal history. The offline command above authenticates a certified financial report against a recipient-held declaration.

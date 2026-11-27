@@ -22,7 +22,7 @@ pub(crate) fn subledger_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> 
     let sub = args.positional.get(1).map(String::as_str);
     if matches!(
         sub,
-        Some("detail" | "feed" | "verify-feed" | "reconcile-feed")
+        Some("detail" | "feed" | "verify-feed" | "reconcile-feed" | "manifest" | "verify-manifest")
     ) {
         return crate::external_subledger::command(ctx, args);
     }

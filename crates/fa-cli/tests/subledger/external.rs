@@ -116,6 +116,64 @@ fn event_data(output: &str, expected: &str) -> Json {
 }
 
 #[test]
+fn reviewed_parent_detects_missing_and_unexpected_deliveries_at_a_fixed_prefix() {
+    let f = Fixture::new();
+    let batch = |key: &str| {
+        let input = f.file(&format!("{key}.json"), &format!(
+            r#"{{"feed":"daily","batch_key":"{key}","effective_date":"2026-03-15","rows":[{{"source_digest":"{}","account":"6000","side":"debit","amount":"1.00 USD"}},{{"source_digest":"{}","account":"2000","side":"credit","amount":"1.00 USD"}}]}}"#,
+            "01".repeat(32), "02".repeat(32),
+        ));
+        let path = f.dir.join(format!("{key}.bin"));
+        let prepared = data(&f.ok(&["subledger", "detail", "--input", &input, "--out", path.to_str().unwrap()]));
+        let doc = data(&f.ok(&["document", "add", path.to_str().unwrap(), "--kind", "Workpaper", "--grade", "HumanUpload"]));
+        let oid = text(&doc, "oid");
+        f.ok(&["attest", "review", &oid, "--as", "reviewer"]);
+        (oid, text(&prepared, "doc_commit"))
+    };
+    let (child, commit) = batch("expected");
+    let (extra, _) = batch("extra");
+    let input = f.file("source-parent.json", &format!(
+        r#"{{"feed":"daily","extract_id":"march","from":"2026-03-01","through":"2026-03-31","detail_rows":2,"children":[{{"batch_key":"expected","doc_commit":"{commit}"}}],"totals":[{{"account":"6000","debits":"1.00 USD","credits":"0.00 USD"}},{{"account":"2000","debits":"0.00 USD","credits":"1.00 USD"}}]}}"#,
+    ));
+    let path = f.dir.join("parent.bin");
+    let path = path.to_str().unwrap();
+    let prepared = data(&f.ok(&["subledger", "manifest", "--input", &input, "--out", path]));
+    let doc = data(&f.ok(&["document", "add", path, "--kind", "Workpaper", "--grade", "HumanUpload", "--mime", &text(&prepared, "mime")]));
+    let parent = text(&doc, "oid");
+    let command = ["subledger", "verify-manifest", &parent];
+    let unreviewed_at = f.head();
+    assert_eq!(f.run(&command).0, 3);
+    f.ok(&["attest", "review", &parent, "--as", "reviewer"]);
+    let incomplete_at = f.head();
+    let incomplete = |(exit, output): (i32, String)| {
+        assert_eq!(exit, 8, "{output}");
+        event_data(&output, "external_feed_manifest_verified")
+    };
+    let report = incomplete(f.run(&command));
+    assert_eq!(text(&report, "status"), "incomplete");
+    assert_eq!(rows(&report, "missing"), [Json::Str("expected".into())]);
+    assert_eq!(rows(&report, "cell_mismatches").len(), 2);
+    assert_eq!(f.head(), incomplete_at);
+
+    let post = |oid: &str, key: &str| {
+        f.ok(&["subledger", "feed", "--document", oid, "--date", "2026-03-15", "--key", key]);
+    };
+    post(&child, "original");
+    let complete_at = f.head();
+    let complete = data(&f.ok(&command));
+    assert_eq!(text(&complete, "status"), "complete");
+    assert_eq!(complete.get("actual_rows"), Some(&Json::Int(2)));
+    post(&extra, "additional");
+    let report = incomplete(f.run(&command));
+    assert_eq!(text(&report, "status"), "incomplete");
+    assert_eq!(rows(&report, "unexpected"), [Json::Str("extra".into())]);
+    let historical = |at: &str| f.run(&["subledger", "verify-manifest", &parent, "--as-known-at", at]);
+    assert_eq!(historical(&unreviewed_at).0, 3);
+    assert_eq!(text(&incomplete(historical(&incomplete_at)), "status"), "incomplete");
+    assert_eq!(data(&historical(&complete_at).1), complete);
+}
+
+#[test]
 fn aggregate_feed_certificate_reopens_replays_and_exposes_zero_net_control_contamination() {
     let f = Fixture::new();
     let detail = f.file("aggregate-source.json", &format!(
