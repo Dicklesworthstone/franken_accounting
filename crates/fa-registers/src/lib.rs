@@ -1619,7 +1619,14 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
             u32::try_from(folded_legs).unwrap_or(u32::MAX),
         );
     }
-    if basis < head {
+    let retained_lag = if basis < head {
+        retained_entry_lag(db, cx, basis, head)?
+    } else {
+        None
+    };
+    if let Some(lag) = retained_lag {
+        result.lag_entries = lag;
+    } else if basis < head {
         reads.load_entry_rows(basis, head)?;
         reads.load_entry_rows(head, head)?;
         let before = reads.entry_rows(basis)?;
@@ -1662,6 +1669,89 @@ fn verify_period_in<V: asupersync::fs::Vfs + Clone>(
         CacheStatus::Corrupt
     };
     Ok(result)
+}
+
+/// Both register verifiers count book-wide Entry births, including controls
+/// and staged migration entries. A contiguous native delta enumerates every
+/// identity whose Entry membership or version could have changed. Compare
+/// those identities at the two selected snapshots. A rewritten/disappeared
+/// prefix Entry, unfamiliar delta or unavailable suffix leaves the full
+/// inventory comparison responsible for the original diagnostic.
+fn retained_entry_lag<V: asupersync::fs::Vfs + Clone>(
+    db: &Database<V>,
+    cx: Option<&QueryCx>,
+    from: CommitSeq,
+    at: CommitSeq,
+) -> Result<Option<usize>, RegisterError> {
+    use fgdb_delta_types::{DeltaRow, ElementId};
+
+    report_checkpoint(cx)?;
+    if from == at {
+        return Ok(Some(0));
+    }
+    let batches = match db.delta_since(from) {
+        Ok(batches) => batches,
+        Err(fgdb::ReadError::DeltaCursorRetired { .. }) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut cursor = from;
+    let mut touched = BTreeSet::new();
+    for batch in batches.take_while(|batch| batch.commit_seq() <= at) {
+        if cursor.0.checked_add(1) != Some(batch.commit_seq().0) {
+            return Ok(None);
+        }
+        for coordinate in batch.coordinate_entries() {
+            for row in &coordinate.rows {
+                report_checkpoint(cx)?;
+                match row {
+                    DeltaRow::CreateVertex { vid, labels, .. } => {
+                        if labels.contains(&label::ENTRY) {
+                            touched.insert(*vid);
+                        }
+                    }
+                    DeltaRow::Property {
+                        elem: ElementId::Vertex(vid),
+                        ..
+                    }
+                    | DeltaRow::LabelMembership { vid, .. }
+                    | DeltaRow::DeleteVertex { vid, .. } => {
+                        touched.insert(*vid);
+                    }
+                    DeltaRow::CreateEdge { .. }
+                    | DeltaRow::DeleteEdge { .. }
+                    | DeltaRow::Property {
+                        elem: ElementId::Edge(_),
+                        ..
+                    } => {}
+                    _ => return Ok(None),
+                }
+            }
+        }
+        cursor = batch.commit_seq();
+    }
+    if cursor != at {
+        return Ok(None);
+    }
+    let mut lag = 0usize;
+    for vid in touched {
+        report_checkpoint(cx)?;
+        let entry_at = |seq| {
+            fa_journal::op_witness::vertex_at(db, vid, seq)
+                .map(|row| row.filter(|r| r.labels.contains(&label::ENTRY)))
+        };
+        match (entry_at(from)?, entry_at(at)?) {
+            (Some(before), Some(now))
+                if now.created_at == before.created_at
+                    && now.labels == before.labels
+                    && now.props == before.props => {}
+            (None, Some(now)) if now.created_at > from => {
+                lag = lag.checked_add(1).ok_or(RegisterError::Overflow)?;
+            }
+            (None, None) => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(lag))
 }
 
 /// Verify the maintained cells and every checkpoint reachable from their

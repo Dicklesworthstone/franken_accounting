@@ -1246,6 +1246,11 @@ fn entry_lag<V: Vfs + Clone>(
     at: CommitSeq,
     current: &mut Option<BTreeMap<VId, VertexRow>>,
 ) -> Result<(usize, Vec<String>), RegisterError> {
+    if let Some(basis) = through
+        && let Some(lag) = crate::retained_entry_lag(db, Some(cx), basis, at)?
+    {
+        return Ok((lag, Vec::new()));
+    }
     if current.is_none() {
         *current = Some(entry_inventory(db, cx, at)?);
     }

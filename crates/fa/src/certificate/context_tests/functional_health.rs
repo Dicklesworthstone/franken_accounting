@@ -17,6 +17,39 @@ fn verify(h: &mut Harness, at: Option<CommitSeq>) -> maintained::Verification {
 }
 
 #[test]
+fn functional_verification_counts_retained_births_without_rescanning_the_book() {
+    let (mut h, _) = fixture();
+    let first = advance(&mut h);
+    let published = h.head();
+    let a = proposal(&h, b"functional-freshness-tail-a", 75);
+    post(&mut h, a);
+    let middle = h.head();
+    let b = proposal(&h, b"functional-freshness-tail-b", 150);
+    post(&mut h, b);
+    let head = h.head();
+    let cx = h.cx();
+    let census = fa_journal::op_witness::begin();
+    literal(&h, first.through);
+    let refold_scans = census.finish().vertex_scans;
+    assert!(refold_scans > 0, "the reference reads the journal");
+    for (at, expected_lag) in [(published, 0), (middle, 1), (head, 2)] {
+        let census = fa_journal::op_witness::begin();
+        let result =
+            maintained::verify(&h.book.db, &cx.query(), h.book.context(), PERIOD, Some(at))
+                .unwrap();
+        let work = census.finish();
+        assert_eq!(result.through, Some(first.through));
+        assert!(result.is_green());
+        assert_eq!(result.lag_entries, expected_lag);
+        assert_eq!(result.stale, expected_lag != 0);
+        assert_eq!(
+            work.vertex_scans, refold_scans,
+            "only the independent prefix refold scans the book at {at:?}: {work:?}"
+        );
+    }
+}
+
+#[test]
 fn functional_currentness_counts_entries_not_cache_or_document_commits() {
     let (mut h, mut rate) = fixture();
     let original_at = h.head();

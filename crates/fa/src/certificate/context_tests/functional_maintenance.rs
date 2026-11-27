@@ -425,11 +425,26 @@ fn persisted_entity_state_hydrates_an_unloaded_tail_after_reopen_and_compaction(
         // Both opens initially expose a lazy resident window. Compaction
         // preserves Chronicle, so its authenticated suffix is recoverable.
         assert!(h.book.db.delta_since(initial.through).is_err());
+        let observation = h.head();
+        let verify_lag = |h: &Harness| {
+            maintained::verify(
+                &h.book.db,
+                &cx.query(),
+                h.book.context(),
+                PERIOD,
+                Some(observation),
+            )
+            .unwrap()
+        };
+        let cold = verify_lag(&h);
+        assert!(cold.is_green() && cold.stale);
+        assert_eq!(cold.lag_entries, 1);
         let advanced = advance(&mut h);
         assert!(!advanced.rebuilt);
         assert_eq!(advanced.from, initial.through);
         assert_eq!((advanced.entries_decoded, advanced.legs_folded), (1, 2));
         assert!(h.book.db.delta_since(initial.through).is_ok());
+        assert_eq!(verify_lag(&h), cold);
         assert_eq!(advanced.fold.cells, expected.cells);
         assert_eq!(advanced.fold.pending, expected.pending);
         assert_eq!(advanced.fold.fold_digest, expected.fold_digest);
