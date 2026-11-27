@@ -65,6 +65,13 @@ fn executor(h: &Harness) -> Capability {
 }
 
 fn sweep(h: &mut Harness, capability: Capability) -> Result<Option<ReversalBatch>, Refusal> {
+    sweep_result(h, capability).unwrap()
+}
+
+fn sweep_result(
+    h: &mut Harness,
+    capability: Capability,
+) -> fa_journal::refusal::Outcome<Option<ReversalBatch>> {
     let ctx = h.ctx();
     let req = SweepRequest {
         principal_ref: capability.holder(),
@@ -81,35 +88,39 @@ fn sweep(h: &mut Harness, capability: Capability) -> Result<Option<ReversalBatch
             [118; 24],
         ))
     };
-    h.runtime
-        .block_on(fa_journal::schedule::sweep_reversals_batch(
-            &mut h.db,
-            &ctx,
-            book,
-            &req,
-            &mut describe,
-        ))
-        .unwrap()
+    h.runtime.block_on(fa_journal::schedule::sweep_reversals_batch(
+        &mut h.db,
+        &ctx,
+        book,
+        &req,
+        &mut describe,
+    ))
 }
 
 fn open(h: &mut Harness, capability: &Capability, key: &[u8]) -> Result<Transitioned, Refusal> {
+    open_result(h, capability, key).unwrap()
+}
+
+fn open_result(
+    h: &mut Harness,
+    capability: &Capability,
+    key: &[u8],
+) -> fa_journal::refusal::Outcome<Transitioned> {
     let ctx = h.ctx();
     let description = h.statement("open with governed reversals", 119);
-    h.runtime
-        .block_on(transition_period(
-            &mut h.db,
-            &ctx,
-            &h.book,
-            &h.april,
-            PeriodTransition::Open,
-            capability.holder(),
-            1,
-            key,
-            description,
-            capability,
-            &[],
-        ))
-        .unwrap()
+    h.runtime.block_on(transition_period(
+        &mut h.db,
+        &ctx,
+        &h.book,
+        &h.april,
+        PeriodTransition::Open,
+        capability.holder(),
+        1,
+        key,
+        description,
+        capability,
+        &[],
+    ))
 }
 
 fn closer() -> Capability {
@@ -303,6 +314,53 @@ fn scheduled_foreign_accruals_keep_original_rates_and_residuals_on_both_executio
                 "resolved exactly once"
             );
         }
+    }
+}
+
+#[test]
+fn a_consistent_schedule_mirror_cannot_change_the_original_reversal_date() {
+    for via_open in [false, true] {
+        let mut h = fixture();
+        let target = accrue(&mut h, 100, b"bound-schedule-date");
+        if !via_open {
+            open(&mut h, &closer(), b"open-before-date-drift").unwrap();
+        }
+        // Both dates are in April. Keep the period and effects mirror internally
+        // consistent so only the original Adjusting entry detects this change.
+        let changed = DateDay(april().0 + 1);
+        tick(&mut h, changed, 152);
+        let vid = fa_journal::rows::schedule_vid(target.vid);
+        let digest = schedule::effects_digest(target, changed, schedule::RULE_EXACT_NEGATION);
+        let mut damage = fgdb::WriteBatch::new(relation::IN_BOOK);
+        damage.set_vertex_property(
+            vid,
+            property::REVERSE_ON,
+            Some(CanonicalScalar::Int(i64::from(changed.0))),
+        );
+        damage.set_vertex_property(
+            vid,
+            property::EFFECTS_DIGEST,
+            Some(CanonicalScalar::bytes(digest.to_vec()).unwrap()),
+        );
+        h.write_raw(damage);
+        let head = h.db.frontier().unwrap();
+        let error = if via_open {
+            open_result(&mut h, &closer(), b"open-with-date-drift").unwrap_err()
+        } else {
+            let cap = executor(&h);
+            sweep_result(&mut h, cap).unwrap_err()
+        };
+        assert!(matches!(error, KernelError::Corrupt(ref why) if why.contains("does not bind")));
+        assert_eq!(h.db.frontier().unwrap(), head);
+        assert!(h.db.vertex(reversal_vid(target.vid)).unwrap().is_none());
+        assert_eq!(
+            h.period_state(&h.april),
+            if via_open {
+                PeriodState::Future
+            } else {
+                PeriodState::Open
+            }
+        );
     }
 }
 

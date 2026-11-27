@@ -368,6 +368,17 @@ pub struct Schedule {
     pub recorded_at: CommitSeq,
 }
 
+impl Schedule {
+    fn mirrors_request(&self, target: EntryRef, reverse_on: DateDay, period: &str) -> bool {
+        self.vid == schedule_vid(target.vid)
+            && self.target == target
+            && self.reverse_on == reverse_on
+            && self.period == period
+            && self.exec_op == EXEC_OP
+            && self.effects_digest == effects_digest(target, reverse_on, RULE_EXACT_NEGATION)
+    }
+}
+
 /// Decode a stored schedule; any missing or malformed mirror is corruption.
 pub fn decode_schedule(row: &VertexRow) -> Result<Schedule, KernelError> {
     let bad = |what: &str| {
@@ -986,10 +997,18 @@ pub(crate) fn mint<V: asupersync::fs::Vfs + Clone>(
         .vertex(db, schedule.target.vid)?
         .ok_or_else(|| KernelError::Corrupt("a scheduled target is missing".into()))?;
     let target = crate::entry_storage::decode_staged(txn, db, &target_row)?;
-    if target.entry_digest != schedule.target.entry_digest
-        || schedule.effects_digest
-            != effects_digest(schedule.target, schedule.reverse_on, RULE_EXACT_NEGATION)
-    {
+    // The scheduler's mirrors select candidates. Only the source entry can
+    // authorize the date and period of its reversal, even if a damaged
+    // schedule's effects digest is internally consistent.
+    let bound = match auto_reverse(&target.proposal) {
+        Ok(Some((day, RULE_EXACT_NEGATION))) if target.proposal.class == EntryClass::ADJUSTING => {
+            period_of(book, day)?.is_ok_and(|period| {
+                schedule.mirrors_request(target.entry_ref(schedule.target.vid), day, &period)
+            })
+        }
+        _ => false,
+    };
+    if !bound {
         return Err(KernelError::Corrupt(format!(
             "reversal schedule {:032x} does not bind its target; `fa verify schedules` names it",
             schedule.vid.0
@@ -1894,13 +1913,7 @@ pub fn verify_schedules<V: asupersync::fs::Vfs + Clone>(
             ));
             continue;
         };
-        let bound = effects_digest(*target, *reverse_on, RULE_EXACT_NEGATION);
-        if s.target != *target
-            || s.reverse_on != *reverse_on
-            || s.period != *period
-            || s.exec_op != EXEC_OP
-            || s.effects_digest != bound
-        {
+        if !s.mirrors_request(*target, *reverse_on, period) {
             v.drift.push(format!(
                 "schedule {:032x} does not mirror its target's request",
                 svid.0
