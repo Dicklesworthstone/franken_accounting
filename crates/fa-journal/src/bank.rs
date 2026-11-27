@@ -616,6 +616,67 @@ pub async fn read_bank_match<V: Vfs + Clone>(
     Ok(verify::read_record(db, cx, book, &row, at, manifest)?.map(Some))
 }
 
+/// Authenticate selected confirmation records and their original sources at
+/// one prefix. The complete immutable match/unmatch history is replayed once
+/// for the batch, including generations subsequently released.
+pub async fn verify_bank_match_sources<V: Vfs + Clone>(
+    db: &mut Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    capability: &Capability,
+    at: CommitSeq,
+    requests: &[(&BankMatchRecorded, &BankImportManifest)],
+) -> Outcome<()> {
+    if let Err(refusal) = admit_bank_match(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = admit_bank_match_history(db, book, capability, Some(at))? {
+        return Ok(Err(refusal));
+    }
+    if requests.is_empty() {
+        return Ok(Ok(()));
+    }
+    checkpoint(cx)?;
+    if let Err(refusal) = crate::scratch::ensure_history(db, cx).await? {
+        return Ok(Err(refusal));
+    }
+    if let Err(refusal) = admit_bank_match(db, book, capability)? {
+        return Ok(Err(refusal));
+    }
+    let history = match lifecycle::history_at(db, cx, book, at)? {
+        Ok(history) => history,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    let by_vid: std::collections::BTreeMap<_, _> = history
+        .confirmations
+        .iter()
+        .map(|recorded| (recorded.match_vid, recorded))
+        .collect();
+    for &(expected, manifest) in requests {
+        checkpoint(cx)?;
+        let Some(&recorded) = by_vid.get(&expected.match_vid) else {
+            return Ok(Err(drift(
+                "a selected bank confirmation is absent at the reviewed prefix",
+            )));
+        };
+        // The retry indicator describes the caller's last operation.
+        if recorded.recorded_at != expected.recorded_at
+            || recorded.match_digest != expected.match_digest
+            || recorded.confirmation != expected.confirmation
+        {
+            return Ok(Err(drift(
+                "a selected bank confirmation differs from its recorded history",
+            )));
+        }
+        if let Err(refusal) =
+            verify::verify_record_sources(db, cx, book, &recorded.confirmation, at, Some(manifest))?
+        {
+            return Ok(Err(refusal));
+        }
+    }
+    Ok(Ok(()))
+}
+
 /// The complete immutable occupied-line/cash-leg set at a fixed prefix.
 /// Native births, canonical pair bindings, strong edge projections and cash
 /// Entry visibility are checked before any pair is returned. Missing or

@@ -1001,7 +1001,19 @@ pub(super) fn read_record<V: Vfs + Clone>(
         Ok(recorded) => recorded,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let value = &recorded.confirmation;
+    Ok(verify_record_sources(db, cx, book, &recorded.confirmation, at, manifest)?
+        .map(|()| recorded))
+}
+
+/// The caller has authenticated the confirmation metadata at this prefix.
+pub(super) fn verify_record_sources<V: Vfs + Clone>(
+    db: &Database<V>,
+    cx: &PurposeContexts,
+    book: &BookContext,
+    value: &BankMatchConfirmation,
+    at: CommitSeq,
+    manifest: Option<&BankImportManifest>,
+) -> Outcome<()> {
     let policy = policy()?;
     let document = match document_at(db, book, value.manifest_oid, at, &policy)? {
         Ok(document) => document,
@@ -1039,10 +1051,7 @@ pub(super) fn read_record<V: Vfs + Clone>(
             "the supplied bank manifest does not reproduce the original committed document",
         )));
     }
-    if let Err(refusal) = sources(db, cx, book, value, at, manifest)? {
-        return Ok(Err(refusal));
-    }
-    Ok(Ok(recorded))
+    sources(db, cx, book, value, at, manifest)
 }
 
 /// Preserve the source-bound occupied-pair reader while explicit corrections

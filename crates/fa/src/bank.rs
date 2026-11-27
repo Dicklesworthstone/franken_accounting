@@ -1249,10 +1249,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             {
                 continue;
             }
-            let Some(index) = lines
-                .iter()
-                .position(|line| line.line_ordinal == confirmation.line_ordinal)
-            else {
+            // Source ordinals are one-based positions in the retained manifest.
+            let index = confirmation
+                .line_ordinal
+                .checked_sub(1)
+                .and_then(|ordinal| usize::try_from(ordinal).ok())
+                .filter(|&index| {
+                    lines.get(index).is_some_and(|line| {
+                        line.line_ordinal == confirmation.line_ordinal
+                    })
+                });
+            let Some(index) = index else {
                 return Ok(Err(closure_drift(
                     "an active confirmation names a line absent from its retained statement",
                 )));

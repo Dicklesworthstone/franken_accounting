@@ -799,6 +799,54 @@ fn separate_actual_cash_legs_can_confirm_but_one_cash_leg_cannot_be_spent_twice(
 }
 
 #[test]
+fn batch_source_verification_binds_each_confirmation_to_its_prefix_and_own_manifest() {
+    let mut h = Harness::new();
+    let entry = h.entry(&[10_000, 20_000], "WIRE", b"two-legs");
+    let (import, line) = h.imported("WIRE", 10_000, b"first");
+    let first_manifest = import.manifest().clone();
+    let first = h.request(import, line, entry, 0);
+    let first = h.confirm(&cap(CONFIRMER), first).unwrap();
+    let (import, line) = h.imported("WIRE", 20_000, b"second");
+    let second_manifest = import.manifest().clone();
+    let second = h.request(import, line, entry, 1);
+    let second = h.confirm(&cap(CONFIRMER), second).unwrap();
+    let head = h.head();
+    let cx = PurposeContexts::narrow_runtime_root(&h.root);
+    let mut verify = |at, requests: &[(&BankMatchRecorded, &BankImportManifest)]| {
+        h.runtime
+            .block_on(fa_journal::bank::verify_bank_match_sources(
+                &mut h.db,
+                &cx,
+                &h.book,
+                &cap(CONFIRMER),
+                at,
+                requests,
+            ))
+            .unwrap()
+    };
+    let both = [(&first, &first_manifest), (&second, &second_manifest)];
+    verify(head, &both).unwrap();
+    verify(first.recorded_at, &both[..1]).unwrap();
+    assert_eq!(
+        verify(first.recorded_at, &both).unwrap_err().code,
+        refusal::code::BANK_MATCH_DRIFT
+    );
+    assert_eq!(
+        verify(head, &[(&first, &first_manifest), (&second, &first_manifest)])
+            .unwrap_err()
+            .code,
+        refusal::code::IDEMPOTENCY_CONFLICT
+    );
+    let mut altered = second.clone();
+    altered.confirmation.proposer = VId(123);
+    assert_eq!(
+        verify(head, &[(&altered, &second_manifest)]).unwrap_err().code,
+        refusal::code::BANK_MATCH_DRIFT
+    );
+    assert_eq!(h.head(), head);
+}
+
+#[test]
 fn available_claims_reindex_actual_legs_and_preserve_saved_legacy_proposals() {
     for legacy_index in [false, true] {
         let mut h = Harness::new();

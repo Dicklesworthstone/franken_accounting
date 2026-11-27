@@ -210,6 +210,7 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         // The selected import and its predecessor chain were already fully
         // replayed by match_bank_statement_for before collecting candidates.
         let mut manifests = BTreeMap::from([(manifest_oid, manifest.clone())]);
+        let mut selected = Vec::new();
         for claim in claims {
             let confirmation = &claim.confirmation;
             if confirmation.statement_oid != manifest.statement_oid
@@ -235,33 +236,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 }
                 slot.insert(verified.manifest);
             }
-            let original = manifests.get(&confirmation.manifest_oid).ok_or_else(|| {
-                corrupt("an active bank claim's original manifest was not loaded")
-            })?;
-            let recorded = match native::read_bank_match(
-                &mut self.db,
-                cx,
-                &context,
-                capability,
-                claim.match_vid,
-                Some(seq),
-                Some(original),
-            )
-            .await?
-            {
-                Ok(Some(recorded)) => recorded,
-                Ok(None) => {
-                    return Ok(Err(closure_drift(
-                        "an active bank claim disappeared during complete source verification",
-                    )));
-                }
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            if &recorded != claim {
-                return Ok(Err(closure_drift(
-                    "an active bank claim changed during complete source verification",
-                )));
-            }
+            selected.push(claim);
+        }
+        let requests = selected
+            .into_iter()
+            .map(|claim| {
+                manifests
+                    .get(&claim.confirmation.manifest_oid)
+                    .map(|manifest| (claim, manifest))
+                    .ok_or_else(|| corrupt("an active bank claim's original manifest was not loaded"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Err(refusal) = native::verify_bank_match_sources(
+            &mut self.db, cx, &context, capability, seq, &requests,
+        )
+        .await?
+        {
+            return Ok(Err(refusal));
         }
         self.authorize_bank(cx, capability)
     }
@@ -503,46 +494,17 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             Ok(history) => history,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let mut confirmations = Vec::new();
-        for fact in history.confirmations {
-            let Some(index) = verified
-                .lines
-                .iter()
-                .position(|line| line.line_ordinal == fact.confirmation.line_ordinal)
-            else {
-                return Ok(Err(closure_drift(
-                    "a recorded confirmation names a line absent from its retained statement",
-                )));
-            };
-            match native::read_bank_match(
-                &mut self.db,
-                cx,
-                &context,
-                capability,
-                fact.match_vid,
-                Some(seq),
-                Some(&verified.manifest),
-            )
-            .await?
-            {
-                Err(refusal) => return Ok(Err(refusal)),
-                Ok(None) => {
-                    return Ok(Err(closure_drift(
-                        "an immutable confirmation disappeared during source verification",
-                    )));
-                }
-                Ok(Some(recorded)) => {
-                    if recorded.confirmation.account != verified.manifest.account
-                        || recorded.confirmation.line_document_oid
-                            != verified.manifest.line_oids[index]
-                    {
-                        return Ok(Err(selection_refusal(
-                            "this source line was confirmed under a different retained interpretation or cash account; inspect the original confirmation manifest",
-                        )));
-                    }
-                    confirmations.push(recorded);
-                }
-            }
+        let confirmations = history.confirmations;
+        let requests: Vec<_> = confirmations
+            .iter()
+            .map(|recorded| (recorded, &verified.manifest))
+            .collect();
+        if let Err(refusal) = native::verify_bank_match_sources(
+            &mut self.db, cx, &context, capability, seq, &requests,
+        )
+        .await?
+        {
+            return Ok(Err(refusal));
         }
         Ok(Ok(BankConfirmationStatus {
             manifest_oid: request.manifest_oid,
