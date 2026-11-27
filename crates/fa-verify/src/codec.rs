@@ -20,6 +20,7 @@ pub struct DecodeError {
 pub enum Reason {
     Truncated,
     TooLong { max: usize, actual: usize },
+    BelowMinimum { min: i128, actual: i128 },
     BadTag(u8),
     Trailing,
     Unsorted,
@@ -31,6 +32,7 @@ impl fmt::Display for DecodeError {
         match self.reason {
             Reason::Truncated => write!(f, "input ends early"),
             Reason::TooLong { max, actual } => write!(f, "length {actual} exceeds bound {max}"),
+            Reason::BelowMinimum { min, actual } => write!(f, "value {actual} is below {min}"),
             Reason::BadTag(t) => write!(f, "unknown tag {t}"),
             Reason::Trailing => write!(f, "trailing bytes after the value"),
             Reason::Unsorted => write!(f, "collection is not strictly ascending"),

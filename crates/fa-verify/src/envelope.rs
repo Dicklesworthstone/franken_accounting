@@ -193,7 +193,7 @@ pub struct Leg {
     pub debit: bool,
     pub account: u128,
     pub unit: u32,
-    /// Non-negative in a valid entry; the fold checks rather than assumes.
+    /// Strictly positive when decoded from a native posting leg.
     pub mantissa: i128,
 }
 
@@ -257,6 +257,20 @@ pub(crate) fn skip_erasable(r: &mut Reader<'_>, what: &'static str) -> Result<()
 
 fn amount(r: &mut Reader<'_>, what: &'static str) -> Result<(u32, i128), DecodeError> {
     Ok((r.u32(what)?, r.i128(what)?))
+}
+
+// The side carries the sign of a journal movement. Base valuations and
+// settlement allocations may round to zero in their own unit.
+fn leg_amount(
+    r: &mut Reader<'_>,
+    what: &'static str,
+    min: i128,
+) -> Result<(u32, i128), DecodeError> {
+    let (unit, actual) = amount(r, what)?;
+    if actual < min {
+        return Err(r.error(what, Reason::BelowMinimum { min, actual }));
+    }
+    Ok((unit, actual))
 }
 
 fn proposal_prefix(proposal: &[u8]) -> Result<ProposalPrefix, DecodeError> {
@@ -334,7 +348,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
             t => return Err(r.error("leg.side", Reason::BadTag(t))),
         };
         let account = r.u128("leg.account_ref")?;
-        let (unit, mantissa) = amount(r, "leg.amount")?;
+        let (unit, mantissa) = leg_amount(r, "leg.amount", 1)?;
         parsed.push(Leg {
             debit,
             account,
@@ -342,7 +356,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
             mantissa,
         });
         let base_amount = if r.present("leg.base_amount")? {
-            Some(amount(r, "leg.base_amount")?)
+            Some(leg_amount(r, "leg.base_amount", 0)?)
         } else {
             None
         };
@@ -368,7 +382,7 @@ fn read_proposal_prefix(r: &mut Reader<'_>) -> Result<ProposalPrefix, DecodeErro
             let target = r.u128("settles.target.vid")?;
             let digest = r.fixed("settles.target.entry_digest")?;
             let ordinal = r.u16("settles.ordinal")?;
-            let (unit, amount) = amount(r, "settles.amount")?;
+            let (unit, amount) = leg_amount(r, "settles.amount", 0)?;
             settlements.push(SettlementRef {
                 target,
                 digest,
@@ -1365,6 +1379,51 @@ pub fn check_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the shared prefix reader used for both balance folds and reports.
+    fn posting_prefix(native: i128, base: i128, allocation: i128) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.u16(1).u16(0).fixed(&[0; 32]).u16(1).i32(0).u8(0);
+        w.fixed(&[0; 32]).u8(0).fixed(&[0; 24]).bytes(&[]);
+        w.u8(0).count(2);
+        for (side, account) in [(0, 10), (1, 20)] {
+            w.u8(side).u128(account).u32(1).i128(native);
+            w.u8(1).u32(2).i128(base).count(0).u8(0);
+            if side == 0 {
+                w.count(1)
+                    .u128(3)
+                    .fixed(&[0; 32])
+                    .u16(0)
+                    .u32(1)
+                    .i128(allocation);
+            } else {
+                w.count(0);
+            }
+        }
+        w.buf
+    }
+
+    #[test]
+    fn posting_amounts_follow_the_native_sign_and_zero_rules() {
+        for (native, base, allocation) in [(1, 0, 0), (25, 10, 5), (i128::MAX, i128::MAX, 0)] {
+            let (legs, details) =
+                proposal_legs_and_details(&posting_prefix(native, base, allocation)).unwrap();
+            assert_eq!(legs[0].mantissa, native);
+            assert_eq!(details[0].base_amount, Some((2, base)));
+            assert_eq!(details[0].settlements[0].amount, allocation);
+        }
+        for (native, base, allocation, what, min, actual) in [
+            (0, 1, 1, "leg.amount", 1, 0),
+            (-1, 1, 1, "leg.amount", 1, -1),
+            (1, -1, 0, "leg.base_amount", 0, -1),
+            (1, 0, i128::MIN, "settles.amount", 0, i128::MIN),
+        ] {
+            let err =
+                proposal_legs_and_details(&posting_prefix(native, base, allocation)).unwrap_err();
+            assert_eq!(err.what, what);
+            assert_eq!(err.reason, Reason::BelowMinimum { min, actual });
+        }
+    }
 
     fn envelope() -> LeafEnvelope {
         LeafEnvelope {
