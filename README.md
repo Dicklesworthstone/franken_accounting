@@ -609,6 +609,12 @@ files need conversion before use with a recipient that requires the OECD
 schema. The offline `fa-verify saft` result reports the signed ledger checks
 and whether OECD XSD validation took place. [OECD schema, Appendix B](https://web-archive-storage.oecd.org/aemint-web-archive-prod/web-archive/cc/ccd3b76ffdaf3c1f3e185a390dba41be2876b0e826925278bbb3e62ad37442bf.pdf)
 
+An examiner can also require the whole chart at a specific cutoff and signed
+checkpoint. For March 31, 2026, use `fa-verify saft <dir> --key <trusted-key>
+--through 20543 --expect-checkpoint <checkpoint-oid> --json`. Supply the OID
+retained when the checkpoint was issued. A genuine extract from a different
+checkpoint or cutoff fails the recipient selection with exit 8.
+
 ### Exact XBRL calculation values
 
 Calculation-linkbase checks compare monetary facts at a common decimal scale,

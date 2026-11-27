@@ -2085,7 +2085,7 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
     let evidence = f.chart_and_evidence();
     f.post("saft-1", "2026-03-10", "12.34", &evidence);
     f.post("saft-2", "2026-03-20", "2.00", &evidence);
-    f.checkpoint();
+    let checkpoint = f.checkpoint();
     // Recorded after the state: not in the extract.
     f.post("saft-3", "2026-03-25", "5.00", &evidence);
     let dir = f.dir.join("saft");
@@ -2173,7 +2173,7 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
 
     // `fa-verify saft <dir>` reads the package by its names: exit 0 as
     // written, 8 when a transaction is dropped, 2 with no key.
-    let cli = |xml_text: &str, with_key: bool| {
+    let cli = |xml_text: &str, with_key: bool, selection: &[&str]| {
         let mut args = vec![
             "saft".to_string(),
             dir.to_str().unwrap().to_string(),
@@ -2185,6 +2185,7 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
                 text(proof, "checkpoint_public_key").to_string(),
             ]);
         }
+        args.extend(selection.iter().map(|s| (*s).to_owned()));
         let read = |path: &str| {
             if path.ends_with("/SAF-T.xml") {
                 Ok(xml_text.as_bytes().to_vec())
@@ -2194,7 +2195,7 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         };
         fa_verify::cli::run(&args, &read)
     };
-    let verified = cli(&xml, true);
+    let verified = cli(&xml, true, &[]);
     assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
     let parsed = json::parse(verified.stdout.trim()).expect("one JSON report");
     let Json::Arr(checks) = get(&parsed, "checks") else {
@@ -2209,8 +2210,34 @@ fn a_saft_extract_with_proofs_is_exactly_its_proven_selection_offline() {
         get(get(extract, "detail"), "oecd_xsd_validated"),
         &Json::Bool(false)
     );
-    assert_eq!(cli(&dropped, true).exit, 8);
-    assert_eq!(cli(&xml, false).exit, 2);
+    assert_eq!(cli(&dropped, true, &[]).exit, 8);
+    assert_eq!(cli(&xml, false, &[]).exit, 2);
+
+    let pin = text(&checkpoint, "checkpoint_oid");
+    let other_pin = "ff".repeat(32);
+    for (file, day, requested, exit, result) in [
+        (&xml, "20543", pin, 0, "pass"),
+        (&xml, "20542", pin, 8, "fail"),
+        (&xml, "20543", other_pin.as_str(), 8, "fail"),
+        (&dropped, "20543", pin, 8, "unrun"),
+    ] {
+        let reply = cli(
+            file,
+            true,
+            &["--through", day, "--expect-checkpoint", requested],
+        );
+        assert_eq!(reply.exit, exit, "{}", reply.stdout);
+        let parsed = json::parse(reply.stdout.trim()).unwrap();
+        let Json::Arr(checks) = get(&parsed, "checks") else {
+            panic!("missing checks")
+        };
+        let recipient = checks
+            .iter()
+            .find(|c| text(c, "check") == "recipient_selection")
+            .unwrap();
+        assert_eq!(text(recipient, "result"), result);
+        assert_eq!(text(recipient, "scope"), "saft_extract");
+    }
 }
 
 /// fa-mv0f: a migrated book's extracts verify offline. Every demo book holds

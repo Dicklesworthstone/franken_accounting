@@ -166,6 +166,9 @@ commands:
                                                 Checks transactions, balance assertions and accounts
                                                 against the signed journal. OECD XSD validation
                                                 requires a separate standards validator.
+               [--through D --expect-checkpoint HEX64]
+                                                require the whole chart at your effective cutoff
+                                                and signed checkpoint (D is days since 1970-01-01)
 
 ANCHOR — how you trust the checkpoint (exactly one; a proof never supplies its own):
   --key K...             C is a signed TransparencyCheckpoint; its signature by one of
@@ -344,7 +347,7 @@ fn admitted(command: &str) -> &'static [&'static str] {
             "--through",
             "--expect-checkpoint",
         ],
-        "saft" => &["--key", "--receipt"],
+        "saft" => &["--key", "--receipt", "--through", "--expect-checkpoint"],
         "report" => &[
             "--key",
             "--receipt",
@@ -2095,7 +2098,7 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
         }
         "ads" => {
             let dir = subject(args, "an ADS package directory")?;
-            let selection = AdsSelection::from_args(args)?;
+            let selection = ExtractSelection::from_args(args, cmd)?;
             let keys = args.all("--key");
             if keys.is_empty() {
                 return Err(usage(
@@ -2131,23 +2134,11 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 &keys,
                 Some(&receipt),
             );
-            let mut checks = match &verified {
-                Err(e) => vec![Check {
-                    name: "bundle",
-                    scope: "format",
-                    verdict: Verdict::Fail,
-                    detail: Vec::new(),
-                    reason: Some(e.to_string()),
-                }],
-                Ok(report) => ads_checks(report, "ads_extract"),
-            };
-            if let Some(selection) = selection {
-                checks.push(selection.check(verified.as_ref().ok()));
-            }
-            Ok(checks)
+            Ok(extract_verdict(verified, "ads_extract", selection))
         }
         "saft" => {
             let dir = subject(args, "a SAF-T package directory")?;
+            let selection = ExtractSelection::from_args(args, cmd)?;
             let keys = args.all("--key");
             if keys.is_empty() {
                 return Err(usage(
@@ -2168,18 +2159,8 @@ fn run_command(args: &Args, read: Read<'_>) -> Result<Vec<Check>, Usage> {
                 Some(p) => load(read, p, args.hex)?,
                 None => load(read, &format!("{dir}/SAFT_Proof.receipt"), false)?,
             };
-            Ok(
-                match crate::saft::verify_saft(&xml, &bundle, &keys, Some(&receipt)) {
-                    Err(e) => vec![Check {
-                        name: "bundle",
-                        scope: "format",
-                        verdict: Verdict::Fail,
-                        detail: Vec::new(),
-                        reason: Some(e.to_string()),
-                    }],
-                    Ok(report) => ads_checks(&report, "saft_extract"),
-                },
-            )
+            let verified = crate::saft::verify_saft(&xml, &bundle, &keys, Some(&receipt));
+            Ok(extract_verdict(verified, "saft_extract", selection))
         }
         _ => unreachable_command(cmd),
     }
@@ -5532,14 +5513,14 @@ fn statement_checks(
 }
 
 /// The examiner supplies these independently of the package and its receipt.
-struct AdsSelection<'a> {
+struct ExtractSelection<'a> {
     account: Option<&'a str>,
     effective_through: String,
     checkpoint: [u8; 32],
 }
 
-impl<'a> AdsSelection<'a> {
-    fn from_args(args: &'a Args) -> Result<Option<Self>, Usage> {
+impl<'a> ExtractSelection<'a> {
+    fn from_args(args: &'a Args, command: &str) -> Result<Option<Self>, Usage> {
         let account = args.one("--account");
         match (
             account,
@@ -5549,19 +5530,19 @@ impl<'a> AdsSelection<'a> {
             (None, None, None) => Ok(None),
             (_, Some(_), Some(checkpoint)) => Ok(Some(Self {
                 account,
-                effective_through: crate::bundle::civil(int(args, "--through", "ads")?),
-                checkpoint: identity_hex(checkpoint, "ads --expect-checkpoint")?,
+                effective_through: crate::bundle::civil(int(args, "--through", command)?),
+                checkpoint: identity_hex(checkpoint, "--expect-checkpoint")?,
             })),
             _ => Err(usage(
-                "an ADS selection requires both --through and --expect-checkpoint",
-                "supply the effective day and trusted checkpoint OID, adding --account CODE for one account",
+                format!("{command} selection requires both --through and --expect-checkpoint"),
+                "supply the effective day and independently retained checkpoint OID",
             )),
         }
     }
 
-    fn check(&self, report: Option<&AdsReport>) -> Check {
+    fn check(&self, report: Option<&AdsReport>, scope: &'static str) -> Check {
         let (verdict, reason) = match report.filter(|report| report.verified()) {
-            None => (Verdict::Unrun, Some("the ADS package did not verify")),
+            None => (Verdict::Unrun, Some("the extract package did not verify")),
             Some(report) if report.bundle.manifest.checkpoint_oid != self.checkpoint => (
                 Verdict::Fail,
                 Some("the signed checkpoint differs from the requested checkpoint"),
@@ -5578,7 +5559,7 @@ impl<'a> AdsSelection<'a> {
         };
         Check {
             name: "recipient_selection",
-            scope: "ads_extract",
+            scope,
             verdict,
             detail: vec![
                 ("account_scope", self.account.map_or(Json::Null, s)),
@@ -5588,6 +5569,27 @@ impl<'a> AdsSelection<'a> {
             reason: reason.map(str::to_owned),
         }
     }
+}
+
+fn extract_verdict(
+    verified: Result<AdsReport, crate::bundle::BundleError>,
+    scope: &'static str,
+    selection: Option<ExtractSelection<'_>>,
+) -> Vec<Check> {
+    let mut checks = match &verified {
+        Err(e) => vec![Check {
+            name: "bundle",
+            scope: "format",
+            verdict: Verdict::Fail,
+            detail: Vec::new(),
+            reason: Some(e.to_string()),
+        }],
+        Ok(report) => ads_checks(report, scope),
+    };
+    if let Some(selection) = selection {
+        checks.push(selection.check(verified.as_ref().ok(), scope));
+    }
+    checks
 }
 
 /// The bundle's checks, then the extract's: exactly the proven selection.
@@ -7107,11 +7109,13 @@ mod tests {
             &["--through", "today", "--expect-checkpoint", &pin],
             &["--through", "20543", "--expect-checkpoint", "xyz"],
         ] {
-            let mut args = vec!["ads", "unopened", "--key", &key];
-            args.extend_from_slice(flags);
-            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
-            let out = run(&args, &|file| panic!("read {file} for {flags:?}"));
-            assert_eq!(out.exit, EXIT_USAGE, "{}", out.stderr);
+            for command in ["ads", "saft"] {
+                let mut args = vec![command, "unopened", "--key", &key];
+                args.extend_from_slice(flags);
+                let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+                let out = run(&args, &|file| panic!("read {file} for {flags:?}"));
+                assert_eq!(out.exit, EXIT_USAGE, "{}", out.stderr);
+            }
         }
     }
 
