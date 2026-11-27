@@ -8,6 +8,7 @@ use crate::envelope::{KIND_ATTESTATION, KIND_IMPORT_RECEIPT, LeafEnvelope, skip_
 use crate::report::{ReportError, failed, metadata, text};
 use std::collections::BTreeMap;
 
+pub(super) const MAX_DETAIL_ROWS: usize = 128;
 const DETAIL_FORMAT: &[u8] = b"fa:external-subledger-detail:v1";
 
 pub(super) struct Batch {
@@ -20,7 +21,7 @@ pub(super) struct Batch {
     pub doc_commit: [u8; 32],
 }
 
-fn dimensions(r: &mut Reader<'_>) -> Result<Vec<(u32, u128)>, ReportError> {
+pub(super) fn dimensions(r: &mut Reader<'_>) -> Result<Vec<(u32, u128)>, ReportError> {
     let count = r.count(64, 20, "external_detail.dimensions")?;
     let mut values = Vec::with_capacity(count);
     let mut previous = None;
@@ -127,7 +128,7 @@ pub(super) fn batch(
             "external detail identity or coordinate differs from its summary",
         ));
     }
-    let count = r.count(128, 73, "external_detail.rows")?;
+    let count = r.count(MAX_DETAIL_ROWS, 73, "external_detail.rows")?;
     if count == 0 {
         return Err(invalid("external detail batch is empty"));
     }

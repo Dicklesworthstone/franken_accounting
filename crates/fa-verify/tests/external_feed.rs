@@ -332,7 +332,7 @@ const MANIFEST: &str = concat!(
 );
 
 fn population_result(
-    manifest: &str,
+    manifest: impl AsRef<[u8]>,
     bundle: &[u8],
     digest: &str,
     hex_bundle: bool,
@@ -361,7 +361,7 @@ fn population_result(
     }
     fa_verify::cli::run(&args, &|path| match path {
         "bundle" => Ok(bundle.to_vec()),
-        "source.manifest" => Ok(manifest.as_bytes().to_vec()),
+        "source.manifest" => Ok(manifest.as_ref().to_vec()),
         _ => Err(std::io::Error::new(std::io::ErrorKind::NotFound, path)),
     })
 }
@@ -442,4 +442,96 @@ fn external_feed_cli_counts_an_atomic_reversal_as_one_original_source_delivery()
     let wrong = population_result(&turnover, &bundle, digest, false);
     assert_eq!(wrong.exit, 8, "{}{}", wrong.stdout, wrong.stderr);
     assert!(wrong.stdout.contains("gross mismatch"));
+}
+
+fn workpaper_header(rows: u64) -> fa_verify::codec::Writer {
+    let mut w = fa_verify::codec::Writer::default();
+    w.fixed(b"fa:external-feed-manifest:v1")
+        .fixed(&[3; 16])
+        .bytes(b"ERP:AR")
+        .bytes(b"extract-1")
+        .i32(10)
+        .i32(20)
+        .u64(rows);
+    w
+}
+
+fn workpaper(commit: [u8; 32], rows: u64, debit: i128) -> Vec<u8> {
+    let mut w = workpaper_header(rows);
+    w.count(1)
+        .bytes(b"batch-1")
+        .fixed(&commit)
+        .count(2)
+        .u128(0x5706e80e281fc21c8fd6647d5ccb5a06)
+        .u32(0)
+        .count(0)
+        .i128(debit)
+        .i128(40)
+        .u128(0xa9aee1fc6b7f3cbc8738d312e5c540c5)
+        .u32(0)
+        .count(0)
+        .i128(0)
+        .i128(60);
+    w.buf
+}
+
+#[test]
+fn external_feed_cli_verifies_native_source_workpaper_and_distinguishes_commitments_from_oids() {
+    let commit = fixed("007c73d2365a9465bb0874d13e8ce3cf6a2e2c592d9a57838a4be17bea9d6f10");
+    let check = |bytes: &[u8]| population_result(bytes, VALID.as_bytes(), VALID_DIGEST, true);
+    let bytes = workpaper(commit, 3, 100);
+    let verified = check(&bytes);
+    assert_eq!(verified.exit, 0, "{}{}", verified.stdout, verified.stderr);
+    assert!(
+        verified
+            .stdout
+            .contains("\"check\":\"external_feed_population\"")
+    );
+    // The document OID is valid for the text form but is not the Workpaper's
+    // raw commitment, even though each occupies exactly 32 bytes.
+    let oid = fixed("90e026c4b6367161fc9b8d5681f00d09c0d6eabcce3dad67ac8f2292a53a03a7");
+    for (changed, reason) in [
+        (workpaper(oid, 3, 100), "Workpaper OID"),
+        (workpaper(commit, 2, 100), "source rows"),
+        (workpaper(commit, 3, 101), "gross mismatch"),
+    ] {
+        let result = check(&changed);
+        assert_eq!(result.exit, 8, "{}{}", result.stdout, result.stderr);
+        assert!(result.stdout.contains(reason), "{}", result.stdout);
+    }
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    let mut unsorted = bytes.clone();
+    let cell_bytes = 56;
+    let start = unsorted.len() - 2 * cell_bytes;
+    unsorted[start..].rotate_left(cell_bytes);
+    let mut duplicate = workpaper_header(3);
+    duplicate.count(2);
+    for _ in 0..2 {
+        duplicate.bytes(b"batch-1").fixed(&commit);
+    }
+    duplicate.count(0);
+    let mut kinds = bytes.clone();
+    // First total starts with account (16), unit (4), dimension count (4).
+    let count_at = start + 20;
+    kinds[count_at..count_at + 4].copy_from_slice(&2u32.to_le_bytes());
+    let mut dimensions = fa_verify::codec::Writer::default();
+    dimensions.u32(7).u128(5).u32(7).u128(6);
+    kinds.splice(count_at + 4..count_at + 4, dimensions.buf);
+    let mut oversized = bytes.clone();
+    oversized.resize(1024 * 1024 + 1, 0);
+    for malformed in [
+        trailing,
+        bytes[..bytes.len() - 1].to_vec(),
+        kinds,
+        oversized,
+        unsorted,
+        duplicate.buf,
+        workpaper([0; 32], 3, 100),
+        workpaper(commit, 129, 100),
+        workpaper(commit, 3, -1),
+    ] {
+        let result = check(&malformed);
+        assert_eq!(result.exit, 2, "{}{}", result.stdout, result.stderr);
+    }
 }

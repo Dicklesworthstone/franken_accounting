@@ -12,7 +12,7 @@ fa-verify report feed.fab --key "$TRUSTED_KEY" --expect "$CERTIFICATE_DIGEST" \
   --through 20030 --known-at 845 --population-manifest extract.txt --json
 ```
 
-The bundle comes from the certified `fa subledger reconcile-feed` report. The CLI accepts the control ID in decimal or with a `0x` hex prefix. The manifest uses fixed-width lowercase hex. The manifest stays plain text even when the bundle is supplied as hex.
+The bundle comes from the certified `fa subledger reconcile-feed` report. The CLI accepts the control ID in decimal or with a `0x` hex prefix. The verifier accepts the text declaration below or the canonical binary Workpaper written by `fa subledger manifest`. Supply each in its original form. `--hex` applies only to the bundle.
 
 ## Write the manifest
 
@@ -77,4 +77,4 @@ fa attest review "$MANIFEST_OID" --as reviewer
 fa subledger verify-manifest "$MANIFEST_OID" --as-known-at HEAD --json
 ```
 
-Use the OID returned by document admission for `MANIFEST_OID`. The independent review must exist by the selected sequence. The comparison event reports `complete`, `incomplete`, or `mismatch` in `data.status`. A complete match exits zero. A difference exits 8 and identifies missing or unexpected keys, changed commitments, row counts, and differing gross cells. Repeat at the original recorded sequence to see the same source comparison after later deliveries. The retained comparison uses the journaled Workpaper and live journal history. The offline command above authenticates a certified financial report against a recipient-held declaration.
+Use the OID returned by document admission for `MANIFEST_OID`. The independent review must exist by the selected sequence. The comparison event reports `complete`, `incomplete`, or `mismatch` in `data.status`. A complete match exits zero. A difference exits 8 and identifies missing or unexpected keys, changed commitments, row counts, and differing gross cells. Repeat at the original recorded sequence to see the same source comparison after later deliveries. Retain `extract.bin` independently at extraction time. The same bytes can be passed to the offline verifier in place of `extract.txt` with `--population-manifest extract.bin`. The binary format uses each child's raw Workpaper commitment and binds it to the declared book. It admits up to 4,096 ordered child keys and 4,096 ordered gross cells within 1 MiB. The comparison checks the original signed report's children, rows and gross cells against that declaration. The live-book command additionally checks the parent document's recorded review.

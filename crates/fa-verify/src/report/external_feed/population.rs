@@ -1,7 +1,11 @@
 //! Independently declared gross source deliveries for a bounded feed window.
 
-use super::{VerifiedExternalFeed, identifier};
+use super::{VerifiedExternalFeed, framed_digest, identifier, invalid, source};
+use crate::codec::Reader;
+use crate::report::{ReportError, text};
 use std::collections::{BTreeMap, BTreeSet};
+
+const WORKPAPER_FORMAT: &[u8] = b"fa:external-feed-manifest:v1";
 
 type Cell = (u128, u32, Vec<(u32, u128)>);
 
@@ -69,6 +73,9 @@ fn fields(line: &str) -> Result<Vec<&str>, String> {
 impl ExternalFeedManifest {
     /// Decode a bounded v1 source declaration supplied independently of the report.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.starts_with(WORKPAPER_FORMAT) {
+            return Self::parse_workpaper(bytes).map_err(|error| error.detail);
+        }
         if bytes.len() > 8 * 1024 * 1024 {
             return Err("external-feed manifest exceeds 8 MiB".into());
         }
@@ -130,6 +137,88 @@ impl ExternalFeedManifest {
             }
         }
         Ok(manifest)
+    }
+
+    /// Decode the canonical Workpaper emitted by `fa subledger manifest`.
+    /// It carries book-independent commitments; scope each to the declared book
+    /// using the same independent document identity law as source verification.
+    fn parse_workpaper(bytes: &[u8]) -> Result<Self, ReportError> {
+        if bytes.len() > 1024 * 1024 {
+            return Err(invalid("external-feed manifest Workpaper exceeds 1 MiB"));
+        }
+        let mut r = Reader::new(&bytes[WORKPAPER_FORMAT.len()..]);
+        let book: [u8; 16] = r.fixed("manifest.book")?;
+        let feed = text(&mut r, 64, "manifest.feed")?;
+        let extract = text(&mut r, 128, "manifest.extract")?;
+        let from = r.i32("manifest.from")?;
+        let through = r.i32("manifest.through")?;
+        if !identifier(feed, 64) || !identifier(extract, 128) || from > through {
+            return Err(invalid("invalid manifest identifier or effective window"));
+        }
+        let rows = r.u64("manifest.rows")?;
+        let child_count = r.count(4096, 37, "manifest.children")?;
+        if rows < child_count as u64 || rows > (child_count * source::MAX_DETAIL_ROWS) as u64 {
+            return Err(invalid(
+                "source row count exceeds the declared child population's bounds",
+            ));
+        }
+        let mut children = BTreeMap::<String, [u8; 32]>::new();
+        for _ in 0..child_count {
+            let key = text(&mut r, 128, "manifest.child.key")?;
+            let commit: [u8; 32] = r.fixed("manifest.child.commit")?;
+            if !identifier(key, 128) || commit == [0; 32] {
+                return Err(invalid(
+                    "manifest child needs a valid key and a nonzero Workpaper commitment",
+                ));
+            }
+            if children
+                .last_key_value()
+                .is_some_and(|(last, _)| last.as_str() >= key)
+            {
+                return Err(invalid("manifest child keys must be strictly ordered"));
+            }
+            let oid = framed_digest(b"fa:oid:document:v1", &[&book, &commit]);
+            children.insert(key.to_string(), oid);
+        }
+        let cells = r.count(4096, 56, "manifest.cells")?;
+        if children.is_empty() != (cells == 0) {
+            return Err(invalid(
+                "manifest children and gross cells must both be empty or both populated",
+            ));
+        }
+        let mut gross = BTreeMap::new();
+        for _ in 0..cells {
+            let key = (
+                r.u128("manifest.cell.account")?,
+                r.u32("manifest.cell.unit")?,
+                source::dimensions(&mut r)?,
+            );
+            let amounts = [
+                r.i128("manifest.cell.debits")?,
+                r.i128("manifest.cell.credits")?,
+            ];
+            if amounts.iter().any(|v| *v < 0) || amounts == [0, 0] {
+                return Err(invalid(
+                    "manifest gross sides must be nonnegative with a nonzero amount",
+                ));
+            }
+            if gross.last_key_value().is_some_and(|(last, _)| last >= &key) {
+                return Err(invalid("manifest gross cells must be strictly ordered"));
+            }
+            gross.insert(key, amounts);
+        }
+        r.finish("external-feed manifest")?;
+        Ok(Self {
+            book,
+            feed: feed.to_string(),
+            extract: extract.to_string(),
+            from,
+            through,
+            rows,
+            children,
+            gross,
+            digest: crate::blake3::hash(bytes),
+        })
     }
 
     /// Compare original source deliveries in the window. Reversing a financial
