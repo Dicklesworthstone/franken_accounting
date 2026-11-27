@@ -2465,7 +2465,10 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
     }
     if report.parameters.is_intercompany() {
         summary.extend([
-            ("coverage_scope", s("native declared pairs and live intercompany role legs")),
+            (
+                "coverage_scope",
+                s("native declared pairs and live intercompany role legs"),
+            ),
             ("entity_basis", s("authenticated literal leg dimensions")),
             ("posting_admission", s("not_judged")),
         ]);
@@ -2546,7 +2549,11 @@ fn procedure_checks(report: &crate::report::VerifiedProcedure) -> Vec<Check> {
         ];
         match &finding.statistic {
             crate::report::VerifiedProcedureStatistic::IntercompanyUndeclared {
-                account, ordinal, unit, period, ..
+                account,
+                ordinal,
+                unit,
+                period,
+                ..
             } => {
                 details.extend([
                     ("account", s(format!("{account:032x}"))),
@@ -8162,12 +8169,18 @@ mod tests {
         run.findings[0].entry = Some(11);
         run.findings[0].severity = 4;
         run.findings[0].statistic = VerifiedProcedureStatistic::IntercompanyUndeclared {
-            account: 10, ordinal: 256, unit: 0, amount: i128::MAX, scale: 2,
+            account: 10,
+            ordinal: 256,
+            unit: 0,
+            amount: i128::MAX,
+            scale: 2,
             period: Some("FY2026-P01".into()),
         };
         let json = render(&run);
         assert!(json.contains("\"statistic\":\"intercompany_undeclared\""));
-        assert!(json.contains("\"coverage_scope\":\"native declared pairs and live intercompany role legs\""));
+        assert!(json.contains(
+            "\"coverage_scope\":\"native declared pairs and live intercompany role legs\""
+        ));
         assert!(json.contains("\"posting_admission\":\"not_judged\""));
         assert!(json.contains("\"ordinal\":256"));
         assert!(json.contains("\"period\":\"FY2026-P01\""));

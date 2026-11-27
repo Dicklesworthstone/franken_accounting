@@ -19,11 +19,7 @@ fn card_post(
     contra: &str,
     reference: &str,
 ) -> Json {
-    let other_side = if side == "credit" {
-        "debit"
-    } else {
-        "credit"
-    };
+    let other_side = if side == "credit" { "debit" } else { "credit" };
     let path = f.file(
         &format!("{key}.json"),
         &format!(
@@ -304,10 +300,7 @@ fn credit_card_reconciliation_never_guesses_a_source_polarity() {
     let manifest = text(data(&imported), "manifest_oid");
     let matched = ok_privileged(&f.book, &["bank", "match", "--import", manifest]);
     assert_eq!(integer(data(&matched), "proposed_count"), 1);
-    confirm_selection(
-        &f.book,
-        &confirmation_args(&matched, 0, "card-reviewer"),
-    );
+    confirm_selection(&f.book, &confirmation_args(&matched, 0, "card-reviewer"));
     let before = head(&f.book);
     let args = reconciliation_args(manifest, before);
     let (exit, refused) = run_privileged(

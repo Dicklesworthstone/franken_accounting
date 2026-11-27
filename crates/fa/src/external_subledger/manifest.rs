@@ -35,7 +35,8 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
         document: Oid,
         known_at: Option<CommitSeq>,
     ) -> Outcome<VerifiedFeedManifest> {
-        let at = match reconciliation::authorize(self, cx, principal, capability, known_at, false)? {
+        let at = match reconciliation::authorize(self, cx, principal, capability, known_at, false)?
+        {
             Ok(at) => at,
             Err(r) => return Ok(Err(r)),
         };
@@ -46,11 +47,15 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             return Ok(Err(r));
         }
         let exists = self.query(cx, |db, _| {
-            Ok(db.vertex_at(fa_journal::evidence::document_vid(&document), at)
-                .map_err(KernelError::from)?.is_some())
+            Ok(db
+                .vertex_at(fa_journal::evidence::document_vid(&document), at)
+                .map_err(KernelError::from)?
+                .is_some())
         })?;
         if !exists {
-            return Ok(Err(invalid("manifest Workpaper is absent at the selected prefix")));
+            return Ok(Err(invalid(
+                "manifest Workpaper is absent at the selected prefix",
+            )));
         }
         let reach = Reach {
             branch: Some(fa_model::Id128::TRUNK),
@@ -60,25 +65,40 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             accounts: None,
         };
         let query = cx.query();
-        let read = query.with_restriction_async(fa_journal::redaction::read_document_for_with(
-            &mut self.db, cx, &self.context, capability, &reach, &self.blobs, document,
-            |record| {
-                if record.kind != EXTERNAL_SUBLEDGER_DOCUMENT_KIND
-                    || record.mime != EXTERNAL_FEED_MANIFEST_MIME
-                    || record.size > MAX_EXTERNAL_MANIFEST_BYTES as u64
-                {
-                    return Err(invalid("a bounded external-feed manifest Workpaper is required"));
-                }
-                Ok(())
-            },
-        )).await?;
+        let read = query
+            .with_restriction_async(fa_journal::redaction::read_document_for_with(
+                &mut self.db,
+                cx,
+                &self.context,
+                capability,
+                &reach,
+                &self.blobs,
+                document,
+                |record| {
+                    if record.kind != EXTERNAL_SUBLEDGER_DOCUMENT_KIND
+                        || record.mime != EXTERNAL_FEED_MANIFEST_MIME
+                        || record.size > MAX_EXTERNAL_MANIFEST_BYTES as u64
+                    {
+                        return Err(invalid(
+                            "a bounded external-feed manifest Workpaper is required",
+                        ));
+                    }
+                    Ok(())
+                },
+            ))
+            .await?;
         // Recheck launch authority after blob I/O, before disclosing its result.
-        if let Err(r) = reconciliation::authorize(self, cx, principal, capability, Some(at), false)? {
+        if let Err(r) = reconciliation::authorize(self, cx, principal, capability, Some(at), false)?
+        {
             return Ok(Err(r));
         }
         let bytes = match read {
             Ok(DocumentRead::Full(doc)) => doc.bytes,
-            Ok(DocumentRead::Redacted(_)) => return Ok(Err(invalid("manifest comparison requires the complete Workpaper"))),
+            Ok(DocumentRead::Redacted(_)) => {
+                return Ok(Err(invalid(
+                    "manifest comparison requires the complete Workpaper",
+                )));
+            }
             Err(r) => return Ok(Err(r)),
         };
         self.query(cx, |db, book| {
@@ -101,16 +121,23 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                     Err(r) => return Ok(Err(r)),
                 }
                 if batches.len() == MAX_EXTERNAL_MANIFEST_CHILDREN {
-                    return Ok(Err(invalid("observed feed exceeds the manifest child bound")));
+                    return Ok(Err(invalid(
+                        "observed feed exceeds the manifest child bound",
+                    )));
                 }
                 match reconcile_unchanged_at(db, book, entry.entry_ref(vid), at)? {
                     Ok(child) => batches.push(child),
                     Err(r) => return Ok(Err(r)),
                 }
             }
-            Ok(manifest.verify(&batches).map(|comparison| VerifiedFeedManifest {
-                document, review, known_at: at, comparison,
-            }))
+            Ok(manifest
+                .verify(&batches)
+                .map(|comparison| VerifiedFeedManifest {
+                    document,
+                    review,
+                    known_at: at,
+                    comparison,
+                }))
         })
     }
 }

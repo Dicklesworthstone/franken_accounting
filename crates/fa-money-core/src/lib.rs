@@ -192,7 +192,9 @@ pub fn step_round(
     law: RoundingLaw,
 ) -> Result<Amount, AmountError> {
     if step_mantissa == 0 {
-        return Err(AmountError::InvariantViolation("billing step must be nonzero"));
+        return Err(AmountError::InvariantViolation(
+            "billing step must be nonzero",
+        ));
     }
     if qty.mantissa < 0 {
         return Err(AmountError::InvariantViolation(

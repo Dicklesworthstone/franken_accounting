@@ -88,13 +88,14 @@ fn sweep_result(
             [118; 24],
         ))
     };
-    h.runtime.block_on(fa_journal::schedule::sweep_reversals_batch(
-        &mut h.db,
-        &ctx,
-        book,
-        &req,
-        &mut describe,
-    ))
+    h.runtime
+        .block_on(fa_journal::schedule::sweep_reversals_batch(
+            &mut h.db,
+            &ctx,
+            book,
+            &req,
+            &mut describe,
+        ))
 }
 
 fn open(h: &mut Harness, capability: &Capability, key: &[u8]) -> Result<Transitioned, Refusal> {

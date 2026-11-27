@@ -1303,9 +1303,7 @@ pub(crate) fn replay_cmd(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
                 ReportOutput::Consolidation(report),
                 ReportSelection::Consolidation { .. }
                 | ReportSelection::DeclaredConsolidation { .. },
-            ) => {
-                crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?
-            }
+            ) => crate::consolidate::render_consolidation(&ctx.out, &book, report, Some(&digest))?,
             (
                 ReportOutput::FunctionalConsolidation(report),
                 ReportSelection::FunctionalConsolidation { .. }

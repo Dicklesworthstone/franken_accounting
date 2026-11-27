@@ -49,8 +49,13 @@ fn functional_verification_counts_retained_births_without_rescanning_the_book() 
         if at == head {
             let census = fa_journal::op_witness::begin();
             let cohort = maintained::verify_each(
-                &h.book.db, &cx.query(), h.book.context(), &[PERIOD, PERIOD], Some(at),
-            ).unwrap();
+                &h.book.db,
+                &cx.query(),
+                h.book.context(),
+                &[PERIOD, PERIOD],
+                Some(at),
+            )
+            .unwrap();
             let shared = census.finish();
             assert_eq!(cohort, [result.clone(), result]);
             assert!(work.point_reads > 0);

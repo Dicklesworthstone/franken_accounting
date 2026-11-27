@@ -51,7 +51,10 @@ pub fn intercompany_v2_document(
         || req_str(R, row, "calibration")? != "uncalibrated"
         || req_str(R, row, "summary")? != INTERCOMPANY_V3_SUMMARY
     {
-        return Err(invalid(R, "unavailable declaration-aware intercompany revision"));
+        return Err(invalid(
+            R,
+            "unavailable declaration-aware intercompany revision",
+        ));
     }
     row.insert("version".into(), crate::toml::Value::Int(2));
     row.remove("effective_through");
@@ -96,7 +99,11 @@ pub fn intercompany_v2_registry_text(text: &str) -> Result<String, RegistryError
     let restored = block
         .replacen("version = 3\n", "version = 2\n", 1)
         .replacen("effective_through = \"optional\"\n", "", 1)
-        .replacen("tie_break = \"entry_vid\"\n", "tie_break = \"account_vid\"\n", 1)
+        .replacen(
+            "tie_break = \"entry_vid\"\n",
+            "tie_break = \"account_vid\"\n",
+            1,
+        )
         .replacen(
             &summary,
             &format!("summary = \"{INTERCOMPANY_V2_SUMMARY}\"\n"),
@@ -1175,7 +1182,10 @@ mod tests {
         let current = load(R, PROCEDURES).unwrap();
         let previous = intercompany_v2_document(current.clone()).unwrap();
         let raw = intercompany_v2_registry_text(PROCEDURES).unwrap();
-        assert_eq!(load(R, &raw).unwrap().canonical_bytes(), previous.canonical_bytes());
+        assert_eq!(
+            load(R, &raw).unwrap().canonical_bytes(),
+            previous.canonical_bytes()
+        );
         let old = Procedures::from_text(&raw).unwrap();
         let row = old.get("recon.intercompany").unwrap();
         assert_eq!(row.version, 2);
@@ -1185,10 +1195,12 @@ mod tests {
             .iter()
             .zip(&previous.arrays["procedure"])
         {
-            if current.get("id").and_then(crate::toml::Value::as_str)
-                != Some("recon.intercompany")
+            if current.get("id").and_then(crate::toml::Value::as_str) != Some("recon.intercompany")
             {
-                assert_eq!(current, previous, "unrelated algorithm meaning stays committed");
+                assert_eq!(
+                    current, previous,
+                    "unrelated algorithm meaning stays committed"
+                );
             }
         }
         let layout = PROCEDURES.replace(
@@ -1196,13 +1208,17 @@ mod tests {
             "[[procedure]]\n# canonical layout change\nid = \"recon.intercompany\"",
         );
         assert_eq!(
-            intercompany_v2_document(load(R, &layout).unwrap()).unwrap().canonical_bytes(),
+            intercompany_v2_document(load(R, &layout).unwrap())
+                .unwrap()
+                .canonical_bytes(),
             previous.canonical_bytes(),
         );
         assert!(intercompany_v2_registry_text(&layout).is_err());
         let unrelated = PROCEDURES.replace("FA-EVID-L01", "FA-EVID-L99");
         assert_ne!(
-            intercompany_v2_document(load(R, &unrelated).unwrap()).unwrap().canonical_bytes(),
+            intercompany_v2_document(load(R, &unrelated).unwrap())
+                .unwrap()
+                .canonical_bytes(),
             previous.canonical_bytes(),
         );
         let future = PROCEDURES.replace(

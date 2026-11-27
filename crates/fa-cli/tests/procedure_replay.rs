@@ -620,7 +620,11 @@ fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_e
         ok(&path, &["period", "open", period]);
     }
     let source = dir.join("source.txt");
-    std::fs::write(&source, "Synthetic intercompany and unrelated source assertions").unwrap();
+    std::fs::write(
+        &source,
+        "Synthetic intercompany and unrelated source assertions",
+    )
+    .unwrap();
     let recorded = ok(
         &path,
         &[
@@ -656,7 +660,13 @@ fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_e
     .unwrap();
     ok(
         &path,
-        &["post", "--intent", intent.to_str().unwrap(), "--evidence", &evidence],
+        &[
+            "post",
+            "--intent",
+            intent.to_str().unwrap(),
+            "--evidence",
+            &evidence,
+        ],
     );
 
     // Pair declarations establish the population without account-name guesses
@@ -690,7 +700,13 @@ fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_e
         .unwrap();
         let posted = ok(
             &path,
-            &["post", "--intent", file.to_str().unwrap(), "--evidence", &evidence],
+            &[
+                "post",
+                "--intent",
+                file.to_str().unwrap(),
+                "--evidence",
+                &evidence,
+            ],
         );
         unrelated.push(text(data(&posted[0]), "vid").to_string());
     }
@@ -728,7 +744,14 @@ fn declared_intercompany_reconciliation_certifies_replays_and_keeps_historical_e
     for entry in &unrelated {
         ok(
             &path,
-            &["reverse", entry, "--reason", "Duplicate", "--effective", "2026-02-15"],
+            &[
+                "reverse",
+                entry,
+                "--reason",
+                "Duplicate",
+                "--effective",
+                "2026-02-15",
+            ],
         );
     }
     let historical = ok(

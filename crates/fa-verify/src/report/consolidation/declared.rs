@@ -49,10 +49,7 @@ pub(super) struct Population {
 // The native declaration profile has the same bounded economic-pair population.
 const MAX_DECLARED_PAIRS: usize = 4096;
 
-fn dimensions(
-    index: usize,
-    records: &[(usize, &[u8])],
-) -> Result<Vec<LegDetails>, ReportError> {
+fn dimensions(index: usize, records: &[(usize, &[u8])]) -> Result<Vec<LegDetails>, ReportError> {
     let (length, record) = records
         .get(index)
         .ok_or_else(|| invalid("intercompany source record is absent"))?;
@@ -74,7 +71,9 @@ fn merge(
             || pair.entity_b != contribution.entity_b
             || pair.account_b != contribution.account_b
         {
-            return Err(invalid("an intercompany key changes its original endpoints"));
+            return Err(invalid(
+                "an intercompany key changes its original endpoints",
+            ));
         }
         pair.entity_a_net = add(pair.entity_a_net, contribution.entity_a_net)?;
         pair.entity_b_net = add(pair.entity_b_net, contribution.entity_b_net)?;
@@ -139,7 +138,9 @@ pub(super) fn fold(
         let details = dimensions(index, records)?;
         let pairs = metadata::intercompany::validate_pairs(bytes, source, &details)?;
         if source.iter().any(|leg| leg.unit != spec.base) {
-            return Err(invalid("native declared intercompany pairs require the book's base unit"));
+            return Err(invalid(
+                "native declared intercompany pairs require the book's base unit",
+            ));
         }
         for detail in &details {
             entity(detail, spec, members)?;
@@ -163,18 +164,20 @@ pub(super) fn fold(
         let target = match info.supersession.as_slice() {
             [(identity, _, 1)] => identities.get(identity).copied(),
             _ => None,
-        }.ok_or_else(|| invalid("reversal requires one retained Reverses target"))?;
+        }
+        .ok_or_else(|| invalid("reversal requires one retained Reverses target"))?;
         if !reversed_targets.insert(target) {
             return Err(invalid("an entry is reversed more than once"));
         }
         statement::origin(index, envelopes, infos, identities, &mut lineage)?;
-        let target_declaration = infos.get(&target)
-            .and_then(|info| info.intercompany_pairs);
+        let target_declaration = infos.get(&target).and_then(|info| info.intercompany_pairs);
         if info.intercompany_pairs.is_none() && target_declaration.is_none() {
             continue;
         }
         if info.intercompany_pairs != target_declaration {
-            return Err(invalid("an intercompany reversal changes or drops the original declaration"));
+            return Err(invalid(
+                "an intercompany reversal changes or drops the original declaration",
+            ));
         }
         let source = legs
             .get(index)
@@ -189,7 +192,9 @@ pub(super) fn fold(
             .get(&target)
             .ok_or_else(|| invalid("intercompany reversal target declaration is absent"))?;
         if source.len() != original.len() || source_details.len() != original_details.len() {
-            return Err(invalid("an intercompany reversal changes its target's leg count"));
+            return Err(invalid(
+                "an intercompany reversal changes its target's leg count",
+            ));
         }
         for ((after, before), (after_details, before_details)) in source
             .iter()
@@ -203,7 +208,9 @@ pub(super) fn fold(
                 || after_details.base_amount != before_details.base_amount
                 || after_details.dimensions != before_details.dimensions
             {
-                return Err(invalid("an intercompany reversal is not the exact monetary side swap"));
+                return Err(invalid(
+                    "an intercompany reversal is not the exact monetary side swap",
+                ));
             }
         }
     }
@@ -225,18 +232,24 @@ pub(super) fn fold(
         for pair in pairs {
             let left = &legs[index][pair.left];
             let right = &legs[index][pair.right];
-            let left_type = schema.accounts.get(&left.account)
+            let left_type = schema
+                .accounts
+                .get(&left.account)
                 .filter(|account| account.is_leaf)
                 .map(|account| account.account_type);
-            let right_type = schema.accounts.get(&right.account)
+            let right_type = schema
+                .accounts
+                .get(&right.account)
                 .filter(|account| account.is_leaf)
                 .map(|account| account.account_type);
             let kind = match (left_type, right_type) {
                 (Some(1), Some(2)) | (Some(2), Some(1)) => ConsolidationPairKind::ReceivablePayable,
                 (Some(4), Some(5)) | (Some(5), Some(4)) => ConsolidationPairKind::RevenueExpense,
-                _ => return Err(invalid(
-                    "declared consolidation pairs require asset/liability or revenue/expense endpoints",
-                )),
+                _ => {
+                    return Err(invalid(
+                        "declared consolidation pairs require asset/liability or revenue/expense endpoints",
+                    ));
+                }
             };
             let contribution = ConsolidationPair {
                 pair_key: pair.key,
@@ -244,10 +257,18 @@ pub(super) fn fold(
                 unit_id: left.unit,
                 entity_a: entity(&details[pair.left], spec, members)?,
                 account_a: left.account,
-                entity_a_net: if left.debit { left.mantissa } else { negate(left.mantissa)? },
+                entity_a_net: if left.debit {
+                    left.mantissa
+                } else {
+                    negate(left.mantissa)?
+                },
                 entity_b: entity(&details[pair.right], spec, members)?,
                 account_b: right.account,
-                entity_b_net: if right.debit { right.mantissa } else { negate(right.mantissa)? },
+                entity_b_net: if right.debit {
+                    right.mantissa
+                } else {
+                    negate(right.mantissa)?
+                },
             };
             if in_period && kind == ConsolidationPairKind::RevenueExpense {
                 merge(&mut income, contribution.clone())?;
@@ -256,7 +277,13 @@ pub(super) fn fold(
         }
     }
     Ok(Population {
-        stock: stock.into_values().filter(|pair| pair.entity_a_net != 0).collect(),
-        income: income.into_values().filter(|pair| pair.entity_a_net != 0).collect(),
+        stock: stock
+            .into_values()
+            .filter(|pair| pair.entity_a_net != 0)
+            .collect(),
+        income: income
+            .into_values()
+            .filter(|pair| pair.entity_a_net != 0)
+            .collect(),
     })
 }

@@ -178,13 +178,27 @@ fn pair_elimination(pair: &ConsolidationPair) -> Result<ConsolidationElimination
         return Err(invalid("declared pair is not nonzero and reciprocal"));
     }
     let mut legs = Vec::with_capacity(2);
-    reversing(&mut legs, pair.entity_a, pair.account_a, pair.unit_id, pair.entity_a_net)?;
-    reversing(&mut legs, pair.entity_b, pair.account_b, pair.unit_id, pair.entity_b_net)?;
+    reversing(
+        &mut legs,
+        pair.entity_a,
+        pair.account_a,
+        pair.unit_id,
+        pair.entity_a_net,
+    )?;
+    reversing(
+        &mut legs,
+        pair.entity_b,
+        pair.account_b,
+        pair.unit_id,
+        pair.entity_b_net,
+    )?;
     balanced(ConsolidationElimination {
         code: format!("ELIM-IC-DECLARED-{}-U{}", pair.pair_key, pair.unit_id),
         description: format!(
             "Eliminate intercompany pair `{}` between {} and {}",
-            pair.pair_key, entity_hex(&pair.entity_a), entity_hex(&pair.entity_b),
+            pair.pair_key,
+            entity_hex(&pair.entity_a),
+            entity_hex(&pair.entity_b),
         ),
         unit_id: pair.unit_id,
         legs,
@@ -507,10 +521,17 @@ pub(super) fn derive(
     let mut attribution_work = 0;
     let stock_shares = attribute(&stock_nets, schema, &order, true, &mut attribution_work)?;
     let activity_shares = attribute(&activity_nets, schema, &order, false, &mut attribution_work)?;
-    let mut eliminations = stock_pairs.iter().map(pair_elimination).collect::<Result<Vec<_>, _>>()?;
+    let mut eliminations = stock_pairs
+        .iter()
+        .map(pair_elimination)
+        .collect::<Result<Vec<_>, _>>()?;
     for &unit in units {
         if let Some(entry) = group_elimination(
-            stock_residual.as_ref().unwrap_or(&stock_nets), schema, intercompany, unit, false,
+            stock_residual.as_ref().unwrap_or(&stock_nets),
+            schema,
+            intercompany,
+            unit,
+            false,
         )? {
             eliminations.push(entry);
         }
@@ -595,10 +616,17 @@ pub(super) fn derive(
     }
     let consolidated_stock = with_eliminations(stock, &eliminations)?;
     eliminated(&consolidated_stock, schema, intercompany, units, false)?;
-    let mut income_eliminations = income_pairs.iter().map(pair_elimination).collect::<Result<Vec<_>, _>>()?;
+    let mut income_eliminations = income_pairs
+        .iter()
+        .map(pair_elimination)
+        .collect::<Result<Vec<_>, _>>()?;
     for &unit in units {
         if let Some(entry) = group_elimination(
-            activity_residual.as_ref().unwrap_or(&activity_nets), schema, intercompany, unit, true,
+            activity_residual.as_ref().unwrap_or(&activity_nets),
+            schema,
+            intercompany,
+            unit,
+            true,
         )? {
             income_eliminations.push(entry);
         }
@@ -712,8 +740,17 @@ mod tests {
         ]);
         let pairs = [declared_fee("fee-1", 100), declared_fee("fee-2", 25)];
         let ordinary = derive(
-            &schema(), &[0], &members, &[], &BTreeSet::new(), &stock, &stock, &pairs, &pairs,
-        ).unwrap();
+            &schema(),
+            &[0],
+            &members,
+            &[],
+            &BTreeSet::new(),
+            &stock,
+            &stock,
+            &pairs,
+            &pairs,
+        )
+        .unwrap();
         assert_eq!(ordinary.eliminations.len(), 2);
         assert_eq!(ordinary.income_eliminations.len(), 2);
         assert_eq!(ordinary.stock[&(5, 0)], (125, 165));
@@ -723,9 +760,17 @@ mod tests {
         assert_eq!(ordinary.eliminations[0].code, "ELIM-IC-DECLARED-fee-1-U0");
 
         let roles = derive(
-            &schema(), &[0], &members, &[], &BTreeSet::from([5, 6]),
-            &stock, &stock, &pairs, &pairs,
-        ).unwrap();
+            &schema(),
+            &[0],
+            &members,
+            &[],
+            &BTreeSet::from([5, 6]),
+            &stock,
+            &stock,
+            &pairs,
+            &pairs,
+        )
+        .unwrap();
         assert_eq!(roles.eliminations.len(), 3);
         assert_eq!(roles.income_eliminations.len(), 3);
         assert_eq!(roles.stock[&(5, 0)], (165, 165));
@@ -733,8 +778,14 @@ mod tests {
         assert_eq!(roles.activity, roles.stock);
         let residual = roles.eliminations.last().unwrap();
         assert_eq!(residual.code, "ELIM-IC-GROUP-U0");
-        assert_eq!(residual.legs.iter().map(|leg| (leg.debits, leg.credits)).collect::<Vec<_>>(),
-            [(40, 0), (0, 40)]);
+        assert_eq!(
+            residual
+                .legs
+                .iter()
+                .map(|leg| (leg.debits, leg.credits))
+                .collect::<Vec<_>>(),
+            [(40, 0), (0, 40)]
+        );
     }
 
     #[test]
@@ -754,16 +805,29 @@ mod tests {
             ((sub, 6, 0), (0, 100)),
         ]);
         let result = derive(
-            &schema(), &[0], &members, &[], &BTreeSet::new(), &stock, &activity,
-            &[], &[declared_fee("fee-reversed", -100)],
-        ).unwrap();
+            &schema(),
+            &[0],
+            &members,
+            &[],
+            &BTreeSet::new(),
+            &stock,
+            &activity,
+            &[],
+            &[declared_fee("fee-reversed", -100)],
+        )
+        .unwrap();
         assert!(result.eliminations.is_empty());
         assert_eq!(result.income_eliminations.len(), 1);
         assert_eq!(result.activity[&(5, 0)], (100, 100));
         assert_eq!(result.activity[&(6, 0)], (100, 100));
-        assert_eq!(result.income_eliminations[0].legs.iter()
-            .map(|leg| (leg.account_id, leg.debits, leg.credits)).collect::<Vec<_>>(),
-            [(5, 0, 100), (6, 100, 0)]);
+        assert_eq!(
+            result.income_eliminations[0]
+                .legs
+                .iter()
+                .map(|leg| (leg.account_id, leg.debits, leg.credits))
+                .collect::<Vec<_>>(),
+            [(5, 0, 100), (6, 100, 0)]
+        );
     }
 
     #[test]

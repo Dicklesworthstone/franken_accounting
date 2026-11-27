@@ -1180,7 +1180,10 @@ fn role_selected_procedures_refuse_without_their_role_and_certify_with_it() {
     let selected = [
         ("jet.suspense_aging", "suspense"),
         ("jet.intercompany_unmatched", "intercompany"),
-        ("recon.intercompany", "intercompany or intercompany_activity"),
+        (
+            "recon.intercompany",
+            "intercompany or intercompany_activity",
+        ),
         ("recon.lapping", "receivable or payable"),
         ("expense.capitalization", "fixed_asset"),
         ("aging.inventory", "inventory"),

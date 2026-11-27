@@ -2,8 +2,8 @@
 //! beads fa-nlu, fa-g6rj).
 
 mod attribution;
-mod investor_transfers;
 mod intercompany;
+mod investor_transfers;
 mod reconciliation_arithmetic;
 mod register_claim;
 

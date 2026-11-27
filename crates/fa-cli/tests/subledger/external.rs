@@ -124,8 +124,23 @@ fn reviewed_parent_detects_missing_and_unexpected_deliveries_at_a_fixed_prefix()
             "01".repeat(32), "02".repeat(32),
         ));
         let path = f.dir.join(format!("{key}.bin"));
-        let prepared = data(&f.ok(&["subledger", "detail", "--input", &input, "--out", path.to_str().unwrap()]));
-        let doc = data(&f.ok(&["document", "add", path.to_str().unwrap(), "--kind", "Workpaper", "--grade", "HumanUpload"]));
+        let prepared = data(&f.ok(&[
+            "subledger",
+            "detail",
+            "--input",
+            &input,
+            "--out",
+            path.to_str().unwrap(),
+        ]));
+        let doc = data(&f.ok(&[
+            "document",
+            "add",
+            path.to_str().unwrap(),
+            "--kind",
+            "Workpaper",
+            "--grade",
+            "HumanUpload",
+        ]));
         let oid = text(&doc, "oid");
         f.ok(&["attest", "review", &oid, "--as", "reviewer"]);
         (oid, text(&prepared, "doc_commit"))
@@ -138,7 +153,17 @@ fn reviewed_parent_detects_missing_and_unexpected_deliveries_at_a_fixed_prefix()
     let path = f.dir.join("parent.bin");
     let path = path.to_str().unwrap();
     let prepared = data(&f.ok(&["subledger", "manifest", "--input", &input, "--out", path]));
-    let doc = data(&f.ok(&["document", "add", path, "--kind", "Workpaper", "--grade", "HumanUpload", "--mime", &text(&prepared, "mime")]));
+    let doc = data(&f.ok(&[
+        "document",
+        "add",
+        path,
+        "--kind",
+        "Workpaper",
+        "--grade",
+        "HumanUpload",
+        "--mime",
+        &text(&prepared, "mime"),
+    ]));
     let parent = text(&doc, "oid");
     let command = ["subledger", "verify-manifest", &parent];
     let unreviewed_at = f.head();
@@ -156,7 +181,16 @@ fn reviewed_parent_detects_missing_and_unexpected_deliveries_at_a_fixed_prefix()
     assert_eq!(f.head(), incomplete_at);
 
     let post = |oid: &str, key: &str| {
-        f.ok(&["subledger", "feed", "--document", oid, "--date", "2026-03-15", "--key", key]);
+        f.ok(&[
+            "subledger",
+            "feed",
+            "--document",
+            oid,
+            "--date",
+            "2026-03-15",
+            "--key",
+            key,
+        ]);
     };
     post(&child, "original");
     let complete_at = f.head();
@@ -167,9 +201,13 @@ fn reviewed_parent_detects_missing_and_unexpected_deliveries_at_a_fixed_prefix()
     let report = incomplete(f.run(&command));
     assert_eq!(text(&report, "status"), "incomplete");
     assert_eq!(rows(&report, "unexpected"), [Json::Str("extra".into())]);
-    let historical = |at: &str| f.run(&["subledger", "verify-manifest", &parent, "--as-known-at", at]);
+    let historical =
+        |at: &str| f.run(&["subledger", "verify-manifest", &parent, "--as-known-at", at]);
     assert_eq!(historical(&unreviewed_at).0, 3);
-    assert_eq!(text(&incomplete(historical(&incomplete_at)), "status"), "incomplete");
+    assert_eq!(
+        text(&incomplete(historical(&incomplete_at)), "status"),
+        "incomplete"
+    );
     assert_eq!(data(&historical(&complete_at).1), complete);
 }
 

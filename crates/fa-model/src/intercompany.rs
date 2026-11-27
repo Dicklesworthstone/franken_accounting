@@ -35,7 +35,9 @@ fn invalid(why: &'static str) -> EntryError {
 impl IntercompanyPairs {
     pub fn validate_shape(&self, leg_count: usize) -> Result<(), EntryError> {
         if self.pairs.is_empty() || self.pairs.len() > MAX_LEGS_PER_ENTRY / 2 {
-            return Err(invalid("pairs require 1..=max_legs_per_entry/2 declarations"));
+            return Err(invalid(
+                "pairs require 1..=max_legs_per_entry/2 declarations",
+            ));
         }
         let mut previous: Option<&str> = None;
         let mut legs = BTreeSet::new();

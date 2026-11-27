@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use asupersync::fs::Vfs;
 use fa_model::symbols::{label, property, relation};
-use fa_model::{ControlPayload, Entry, EntryClass, EntryRef, Id128, Oid, entry_mirrors, leg_mirrors};
+use fa_model::{
+    ControlPayload, Entry, EntryClass, EntryRef, Id128, Oid, entry_mirrors, leg_mirrors,
+};
 use fa_money::{Amount, Side, UnitKind};
 use fa_policy::{BenefitInterval, DecisionCandidate, DecisionFeature};
 use fa_registry::evidence_policy::EvidencePolicy;
@@ -1001,8 +1003,10 @@ pub(super) fn read_record<V: Vfs + Clone>(
         Ok(recorded) => recorded,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    Ok(verify_record_sources(db, cx, book, &recorded.confirmation, at, manifest)?
-        .map(|()| recorded))
+    Ok(
+        verify_record_sources(db, cx, book, &recorded.confirmation, at, manifest)?
+            .map(|()| recorded),
+    )
 }
 
 /// The caller has authenticated the confirmation metadata at this prefix.

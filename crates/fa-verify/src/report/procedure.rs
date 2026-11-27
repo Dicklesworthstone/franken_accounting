@@ -66,9 +66,9 @@ mod benford_digits;
 mod correction_history;
 mod cutoff;
 mod different_dates;
+pub(super) mod intercompany;
 mod jet;
 mod journal_metadata;
-pub(super) mod intercompany;
 mod libr;
 mod number_analytics;
 mod ordered;
@@ -1201,9 +1201,15 @@ impl VerifiedProcedureFinding {
     /// distinct first citation; its tag and little-endian identity suffice.
     fn citation_order(&self) -> Vec<Vec<u8>> {
         if let VerifiedProcedureStatistic::IntercompanyUndeclared {
-            account, ordinal, period, ..
-        } = &self.statistic {
-            let Some(entry) = self.entry else { return Vec::new() };
+            account,
+            ordinal,
+            period,
+            ..
+        } = &self.statistic
+        {
+            let Some(entry) = self.entry else {
+                return Vec::new();
+            };
             let mut first = Writer::default();
             first.u8(1).u128(entry);
             let mut leg = Writer::default();
@@ -1936,15 +1942,25 @@ fn finding(
         .u64(value.population);
     match &value.statistic {
         VerifiedProcedureStatistic::IntercompanyUndeclared {
-            account, ordinal, period, ..
+            account,
+            ordinal,
+            period,
+            ..
         } => {
             let entry = value.entry.ok_or_else(|| {
-                failed("procedure_recomputation", "intercompany finding lacks its entry")
+                failed(
+                    "procedure_recomputation",
+                    "intercompany finding lacks its entry",
+                )
             })?;
             w.count(3 + usize::from(period.is_some()))
-                .u8(1).u128(entry)
-                .u8(2).u128(entry).u16(*ordinal)
-                .u8(3).u128(*account);
+                .u8(1)
+                .u128(entry)
+                .u8(2)
+                .u128(entry)
+                .u16(*ordinal)
+                .u8(3)
+                .u128(*account);
             if let Some(period) = period {
                 w.u8(4).bytes(period.as_bytes());
             }
@@ -2541,16 +2557,25 @@ pub(super) fn replay_intercompany(
     registry: &Registry,
     context: &intercompany::Context,
 ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
-    if request.book != book || request.known_at != known_at
-        || !request.parameters.is_intercompany() || request.version != 3
+    if request.book != book
+        || request.known_at != known_at
+        || !request.parameters.is_intercompany()
+        || request.version != 3
     {
         return Err(failed(
-            "procedure_selection", "intercompany profile or native coordinates differ",
+            "procedure_selection",
+            "intercompany profile or native coordinates differ",
         ));
     }
     let (verified, output) = recompute_with_intercompany(
-        book, known_at, request.version, request.effective_through,
-        request.parameters, entries, registry, Some(context),
+        book,
+        known_at,
+        request.version,
+        request.effective_through,
+        request.parameters,
+        entries,
+        registry,
+        Some(context),
     )?;
     if output != request.output {
         return Err(failed(
@@ -2804,7 +2829,14 @@ fn recompute_version(
     registry: &Registry,
 ) -> Result<(VerifiedProcedure, Vec<u8>), ReportError> {
     recompute_with_intercompany(
-        book, known_at, version, effective_through, profile, entries, registry, None,
+        book,
+        known_at,
+        version,
+        effective_through,
+        profile,
+        entries,
+        registry,
+        None,
     )
 }
 
@@ -3054,10 +3086,17 @@ fn recompute_with_intercompany(
         findings = journal_metadata::weekend(&grouped_population)?;
     } else if profile.is_intercompany() {
         let context = intercompany.ok_or_else(|| {
-            failed("procedure_intercompany", "authenticated intercompany context is absent")
+            failed(
+                "procedure_intercompany",
+                "authenticated intercompany context is absent",
+            )
         })?;
         (findings, live_entries, live_legs, comparisons) = intercompany::replay(
-            &entries, &grouped_population, effective_through, registry, context,
+            &entries,
+            &grouped_population,
+            effective_through,
+            registry,
+            context,
         )?;
     } else if profile.is_account_screen() {
         (findings, live_entries, live_legs, comparisons) = account_screens::replay(
@@ -3349,10 +3388,19 @@ mod tests {
     fn intercompany_questions_bind_v3_optional_cutoff_and_no_parameters_or_handles() {
         for through in [None, Some(i32::MIN), Some(i32::MAX)] {
             let bytes = balance_screen_question(
-                "recon.intercompany", "FA-EVID-L41", 3, through, &[], &[], true,
+                "recon.intercompany",
+                "FA-EVID-L41",
+                3,
+                through,
+                &[],
+                &[],
+                true,
             );
             let decoded = decode(&bytes).unwrap();
-            assert_eq!(decoded.parameters, VerifiedProcedureParameters::IntercompanyCoverage);
+            assert_eq!(
+                decoded.parameters,
+                VerifiedProcedureParameters::IntercompanyCoverage
+            );
             assert_eq!(decoded.version, 3);
             assert_eq!(decoded.effective_through, through);
             assert!(decoded.parameters.supports_cutoff(3));
@@ -3360,18 +3408,35 @@ mod tests {
         }
         for version in [0, 1, 2, 4, 5, u16::MAX] {
             let bytes = balance_screen_question(
-                "recon.intercompany", "FA-EVID-L41", version, None, &[], &[], true,
+                "recon.intercompany",
+                "FA-EVID-L41",
+                version,
+                None,
+                &[],
+                &[],
+                true,
             );
             assert!(decode(&bytes).is_err(), "unsupported version {version}");
         }
         for (evidence, parameters, inputs, extended) in [
             ("FA-EVID-L01", Vec::new(), Vec::new(), true),
             ("FA-EVID-L41", vec![("window_days", 1)], Vec::new(), true),
-            ("FA-EVID-L41", Vec::new(), vec![("account", "00000000000000000000000000000001")], true),
+            (
+                "FA-EVID-L41",
+                Vec::new(),
+                vec![("account", "00000000000000000000000000000001")],
+                true,
+            ),
             ("FA-EVID-L41", Vec::new(), Vec::new(), false),
         ] {
             let bytes = balance_screen_question(
-                "recon.intercompany", evidence, 3, Some(10), &parameters, &inputs, extended,
+                "recon.intercompany",
+                evidence,
+                3,
+                Some(10),
+                &parameters,
+                &inputs,
+                extended,
             );
             assert!(decode(&bytes).is_err());
         }

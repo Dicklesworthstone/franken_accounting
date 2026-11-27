@@ -244,11 +244,18 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 manifests
                     .get(&claim.confirmation.manifest_oid)
                     .map(|manifest| (claim, manifest))
-                    .ok_or_else(|| corrupt("an active bank claim's original manifest was not loaded"))
+                    .ok_or_else(|| {
+                        corrupt("an active bank claim's original manifest was not loaded")
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         if let Err(refusal) = native::verify_bank_match_sources(
-            &mut self.db, cx, &context, capability, seq, &requests,
+            &mut self.db,
+            cx,
+            &context,
+            capability,
+            seq,
+            &requests,
         )
         .await?
         {
@@ -500,7 +507,12 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
             .map(|recorded| (recorded, &verified.manifest))
             .collect();
         if let Err(refusal) = native::verify_bank_match_sources(
-            &mut self.db, cx, &context, capability, seq, &requests,
+            &mut self.db,
+            cx,
+            &context,
+            capability,
+            seq,
+            &requests,
         )
         .await?
         {

@@ -207,14 +207,29 @@ mod tests {
     #[test]
     fn declared_intercompany_transport_requires_exact_v3_and_whole_book_scope() {
         for cutoff in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
-            assert_eq!(profile("recon.intercompany", 3, cutoff, &[], &[]), Some("FA-EVID-L41"));
+            assert_eq!(
+                profile("recon.intercompany", 3, cutoff, &[], &[]),
+                Some("FA-EVID-L41")
+            );
             for version in [0, 1, 2, 4, u16::MAX] {
-                assert_eq!(profile("recon.intercompany", version, cutoff, &[], &[]), None);
+                assert_eq!(
+                    profile("recon.intercompany", version, cutoff, &[], &[]),
+                    None
+                );
             }
-            assert_eq!(profile("recon.intercompany", 3, cutoff, &[("window_days", 1)], &[]), None);
+            assert_eq!(
+                profile("recon.intercompany", 3, cutoff, &[("window_days", 1)], &[]),
+                None
+            );
             for handle in ["account", "source", "entity"] {
                 assert_eq!(
-                    profile("recon.intercompany", 3, cutoff, &[], &[(handle, "00000000000000000000000000000001")]),
+                    profile(
+                        "recon.intercompany",
+                        3,
+                        cutoff,
+                        &[],
+                        &[(handle, "00000000000000000000000000000001")]
+                    ),
                     None,
                 );
             }

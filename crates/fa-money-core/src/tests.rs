@@ -97,21 +97,54 @@ fn billing_step_rounding_respects_named_law_and_minimum() {
     let unit = UnitId(7);
     let quantity = |mantissa| Amount::new(unit, mantissa);
     // Quarter-hour increments in minutes; exact ties select the registered law.
-    assert_eq!(step_round(quantity(22), 15, 0, RoundingLaw::HalfEven), Ok(quantity(15)));
-    assert_eq!(step_round(quantity(23), 15, 0, RoundingLaw::HalfEven), Ok(quantity(30)));
-    assert_eq!(step_round(quantity(22), 15, 0, RoundingLaw::Ceiling), Ok(quantity(30)));
-    assert_eq!(step_round(quantity(22), 15, 0, RoundingLaw::Floor), Ok(quantity(15)));
-    assert_eq!(step_round(quantity(0), 15, 16, RoundingLaw::TowardZero), Ok(quantity(30)));
-    assert_eq!(step_round(quantity(30), 15, 16, RoundingLaw::HalfEven), Ok(quantity(30)));
-    assert_eq!(step_round(quantity(0), 15, 0, RoundingLaw::HalfEven), Ok(quantity(0)));
-    assert_eq!(step_round(quantity(1), 0, 0, RoundingLaw::HalfEven),
-        Err(AmountError::InvariantViolation("billing step must be nonzero")));
-    assert_eq!(step_round(quantity(-1), 15, 0, RoundingLaw::HalfEven),
-        Err(AmountError::InvariantViolation("step rounding requires a nonnegative quantity")));
-    assert_eq!(step_round(quantity(1), 1, u128::MAX, RoundingLaw::HalfEven),
-        Err(AmountError::Overflow));
-    assert_eq!(step_round(quantity(i128::MAX), 2, 0, RoundingLaw::Ceiling),
-        Err(AmountError::Overflow));
+    assert_eq!(
+        step_round(quantity(22), 15, 0, RoundingLaw::HalfEven),
+        Ok(quantity(15))
+    );
+    assert_eq!(
+        step_round(quantity(23), 15, 0, RoundingLaw::HalfEven),
+        Ok(quantity(30))
+    );
+    assert_eq!(
+        step_round(quantity(22), 15, 0, RoundingLaw::Ceiling),
+        Ok(quantity(30))
+    );
+    assert_eq!(
+        step_round(quantity(22), 15, 0, RoundingLaw::Floor),
+        Ok(quantity(15))
+    );
+    assert_eq!(
+        step_round(quantity(0), 15, 16, RoundingLaw::TowardZero),
+        Ok(quantity(30))
+    );
+    assert_eq!(
+        step_round(quantity(30), 15, 16, RoundingLaw::HalfEven),
+        Ok(quantity(30))
+    );
+    assert_eq!(
+        step_round(quantity(0), 15, 0, RoundingLaw::HalfEven),
+        Ok(quantity(0))
+    );
+    assert_eq!(
+        step_round(quantity(1), 0, 0, RoundingLaw::HalfEven),
+        Err(AmountError::InvariantViolation(
+            "billing step must be nonzero"
+        ))
+    );
+    assert_eq!(
+        step_round(quantity(-1), 15, 0, RoundingLaw::HalfEven),
+        Err(AmountError::InvariantViolation(
+            "step rounding requires a nonnegative quantity"
+        ))
+    );
+    assert_eq!(
+        step_round(quantity(1), 1, u128::MAX, RoundingLaw::HalfEven),
+        Err(AmountError::Overflow)
+    );
+    assert_eq!(
+        step_round(quantity(i128::MAX), 2, 0, RoundingLaw::Ceiling),
+        Err(AmountError::Overflow)
+    );
     for law in RoundingLaw::ALL {
         assert_eq!(step_round(quantity(45), 15, 0, law), Ok(quantity(45)));
     }

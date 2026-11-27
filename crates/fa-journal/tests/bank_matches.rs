@@ -832,15 +832,20 @@ fn batch_source_verification_binds_each_confirmation_to_its_prefix_and_own_manif
         refusal::code::BANK_MATCH_DRIFT
     );
     assert_eq!(
-        verify(head, &[(&first, &first_manifest), (&second, &first_manifest)])
-            .unwrap_err()
-            .code,
+        verify(
+            head,
+            &[(&first, &first_manifest), (&second, &first_manifest)]
+        )
+        .unwrap_err()
+        .code,
         refusal::code::IDEMPOTENCY_CONFLICT
     );
     let mut altered = second.clone();
     altered.confirmation.proposer = VId(123);
     assert_eq!(
-        verify(head, &[(&altered, &second_manifest)]).unwrap_err().code,
+        verify(head, &[(&altered, &second_manifest)])
+            .unwrap_err()
+            .code,
         refusal::code::BANK_MATCH_DRIFT
     );
     assert_eq!(h.head(), head);

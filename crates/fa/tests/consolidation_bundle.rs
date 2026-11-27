@@ -526,8 +526,9 @@ fn assert_portable(book: &mut Book, certificate: &ReportCertificate, rate: Optio
     assert!(command.stderr.is_empty());
     let json = &command.stdout;
     let functional = match &certificate.selection {
-        ReportSelection::Consolidation { .. }
-        | ReportSelection::DeclaredConsolidation { .. } => false,
+        ReportSelection::Consolidation { .. } | ReportSelection::DeclaredConsolidation { .. } => {
+            false
+        }
         ReportSelection::FunctionalConsolidation { .. }
         | ReportSelection::DeclaredFunctionalConsolidation { .. } => true,
         _ => panic!("expected a group certificate"),
@@ -988,7 +989,6 @@ fn tiered_group_native_and_functional_reports_replay_and_verify_offline_after_so
     }
 }
 
-
 fn assert_declared_portable(book: &mut Book, certificate: &ReportCertificate) {
     let replayed = book.replay_report(certificate).unwrap().unwrap();
     assert_eq!(replayed.canonical_bytes().unwrap(), certificate.output);
@@ -1042,7 +1042,11 @@ fn declared_group_pairs_share_ordinary_accounts_and_leave_role_residuals_once() 
     group.transfer("external-receivable", "P", "1400", "1000", group.usd, 200);
     group.transfer("external-payable", "S", "1000", "2400", group.usd, 200);
     let pin = group.book.head().unwrap();
-    let public = group.book.consolidation(PERIOD, Some(pin), &reader).unwrap().unwrap();
+    let public = group
+        .book
+        .consolidation(PERIOD, Some(pin), &reader)
+        .unwrap()
+        .unwrap();
     let certified = group
         .book
         .certify_report(
@@ -1115,7 +1119,10 @@ fn declared_group_pairs_share_ordinary_accounts_and_leave_role_residuals_once() 
         200,
         "ordinary external balances remain after their declared subset is eliminated"
     );
-    assert_eq!(line(&declared.run.balance_sheet, group.usd, "balance_check"), 0);
+    assert_eq!(
+        line(&declared.run.balance_sheet, group.usd, "balance_check"),
+        0
+    );
 
     let functional = group
         .book
@@ -1129,7 +1136,10 @@ fn declared_group_pairs_share_ordinary_accounts_and_leave_role_residuals_once() 
     let ReportOutput::FunctionalConsolidation(functional_group) = &functional.report else {
         panic!("declared functional consolidation");
     };
-    assert_eq!(functional_group.group.run.matched_pairs, declared.run.matched_pairs);
+    assert_eq!(
+        functional_group.group.run.matched_pairs,
+        declared.run.matched_pairs
+    );
     assert_eq!(
         group
             .book
@@ -1212,11 +1222,17 @@ fn declared_income_reversal_keeps_january_history_and_february_activity() {
     let ReportOutput::Consolidation(original_january) = &january.report else {
         panic!("January native report");
     };
-    let current_january = group.book.consolidation(PERIOD, None, &reader).unwrap().unwrap();
-    assert_eq!(current_january.run.matched_pairs, original_january.run.matched_pairs);
+    let current_january = group
+        .book
+        .consolidation(PERIOD, None, &reader)
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        current_january.run.income_eliminations,
-        original_january.run.income_eliminations,
+        current_january.run.matched_pairs,
+        original_january.run.matched_pairs
+    );
+    assert_eq!(
+        current_january.run.income_eliminations, original_january.run.income_eliminations,
         "a later-effective reversal must not remove January's declaration"
     );
     let february = group
@@ -1240,9 +1256,14 @@ fn declared_income_reversal_keeps_january_history_and_february_activity() {
             ReportOutput::FunctionalConsolidation(group) => &group.group.run,
             _ => panic!("February group report"),
         };
-        assert!(run.matched_pairs.is_empty(), "the cumulative pair stock is zero");
         assert!(
-            run.eliminations.iter().all(|entry| !entry.code.starts_with("ELIM-IC-DECLARED-"))
+            run.matched_pairs.is_empty(),
+            "the cumulative pair stock is zero"
+        );
+        assert!(
+            run.eliminations
+                .iter()
+                .all(|entry| !entry.code.starts_with("ELIM-IC-DECLARED-"))
         );
         let income: Vec<_> = run
             .income_eliminations
@@ -1252,12 +1273,18 @@ fn declared_income_reversal_keeps_january_history_and_february_activity() {
         assert_eq!(income.len(), 1);
         let revenue = account_vid(group.book.context().book_id, "4000").0;
         let expense = account_vid(group.book.context().book_id, "5000").0;
-        assert!(income[0].legs.iter().any(|leg| {
-            leg.account_id == revenue && leg.debits == 0 && leg.credits == 800
-        }));
-        assert!(income[0].legs.iter().any(|leg| {
-            leg.account_id == expense && leg.debits == 800 && leg.credits == 0
-        }));
+        assert!(
+            income[0]
+                .legs
+                .iter()
+                .any(|leg| { leg.account_id == revenue && leg.debits == 0 && leg.credits == 800 })
+        );
+        assert!(
+            income[0]
+                .legs
+                .iter()
+                .any(|leg| { leg.account_id == expense && leg.debits == 800 && leg.credits == 0 })
+        );
         // The group's reciprocal income is eliminated, while the subsidiary's
         // reported reversal earnings still allocate 20% (160) to its minority.
         assert_eq!(line(&run.income_statement, group.usd, "net_income"), -160);
@@ -1321,7 +1348,12 @@ fn unsupported_pair_categories_refuse_only_when_the_declaration_is_effective() {
         },
     ] {
         assert_eq!(
-            group.book.certify_report(selection, None).unwrap().unwrap_err().code,
+            group
+                .book
+                .certify_report(selection, None)
+                .unwrap()
+                .unwrap_err()
+                .code,
             "FA-REF-194"
         );
     }

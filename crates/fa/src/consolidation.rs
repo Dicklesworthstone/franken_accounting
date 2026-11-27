@@ -31,8 +31,8 @@ use fa_journal::refusal::{Refusal, exit};
 use fa_journal::rows::{AccountRow, PeriodRow, bytes};
 use fa_model::symbols::{label, property};
 use fa_model::{
-    EntryClass, EntryOrigin, Id128, LEGAL_ENTITY_DIMENSION, RelationshipKind,
-    SupersessionKind, Writer, entity_value_vid, legal_entity_vid, period_vid,
+    EntryClass, EntryOrigin, Id128, LEGAL_ENTITY_DIMENSION, RelationshipKind, SupersessionKind,
+    Writer, entity_value_vid, legal_entity_vid, period_vid,
 };
 use fa_money::UnitId;
 use fa_money::rounding::RoundingLaw;
@@ -44,9 +44,8 @@ pub use fa_statements::concordat::{
     reconcile_book_to_book,
 };
 use fa_statements::concordat::{
-    ConcordatError, ConsolidationInput, EntityMemberInput, IncomeInput,
-    IntercompanyPairKind, MatchedIntercompanyPair, OwnershipSpec, consolidate,
-    consolidate_declared,
+    ConcordatError, ConsolidationInput, EntityMemberInput, IncomeInput, IntercompanyPairKind,
+    MatchedIntercompanyPair, OwnershipSpec, consolidate, consolidate_declared,
 };
 use fa_statements::{Account, AccountBalance};
 use fa_time::DateDay;
@@ -320,13 +319,14 @@ fn accumulate_pair(
     selected: &mut BTreeMap<String, MatchedIntercompanyPair>,
     pair: &MatchedIntercompanyPair,
 ) -> Result<(), BookError> {
-    let accumulated = selected
-        .entry(pair.pair_code.clone())
-        .or_insert_with(|| MatchedIntercompanyPair {
-            entity_a_net: 0,
-            entity_b_net: 0,
-            ..pair.clone()
-        });
+    let accumulated =
+        selected
+            .entry(pair.pair_code.clone())
+            .or_insert_with(|| MatchedIntercompanyPair {
+                entity_a_net: 0,
+                entity_b_net: 0,
+                ..pair.clone()
+            });
     if accumulated.kind != pair.kind
         || accumulated.unit_id != pair.unit_id
         || accumulated.entity_a != pair.entity_a
@@ -408,7 +408,9 @@ fn declared_pair_inputs<V: Vfs + Clone>(
             .map_err(|error| invalid_pair_history(error.to_string()))?;
         if proposal.class == EntryClass::REVERSAL {
             let [supersession] = proposal.supersession.as_slice() else {
-                return Err(invalid_pair_history("a reversal requires one immutable target"));
+                return Err(invalid_pair_history(
+                    "a reversal requires one immutable target",
+                ));
             };
             if supersession.kind != SupersessionKind::Reverses {
                 return Err(invalid_pair_history("a reversal must reverse its target"));
@@ -422,13 +424,18 @@ fn declared_pair_inputs<V: Vfs + Clone>(
                     || target.entry_digest != supersession.target.entry_digest
                     || pair_extension_bytes(&target.proposal) != pair_extension_bytes(proposal)
                     || target.proposal.legs.len() != proposal.legs.len()
-                    || target.proposal.legs.iter().zip(&proposal.legs).any(|(a, b)| {
-                        a.account_ref != b.account_ref
-                            || a.amount != b.amount
-                            || a.base_amount != b.base_amount
-                            || a.dimension_set != b.dimension_set
-                            || a.side.flipped() != b.side
-                    })
+                    || target
+                        .proposal
+                        .legs
+                        .iter()
+                        .zip(&proposal.legs)
+                        .any(|(a, b)| {
+                            a.account_ref != b.account_ref
+                                || a.amount != b.amount
+                                || a.base_amount != b.base_amount
+                                || a.dimension_set != b.dimension_set
+                                || a.side.flipped() != b.side
+                        })
                 {
                     return Err(invalid_pair_history(
                         "pair reversal is not its immutable target's exact side-swap",
@@ -470,7 +477,9 @@ fn declared_pair_inputs<V: Vfs + Clone>(
                 .ok_or_else(|| invalid_pair_history("paired entry entity amount overflow"))?;
         }
         if totals.values().any(|(debits, credits)| debits != credits) {
-            return Err(invalid_pair_history("paired entry does not balance per entity"));
+            return Err(invalid_pair_history(
+                "paired entry does not balance per entity",
+            ));
         }
         for pair in pairs.pairs {
             let left = &proposal.legs[usize::from(pair.left_leg)];
@@ -545,7 +554,10 @@ fn declared_pair_inputs<V: Vfs + Clone>(
             }
         }
     }
-    Ok(Ok((stock.into_values().collect(), income.into_values().collect())))
+    Ok(Ok((
+        stock.into_values().collect(),
+        income.into_values().collect(),
+    )))
 }
 
 fn consolidate_at_basis<V: Vfs + Clone>(

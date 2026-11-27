@@ -429,7 +429,11 @@ fn recon_intercompany(ctx: &mut Ctx<'_>, args: &Args) -> Result<(), Fail> {
         }
     }
     let mut run = args.clone();
-    run.positional = vec!["procedure".into(), "run".into(), "recon.intercompany".into()];
+    run.positional = vec![
+        "procedure".into(),
+        "run".into(),
+        "recon.intercompany".into(),
+    ];
     crate::cli::procedure_cmd(ctx, &run)
 }
 

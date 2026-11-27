@@ -221,9 +221,8 @@ impl Book {
             || template.idempotency_key.is_empty()
             || template.idempotency_key.len() > fa_model::limits::MAX_IDEMPOTENCY_KEY_BYTES
             || request.specific_ids.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS
-            || targets.is_some_and(|targets| {
-                targets.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS
-            })
+            || targets
+                .is_some_and(|targets| targets.len() > fa_model::lot_disposal::MAX_SPECIFIC_LOTS)
             || !matches!(template.origin, EntryOrigin::Intent { .. })
         {
             return Ok(Err(invalid(

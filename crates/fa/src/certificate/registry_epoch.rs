@@ -155,7 +155,9 @@ fn supported_account_roles(archived: &Document) -> Result<bool, Refusal> {
             )));
         };
         if consumers.pop() != Some(Value::Str(consumer.into()))
-            || consumers.iter().any(|value| value.as_str() == Some(consumer))
+            || consumers
+                .iter()
+                .any(|value| value.as_str() == Some(consumer))
         {
             return Err(unavailable(format!(
                 "the retained {role} consumer epoch is unavailable"
@@ -1122,13 +1124,21 @@ mod tests {
         let mixed = source.replacen(", \"graph.kiting\"", "", 1);
         assert!(!supported_account_roles(&document("account_roles", &mixed).unwrap()).unwrap());
         for (from, to) in [
-            ("name = \"intercompany_activity\"", "name = \"changed_activity\""),
-            ("account_types = [\"Revenue\", \"Expense\"]", "account_types = [\"Expense\"]"),
+            (
+                "name = \"intercompany_activity\"",
+                "name = \"changed_activity\"",
+            ),
+            (
+                "account_types = [\"Revenue\", \"Expense\"]",
+                "account_types = [\"Expense\"]",
+            ),
             ("name = \"intercompany\"", "name = \"changed_balance\""),
         ] {
             assert!(previous.contains(from));
             let changed = previous.replacen(from, to, 1);
-            assert!(!supported_account_roles(&document("account_roles", &changed).unwrap()).unwrap());
+            assert!(
+                !supported_account_roles(&document("account_roles", &changed).unwrap()).unwrap()
+            );
         }
     }
 
@@ -1152,11 +1162,7 @@ mod tests {
                 .unwrap();
             let intercompany = "consumers = [\"recon.intercompany\"]\nverbs = [\"consolidate\"]";
             assert_eq!(roles.matches(intercompany).count(), 1);
-            *roles = roles.replacen(
-                intercompany,
-                "consumers = []\nverbs = [\"consolidate\"]",
-                1,
-            );
+            *roles = roles.replacen(intercompany, "consumers = []\nverbs = [\"consolidate\"]", 1);
             assert_eq!(roles.matches(", \"graph.kiting\"").count(), 1);
             *roles = roles.replacen(", \"graph.kiting\"", "", 1);
             let original_roles = roles.clone();

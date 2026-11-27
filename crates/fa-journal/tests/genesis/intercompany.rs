@@ -96,7 +96,10 @@ fn atomic_pair_posts_once_and_binds_key_and_members_before_approval() {
     assert_eq!(edge.entry.dst, leg_vid(posted.entry_ref().vid, 2));
     assert_eq!(
         edge.props,
-        vec![(property::CODE, CanonicalScalar::ucs_basic_text("sale-A-B").unwrap())]
+        vec![(
+            property::CODE,
+            CanonicalScalar::ucs_basic_text("sale-A-B").unwrap()
+        )]
     );
     let report = verify_projections(&h.db, &h.book, None).unwrap();
     assert!(report.is_green(), "{report:?}");
@@ -253,7 +256,12 @@ fn reversals_preserve_pairs_without_releasing_keys_and_projection_tamper_is_visi
     h.write_raw(corrupt);
     let report = verify_projections(&h.db, &h.book, None).unwrap();
     assert!(!report.is_green());
-    assert!(report.drift.iter().any(|row| row.contains("missing INTERCOMPANY_WITH")));
+    assert!(
+        report
+            .drift
+            .iter()
+            .any(|row| row.contains("missing INTERCOMPANY_WITH"))
+    );
     assert!(
         verify_projections(&h.db, &h.book, Some(intact))
             .unwrap()
@@ -298,14 +306,21 @@ fn competing_pair_claims_have_one_winner_in_both_commit_orders() {
             let proposal = paired(&h, key, "raced-pair");
             let request = h.request(proposal, &["post"]);
             let ctx = h.ctx();
-            match prepare_post(&mut h.db, &ctx, &h.book, request).unwrap().unwrap() {
+            match prepare_post(&mut h.db, &ctx, &h.book, request)
+                .unwrap()
+                .unwrap()
+            {
                 PostPreparation::Ready(prepared) => prepared,
                 PostPreparation::AlreadyRecorded(_) => panic!("distinct entry must be fresh"),
             }
         };
         let first = prepare(b"race-a");
         let second = prepare(b"race-b");
-        let (winner, loser) = if reverse_order { (second, first) } else { (first, second) };
+        let (winner, loser) = if reverse_order {
+            (second, first)
+        } else {
+            (first, second)
+        };
         let ctx = h.ctx();
         let posted = h
             .runtime
@@ -337,10 +352,7 @@ fn scoped_fresh_claims_refuse_before_global_key_lookup_but_exact_retries_work() 
     ] {
         let proposal = paired(&h, key, pair_key);
         let mut request = h.request(proposal, &["post"]);
-        request.capability = request
-            .capability
-            .for_periods(&[h.march.as_str()])
-            .unwrap();
+        request.capability = request.capability.for_periods(&[h.march.as_str()]).unwrap();
         let refusal = h.post(request).unwrap_err();
         assert_eq!((refusal.code, refusal.exit), ("FA-REF-011", exit::SAFETY));
         assert!(refusal.message.contains("unscoped capability"), "{refusal}");
@@ -349,6 +361,9 @@ fn scoped_fresh_claims_refuse_before_global_key_lookup_but_exact_retries_work() 
     }
     let mut retry = h.request(original, &["post"]);
     retry.capability = retry.capability.for_periods(&[h.march.as_str()]).unwrap();
-    assert!(matches!(h.post(retry).unwrap(), Posted::AlreadyRecorded { .. }));
+    assert!(matches!(
+        h.post(retry).unwrap(),
+        Posted::AlreadyRecorded { .. }
+    ));
     assert_eq!(h.db.frontier().unwrap(), before);
 }

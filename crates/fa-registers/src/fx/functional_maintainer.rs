@@ -1260,7 +1260,8 @@ fn entry_lag<V: Vfs + Clone>(
     if reads.current.is_none() {
         reads.current = Some(entry_inventory(db, cx, at)?);
     }
-    let current = reads.current
+    let current = reads
+        .current
         .as_ref()
         .ok_or_else(|| drift("the selected Entry inventory was not loaded"))?;
     let mut lag = if through.is_none() { current.len() } else { 0 };

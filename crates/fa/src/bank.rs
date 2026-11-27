@@ -1255,9 +1255,9 @@ impl<V: Vfs + Clone, B: Vfs + Clone> AsyncBook<V, B> {
                 .checked_sub(1)
                 .and_then(|ordinal| usize::try_from(ordinal).ok())
                 .filter(|&index| {
-                    lines.get(index).is_some_and(|line| {
-                        line.line_ordinal == confirmation.line_ordinal
-                    })
+                    lines
+                        .get(index)
+                        .is_some_and(|line| line.line_ordinal == confirmation.line_ordinal)
                 });
             let Some(index) = index else {
                 return Ok(Err(closure_drift(

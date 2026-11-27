@@ -841,7 +841,6 @@ fn recipient_statement_unit_lists_are_validated_before_untrusted_bytes() {
     );
 }
 
-
 // This certificate fixture covers framing and method selection only. Its
 // opaque native inputs and output are not journal proofs or financial reports.
 fn consolidation_parser_certificate(version: u8, selector: u8, output_format: &[u8]) -> Vec<u8> {
@@ -879,9 +878,21 @@ fn consolidation_parser_certificate(version: u8, selector: u8, output_format: &[
 fn consolidation_certificate_parser_pins_legacy_and_declared_method_tags() {
     for (version, selector, functional, declared, output_format) in [
         (6, 4, false, false, b"fa:consolidation:v1".as_slice()),
-        (7, 5, true, false, b"fa:functional-consolidation:v1".as_slice()),
+        (
+            7,
+            5,
+            true,
+            false,
+            b"fa:functional-consolidation:v1".as_slice(),
+        ),
         (14, 12, false, true, b"fa:consolidation:v1".as_slice()),
-        (15, 13, true, true, b"fa:functional-consolidation:v1".as_slice()),
+        (
+            15,
+            13,
+            true,
+            true,
+            b"fa:functional-consolidation:v1".as_slice(),
+        ),
     ] {
         let bytes = consolidation_parser_certificate(version, selector, output_format);
         let parsed = certificate(&bytes).unwrap();
@@ -926,7 +937,8 @@ fn consolidation_certificate_method_versions_bind_their_exact_digest_domain() {
         (6, 4, 14, 12, b"fa:consolidation:v1".as_slice()),
         (7, 5, 15, 13, b"fa:functional-consolidation:v1".as_slice()),
     ] {
-        let legacy = consolidation_parser_certificate(legacy_version, legacy_selector, output_format);
+        let legacy =
+            consolidation_parser_certificate(legacy_version, legacy_selector, output_format);
         let declared = consolidation_parser_certificate(version, selector, output_format);
         let legacy_certificate = certificate(&legacy).unwrap();
         let declared_certificate = certificate(&declared).unwrap();

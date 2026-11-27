@@ -439,8 +439,8 @@ fn retained_registry_document() -> Result<Vec<u8>, Refusal> {
         fa_registry::procedures::legacy_v1_document_from_text(pre_kiting_current_registry_text()?)
             .and_then(fa_registry::procedures::intercompany_v2_document)
             .and_then(fa_registry::procedures::solvency_v5_document)
-        .and_then(fa_registry::procedures::lapping_v2_document)
-        .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
+            .and_then(fa_registry::procedures::lapping_v2_document)
+            .map_err(|error| invalid(format!("retained JET registry: {error}")))?;
     let layering = fa_registry::procedures::layering_v2_document(jet)
         .map_err(|error| invalid(format!("retained layering registry: {error}")))?;
     fa_registry::procedures::suspense_v2_document(layering)

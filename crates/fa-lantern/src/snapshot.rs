@@ -670,8 +670,7 @@ impl Snapshot {
                             .checked_sub(usize::from(ordinal) + 1)
                             .and_then(|index| u16::try_from(index).ok())
                     };
-                    if let (Some(left), Some(right)) =
-                        (remap(pair.right_leg), remap(pair.left_leg))
+                    if let (Some(left), Some(right)) = (remap(pair.right_leg), remap(pair.left_leg))
                     {
                         pair.left_leg = left;
                         pair.right_leg = right;
@@ -681,9 +680,12 @@ impl Snapshot {
                 }
                 if valid
                     && let Ok(bytes) = pairs.encode()
-                    && let Some((_, body)) = e.entry.proposal.extensions.iter_mut().find(
-                        |(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION,
-                    )
+                    && let Some((_, body)) = e
+                        .entry
+                        .proposal
+                        .extensions
+                        .iter_mut()
+                        .find(|(tag, _)| *tag == fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION)
                 {
                     *body = bytes;
                 }

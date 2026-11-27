@@ -670,10 +670,10 @@ impl ReportSelection {
                 crate::consolidation::consolidate_functional_at(db, book, period, at)?
                     .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
             ),
-            Self::DeclaredConsolidation { period } => {
-                Ok(crate::consolidation::declared_consolidation_at(db, book, period, at)?
-                    .map(|run| ReportOutput::Consolidation(Box::new(run))))
-            }
+            Self::DeclaredConsolidation { period } => Ok(
+                crate::consolidation::declared_consolidation_at(db, book, period, at)?
+                    .map(|run| ReportOutput::Consolidation(Box::new(run))),
+            ),
             Self::DeclaredFunctionalConsolidation { period } => Ok(
                 crate::consolidation::declared_functional_consolidation_at(db, book, period, at)?
                     .map(|run| ReportOutput::FunctionalConsolidation(Box::new(run))),
@@ -1641,59 +1641,59 @@ impl ReportCertificate {
             let mut r = Reader::new(bytes);
             // V10 is the first two-digit version. Preserve every earlier wire
             // header and consume its exact length before reading framed fields.
-            let version =
-                if bytes.starts_with(DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
-                        "certificate format",
-                    )?;
-                    15
-                } else if bytes.starts_with(DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
-                        "certificate format",
-                    )?;
-                    14
-                } else if bytes.starts_with(FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
-                        "certificate format",
-                    )?;
-                    13
-                } else if bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>(
-                        "certificate format",
-                    )?;
-                    12
-                } else if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>("certificate format")?;
-                    11
-                } else if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
-                    r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
-                        "certificate format",
-                    )?;
-                    10
+            let version = if bytes.starts_with(DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT)
+            {
+                r.fixed::<{ DECLARED_FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                15
+            } else if bytes.starts_with(DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT) {
+                r.fixed::<{ DECLARED_CONSOLIDATION_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                14
+            } else if bytes.starts_with(FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                13
+            } else if bytes.starts_with(FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                12
+            } else if bytes.starts_with(CUSTOM_STATEMENT_CERTIFICATE_FORMAT) {
+                r.fixed::<{ CUSTOM_STATEMENT_CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                11
+            } else if bytes.starts_with(FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT) {
+                r.fixed::<{ FUNCTIONAL_TRIAL_BALANCE_CERTIFICATE_FORMAT.len() }>(
+                    "certificate format",
+                )?;
+                10
+            } else {
+                let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
+                if format == CERTIFICATE_FORMAT {
+                    1
+                } else if format == INSTANT_CERTIFICATE_FORMAT {
+                    2
+                } else if format == REPORT_CERTIFICATE_FORMAT {
+                    3
+                } else if format == STATEMENT_CERTIFICATE_FORMAT {
+                    4
+                } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
+                    5
+                } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
+                    6
+                } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
+                    7
+                } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
+                    8
+                } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
+                    9
                 } else {
-                    let format = r.fixed::<{ CERTIFICATE_FORMAT.len() }>("certificate format")?;
-                    if format == CERTIFICATE_FORMAT {
-                        1
-                    } else if format == INSTANT_CERTIFICATE_FORMAT {
-                        2
-                    } else if format == REPORT_CERTIFICATE_FORMAT {
-                        3
-                    } else if format == STATEMENT_CERTIFICATE_FORMAT {
-                        4
-                    } else if format == FUNCTIONAL_STATEMENT_CERTIFICATE_FORMAT {
-                        5
-                    } else if format == CONSOLIDATION_CERTIFICATE_FORMAT {
-                        6
-                    } else if format == FUNCTIONAL_CONSOLIDATION_CERTIFICATE_FORMAT {
-                        7
-                    } else if format == DIMENSION_TRIAL_BALANCE_CERTIFICATE_FORMAT {
-                        8
-                    } else if format == REGULATORY_SCHEDULE_CERTIFICATE_FORMAT {
-                        9
-                    } else {
-                        return Err(r.invalid("report certificate format"));
-                    }
-                };
+                    return Err(r.invalid("report certificate format"));
+                }
+            };
             for (name, expected) in [("replay scope", REPLAY_SCOPE), ("authority", AUTHORITY)] {
                 if r.str(64, name)? != expected {
                     return Err(r.invalid(name));
@@ -3306,13 +3306,11 @@ pub(crate) fn selected(
                 ReportSelection::Consolidation { .. }
                 | ReportSelection::DeclaredConsolidation { .. },
                 ReportOutput::Consolidation(report),
-            ) => {
-                consolidation_control_selected(
-                    report.effective_through,
-                    &report.entity_codes,
-                    entry.proposal.control.as_ref(),
-                )
-            }
+            ) => consolidation_control_selected(
+                report.effective_through,
+                &report.entity_codes,
+                entry.proposal.control.as_ref(),
+            ),
             (
                 ReportSelection::FunctionalConsolidation { .. }
                 | ReportSelection::DeclaredFunctionalConsolidation { .. },
@@ -4350,7 +4348,10 @@ mod tests {
             let bytes = writer.finish().unwrap();
             assert_eq!(bytes[0], tag);
             let mut reader = Reader::new(&bytes);
-            assert_eq!(ReportSelection::read(&mut reader, version).unwrap(), selection);
+            assert_eq!(
+                ReportSelection::read(&mut reader, version).unwrap(),
+                selection
+            );
             reader.finish().unwrap();
             for other in (1..=15).filter(|other| *other != version) {
                 assert!(ReportSelection::read(&mut Reader::new(&bytes), other).is_err());

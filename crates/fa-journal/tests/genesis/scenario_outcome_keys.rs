@@ -547,8 +547,11 @@ fn scenario_membership_reads_are_independent_of_unrelated_posting_edges() {
                 )
             })
             .collect();
-        h.post_batch(h.batch(format!("unrelated-batch-{batch_number}").as_bytes(), members))
-            .unwrap();
+        h.post_batch(h.batch(
+            format!("unrelated-batch-{batch_number}").as_bytes(),
+            members,
+        ))
+        .unwrap();
         let head = h.db.frontier().unwrap();
         assert!(h.db.edges_at(head).unwrap().len() > original_work.scanned_edges as usize);
 
@@ -610,10 +613,9 @@ fn scenario_listing_reads_memberships_once_and_keeps_order_and_corruption_checks
     let census = fa_journal::op_witness::begin();
     let listed = list_scenarios(&h.db, &h.book).unwrap();
     let work = census.finish();
-    let relation_work = h
-        .db
-        .edges_by_relation_at(relation::IN_CASE, h.db.frontier().unwrap())
-        .unwrap();
+    let relation_work =
+        h.db.edges_by_relation_at(relation::IN_CASE, h.db.frontier().unwrap())
+            .unwrap();
     assert_eq!(work.edge_scans, 1);
     assert_eq!(work.scanned_edges as usize, relation_work.candidate_edges);
     assert_eq!(work.vertex_scans, 1);

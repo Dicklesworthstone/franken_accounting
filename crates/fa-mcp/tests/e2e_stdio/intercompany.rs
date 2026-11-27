@@ -7,8 +7,17 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
     let book = dir.join("book");
     let b = book.display().to_string();
     cli_data(&[
-        "book", "create", "--name", "Intercompany MCP",
-        "--entity", "A:Alpha", "--entity", "B:Beta", "--book", &b, "--json",
+        "book",
+        "create",
+        "--name",
+        "Intercompany MCP",
+        "--entity",
+        "A:Alpha",
+        "--entity",
+        "B:Beta",
+        "--book",
+        &b,
+        "--json",
     ]);
     let chart = dir.join("chart.json");
     std::fs::write(
@@ -21,8 +30,23 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
         ]}"#,
     )
     .unwrap();
-    cli_data(&["chart", "import", chart.to_str().unwrap(), "--book", &b, "--json"]);
-    cli_data(&["period", "create", "--fiscal-year", "2026", "--book", &b, "--json"]);
+    cli_data(&[
+        "chart",
+        "import",
+        chart.to_str().unwrap(),
+        "--book",
+        &b,
+        "--json",
+    ]);
+    cli_data(&[
+        "period",
+        "create",
+        "--fiscal-year",
+        "2026",
+        "--book",
+        &b,
+        "--json",
+    ]);
     cli_data(&["period", "open", "FY2026-P03", "--book", &b, "--json"]);
     let evidence = source_document(&dir, &b);
     let intent = dir.join("pair.json");
@@ -46,13 +70,26 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
     )
     .unwrap();
     cli_data(&[
-        "post", "--intent", intent.to_str().unwrap(), "--evidence", &evidence,
-        "--book", &b, "--json",
+        "post",
+        "--intent",
+        intent.to_str().unwrap(),
+        "--evidence",
+        &evidence,
+        "--book",
+        &b,
+        "--json",
     ]);
     let frontier = head(&b).to_string();
     let expected = cli_data(&[
-        "recon", "intercompany", "--known-at", &frontier,
-        "--effective-through", "2026-03-31", "--book", &b, "--json",
+        "recon",
+        "intercompany",
+        "--known-at",
+        &frontier,
+        "--effective-through",
+        "2026-03-31",
+        "--book",
+        &b,
+        "--json",
     ]);
     let expected: JsonValue = fastmcp_rust::serde_json::from_str(&expected).unwrap();
     assert_eq!(expected["version"], json!(3));
@@ -78,7 +115,11 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
     let denied = structured_error(&output);
     assert_eq!(denied["refusal_id"], json!("FA-REF-011"));
     assert!(output.contains("produce"), "{output}");
-    assert_eq!(head(&b), before, "denied retention must not publish an access event");
+    assert_eq!(
+        head(&b),
+        before,
+        "denied retention must not publish an access event"
+    );
     let (error, output, _) = call_tool(
         &mut reader,
         "fa_match_intercompany",
@@ -90,7 +131,14 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
 
     let mut producer = Mcp::start_with(
         &book,
-        &["--cluster", "fa.match", "--grant", "read", "--grant", "produce"],
+        &[
+            "--cluster",
+            "fa.match",
+            "--grant",
+            "read",
+            "--grant",
+            "produce",
+        ],
     );
     producer.discover();
     let (error, output, _) = call_tool(
@@ -100,7 +148,9 @@ fn intercompany_pairs_reconcile_and_certify_under_the_launch_capability() {
     );
     assert!(!error, "{output}");
     let certified: JsonValue = fastmcp_rust::serde_json::from_str(&output).unwrap();
-    let rows = certified.as_array().expect("procedure plus retained certificate");
+    let rows = certified
+        .as_array()
+        .expect("procedure plus retained certificate");
     assert_eq!(rows.len(), 2, "{certified}");
     assert_eq!(rows[0], expected);
     assert_eq!(rows[1]["family"], json!("procedure"));

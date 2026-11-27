@@ -19,37 +19,59 @@ fn intercompany_v3_certifies_each_uncovered_leg_without_netting_and_replays_v2()
             && finding.statistic.value == 5_000
             && finding.statistic.scale == 2
             && finding.statistic.population == 2
-            && matches!(finding.cites.as_slice(), [
-                Cite::Entry(_), Cite::Leg { .. }, Cite::Account(_), Cite::Period(_),
-            ])
+            && matches!(
+                finding.cites.as_slice(),
+                [
+                    Cite::Entry(_),
+                    Cite::Leg { .. },
+                    Cite::Account(_),
+                    Cite::Period(_),
+                ]
+            )
     }));
-    assert_eq!(current.certificate.format(), EXTENDED_PROCEDURE_CERTIFICATE_FORMAT);
-    assert_eq!(current.certificate.supplemental_inputs().len(), extended::COUNT);
+    assert_eq!(
+        current.certificate.format(),
+        EXTENDED_PROCEDURE_CERTIFICATE_FORMAT
+    );
+    assert_eq!(
+        current.certificate.supplemental_inputs().len(),
+        extended::COUNT
+    );
     current.certificate.check_offline_profile().unwrap();
 
     request.version = Some(2);
     request.effective_through = None;
     let prior = f.certify(&request);
     assert_eq!(prior.report.version, 2);
-    assert!(prior.report.findings.is_empty(), "retained v2 keeps its aggregate law");
+    assert!(
+        prior.report.findings.is_empty(),
+        "retained v2 keeps its aggregate law"
+    );
     assert_ne!(prior.certificate.registry, current.certificate.registry);
     assert_eq!(
         prior.certificate.registry,
         intercompany_v2_registry_digest().unwrap(),
     );
     assert_eq!(
-        canonical_registry_document(&prior.certificate.registry).unwrap().unwrap(),
+        canonical_registry_document(&prior.certificate.registry)
+            .unwrap()
+            .unwrap(),
         pre_intercompany_registry_document().unwrap(),
     );
     for certified in [&prior, &current] {
         let bytes = certified.certificate.canonical_bytes().unwrap();
         let decoded = ProcedureCertificate::decode(&bytes).unwrap();
         assert_eq!(
-            f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
-                .unwrap().unwrap(),
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &decoded)
+                .unwrap()
+                .unwrap(),
             certified.report,
         );
-        assert_eq!(ReportArtifact::decode(&bytes).unwrap().family(), ReportArtifactFamily::Procedure);
+        assert_eq!(
+            ReportArtifact::decode(&bytes).unwrap().family(),
+            ReportArtifactFamily::Procedure
+        );
     }
     let mut wrong = current.certificate.clone();
     wrong.registry = prior.certificate.registry;
@@ -75,14 +97,21 @@ fn intercompany_v3_certifies_each_uncovered_leg_without_netting_and_replays_v2()
     reject_resealed(&current, &current_bundle, key);
     let json = fa_verify::cli::run(
         &[
-            "report".into(), "intercompany.fab".into(),
-            "--key".into(), key.iter().map(|byte| format!("{byte:02x}")).collect(),
-            "--receipt".into(), "intercompany.receipt".into(), "--json".into(),
+            "report".into(),
+            "intercompany.fab".into(),
+            "--key".into(),
+            key.iter().map(|byte| format!("{byte:02x}")).collect(),
+            "--receipt".into(),
+            "intercompany.receipt".into(),
+            "--json".into(),
         ],
         &|path| match path {
             "intercompany.fab" => Ok(current_bundle.bundle.bytes.clone()),
             "intercompany.receipt" => Ok(current_bundle.receipt.clone()),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "unexpected input")),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "unexpected input",
+            )),
         },
     );
     assert_eq!(json.exit, 0, "{}", json.stdout);
@@ -94,7 +123,11 @@ fn intercompany_v3_certifies_each_uncovered_leg_without_netting_and_replays_v2()
         "\"entity_basis\":\"authenticated literal leg dimensions\"",
         "\"posting_admission\":\"not_judged\"",
     ] {
-        assert!(json.stdout.contains(expected), "{expected}: {}", json.stdout);
+        assert!(
+            json.stdout.contains(expected),
+            "{expected}: {}",
+            json.stdout
+        );
     }
 }
 
@@ -107,7 +140,9 @@ fn unrelated_certificates_keep_every_published_procedure_registry_epoch() {
         pre_intercompany_registry_document().unwrap(),
         pre_kiting_registry_document().unwrap().canonical_bytes(),
         pre_solvency_registry_document().unwrap().canonical_bytes(),
-        pre_lapping_metering_registry_document().unwrap().canonical_bytes(),
+        pre_lapping_metering_registry_document()
+            .unwrap()
+            .canonical_bytes(),
         pre_lapping_registry_document().unwrap().canonical_bytes(),
         legacy_lookback_registry_document().unwrap(),
         layering_v2_registry_document(false).unwrap(),
@@ -123,13 +158,18 @@ fn unrelated_certificates_keep_every_published_procedure_registry_epoch() {
             let registry = canonical_procedure_closure(&document, foundation).unwrap();
             assert!(registry_versions(&registry).unwrap().is_some());
             assert!(!declares_intercompany_v3(&registry).unwrap());
-            assert_eq!(canonical_registry_document(&registry).unwrap(), Some(document.clone()));
+            assert_eq!(
+                canonical_registry_document(&registry).unwrap(),
+                Some(document.clone())
+            );
             let mut retained = current.clone();
             retained.registry = registry;
             retained.digest = domain_digest(CERTIFICATE_DOMAIN, &[&retained.body().unwrap()]);
-            let replayed = f.book.replay_procedure(
-                &f.cx(), PRINCIPAL, &cap(&["read"]), &retained,
-            ).unwrap().unwrap();
+            let replayed = f
+                .book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &retained)
+                .unwrap()
+                .unwrap();
             assert_eq!(replayed, current.report, "unrelated retained epoch {index}");
         }
     }
@@ -150,13 +190,14 @@ fn unrelated_certificates_keep_every_published_procedure_registry_epoch() {
         retained.registry = registry;
         retained.digest = domain_digest(CERTIFICATE_DOMAIN, &[&retained.body().unwrap()]);
         assert_eq!(
-            f.book.replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &retained)
-                .unwrap().unwrap(),
+            f.book
+                .replay_procedure(&f.cx(), PRINCIPAL, &cap(&["read"]), &retained)
+                .unwrap()
+                .unwrap(),
             current.report,
         );
     }
 }
-
 
 /// Produce through the public facade, then verify after the live book is gone.
 fn export(f: &mut Fixture, certified: &CertifiedProcedure) -> crate::ProducedBundle {
@@ -183,11 +224,7 @@ fn export(f: &mut Fixture, certified: &CertifiedProcedure) -> crate::ProducedBun
     produced
 }
 
-fn independent(
-    certified: &CertifiedProcedure,
-    produced: &crate::ProducedBundle,
-    key: [u8; 32],
-) {
+fn independent(certified: &CertifiedProcedure, produced: &crate::ProducedBundle, key: [u8; 32]) {
     let checkpoint = fa_verify::verify_checkpoint(&produced.checkpoint.bytes, &[key]).unwrap();
     let result = fa_verify::report::verify_report_expected(
         &produced.bundle.bytes,
@@ -202,7 +239,11 @@ fn independent(
     assert_eq!(result.output, certified.certificate.output());
     let procedure = result.procedure.unwrap();
     assert_eq!(
-        (procedure.live_entries, procedure.live_legs, procedure.comparisons),
+        (
+            procedure.live_entries,
+            procedure.live_legs,
+            procedure.comparisons
+        ),
         (
             certified.report.work.entries,
             certified.report.work.legs,
@@ -222,7 +263,14 @@ fn reject_resealed(
     key: [u8; 32],
 ) {
     assert!(!certified.report.findings.is_empty());
-    for variant in ["omitted", "amount", "population", "leg", "work", "narrative"] {
+    for variant in [
+        "omitted",
+        "amount",
+        "population",
+        "leg",
+        "work",
+        "narrative",
+    ] {
         let mut forged = certified.certificate.clone();
         match variant {
             "omitted" => forged.report.findings.clear(),
@@ -244,7 +292,9 @@ fn reject_resealed(
         let format = reader.bytes(64, "format").unwrap();
         let major = reader.u16("major").unwrap();
         let minor = reader.u16("minor").unwrap();
-        reader.bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "certificate").unwrap();
+        reader
+            .bytes(MAX_PROCEDURE_CERTIFICATE_BYTES, "certificate")
+            .unwrap();
         let mut writer = Writer::new();
         writer
             .bytes(format)
@@ -254,7 +304,11 @@ fn reject_resealed(
             .fixed(&produced.bundle.bytes[reader.offset()..]);
         let replaced = writer.finish().unwrap();
         let refusal = fa_verify::report::verify_report_expected(
-            &replaced, &[key], None, None, Some(forged.digest()),
+            &replaced,
+            &[key],
+            None,
+            None,
+            Some(forged.digest()),
         )
         .expect_err("resealed intercompany findings must be independently recomputed");
         assert_eq!(refusal.predicate, "procedure_recomputation", "{variant}");
@@ -301,14 +355,20 @@ fn entity_transfer(f: &mut Fixture, date: u8, key: &[u8], pair: Option<&str>) ->
         class: EntryClass::ORIGINAL,
         effective_date: day(date),
         document_date: None,
-        description: f.book.seal_text(&cx, "Native reciprocal entity transfer").unwrap(),
+        description: f
+            .book
+            .seal_text(&cx, "Native reciprocal entity transfer")
+            .unwrap(),
         effective_period: None,
         unit_totals: EntryPayload::fold_unit_totals(&legs).unwrap(),
         legs,
         control: None,
         base_totals: None,
         idempotency_key: key.to_vec(),
-        origin: EntryOrigin::Intent { intent_oid: Oid([1; 32]), intent_kind: 1 },
+        origin: EntryOrigin::Intent {
+            intent_oid: Oid([1; 32]),
+            intent_kind: 1,
+        },
         principal_ref: PRINCIPAL,
         session_ref: None,
         evidence: f.evidence.clone(),
@@ -319,13 +379,15 @@ fn entity_transfer(f: &mut Fixture, date: u8, key: &[u8], pair: Option<&str>) ->
         extensions: Vec::new(),
     };
     if let Some(pair_key) = pair {
-        proposal.set_intercompany_pairs(&fa_model::IntercompanyPairs {
-            pairs: vec![fa_model::IntercompanyPair {
-                pair_key: pair_key.into(),
-                left_leg: 1,
-                right_leg: 3,
-            }],
-        }).unwrap();
+        proposal
+            .set_intercompany_pairs(&fa_model::IntercompanyPairs {
+                pairs: vec![fa_model::IntercompanyPair {
+                    pair_key: pair_key.into(),
+                    left_leg: 1,
+                    right_leg: 3,
+                }],
+            })
+            .unwrap();
     }
     post_payload(f, proposal)
 }
@@ -350,7 +412,10 @@ fn post_payload(f: &mut Fixture, proposal: EntryPayload) -> VId {
 
 fn reverse_native(f: &mut Fixture, source: VId, date: u8, key: &[u8]) -> VId {
     let (entry, _) = f.book.read_entry(&f.cx(), source).unwrap().unwrap();
-    let target = fa_model::EntryRef { vid: source, entry_digest: entry.entry_digest };
+    let target = fa_model::EntryRef {
+        vid: source,
+        entry_digest: entry.entry_digest,
+    };
     let mut proposal = entry.proposal;
     proposal.idempotency_key = key.to_vec();
     proposal.class = EntryClass::REVERSAL;
@@ -406,7 +471,11 @@ fn intercompany_v3_portable_accepts_native_pairs_without_roles_across_reversals(
     assert!(cutoff_after_restore.report.findings.is_empty());
     let key = f.book.checkpoint_public_key();
     let artifacts: Vec<_> = [
-        historical, canceled, through_original, restored, cutoff_after_restore,
+        historical,
+        canceled,
+        through_original,
+        restored,
+        cutoff_after_restore,
     ]
     .into_iter()
     .map(|certified| {

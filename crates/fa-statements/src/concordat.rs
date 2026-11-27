@@ -2803,8 +2803,7 @@ mod tests {
                             pairs[1].entity_b = entity;
                             pairs[1].account_b = account;
                         }
-                        for (pair, reverse) in
-                            pairs.iter_mut().zip([reverse_first, reverse_second])
+                        for (pair, reverse) in pairs.iter_mut().zip([reverse_first, reverse_second])
                         {
                             if reverse {
                                 std::mem::swap(&mut pair.entity_a, &mut pair.entity_b);

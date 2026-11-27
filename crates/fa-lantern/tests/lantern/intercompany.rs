@@ -1,7 +1,7 @@
 //! Native declaration coverage and the retained v2 aggregate screen.
 use super::*;
-use fa_lantern::cutoff::ReconIntercompany;
 use fa_journal::genesis::LegalEntitySpec;
+use fa_lantern::cutoff::ReconIntercompany;
 use fa_model::{EntryRef, IntercompanyPair, IntercompanyPairs, Supersession};
 
 fn group() -> Harness {
@@ -164,7 +164,11 @@ fn declared_pairs_need_no_roles_and_unrelated_zero_net_legs_remain_uncovered() {
     assert_eq!(result.work.entries, entries);
     assert_eq!(result.work.legs, legs);
     assert_eq!(result.work.comparisons, entries + 1 + 2 + 8);
-    assert!(result.work.within_registered_bound("O(legs log legs)", &snapshot));
+    assert!(
+        result
+            .work
+            .within_registered_bound("O(legs log legs)", &snapshot)
+    );
     assert!(matches!(
         fa_lantern::run_over_metered(
             &snapshot,
@@ -262,7 +266,10 @@ fn declaration_cutoff_precedes_reversal_liveness_and_restoration() {
     snapshot.coordinate.effective_through = Some(day(2026, 3, 1));
     let missing_population =
         run_over(&snapshot, &h.book, &ReconIntercompany::new().unwrap()).unwrap_err();
-    assert!(matches!(&missing_population, LanternError::RoleUnassigned { .. }));
+    assert!(matches!(
+        &missing_population,
+        LanternError::RoleUnassigned { .. }
+    ));
     let fix = missing_population.fix_hint().unwrap();
     assert!(fix.contains("fa chart role <account> intercompany_activity"));
     assert!(!fix.contains("fa chart role <account> intercompany or"));
@@ -287,8 +294,16 @@ fn invalid_pair_history_refuses_instead_of_returning_a_clean_reconciliation() {
     let original = commit(&mut h, entry);
     let reversal = reverse(&mut h, original, day(2026, 4, 1));
     let snapshot = h.snapshot();
-    let original_index = snapshot.entries.iter().position(|entry| entry.vid == original.vid).unwrap();
-    let reversal_index = snapshot.entries.iter().position(|entry| entry.vid == reversal.vid).unwrap();
+    let original_index = snapshot
+        .entries
+        .iter()
+        .position(|entry| entry.vid == original.vid)
+        .unwrap();
+    let reversal_index = snapshot
+        .entries
+        .iter()
+        .position(|entry| entry.vid == reversal.vid)
+        .unwrap();
     for plant in 0..11 {
         let mut altered = snapshot.clone();
         match plant {
@@ -299,16 +314,22 @@ fn invalid_pair_history_refuses_instead_of_returning_a_clean_reconciliation() {
                 altered.entries.push(duplicate);
             }
             1 => {
-                altered.entries[original_index].entry.proposal.legs[3].amount.mantissa = 101;
+                altered.entries[original_index].entry.proposal.legs[3]
+                    .amount
+                    .mantissa = 101;
             }
             2 => {
                 altered.entries[original_index].entry.proposal.legs[3].dimension_set =
-                    altered.entries[original_index].entry.proposal.legs[1].dimension_set.clone();
+                    altered.entries[original_index].entry.proposal.legs[1]
+                        .dimension_set
+                        .clone();
             }
             3 => {
-                altered.entries[reversal_index].entry.proposal.extensions.retain(|(tag, _)| {
-                    *tag != fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION
-                });
+                altered.entries[reversal_index]
+                    .entry
+                    .proposal
+                    .extensions
+                    .retain(|(tag, _)| *tag != fa_model::entry::INTERCOMPANY_PAIRS_EXTENSION);
             }
             4 => {
                 let declaration = IntercompanyPairs {
@@ -318,8 +339,11 @@ fn invalid_pair_history_refuses_instead_of_returning_a_clean_reconciliation() {
                         right_leg: 3,
                     }],
                 };
-                altered.entries[reversal_index].entry.proposal
-                    .set_intercompany_pairs(&declaration).unwrap();
+                altered.entries[reversal_index]
+                    .entry
+                    .proposal
+                    .set_intercompany_pairs(&declaration)
+                    .unwrap();
             }
             5 => {
                 altered.entries[reversal_index].entry.proposal.legs[0].account_ref =
@@ -329,28 +353,36 @@ fn invalid_pair_history_refuses_instead_of_returning_a_clean_reconciliation() {
                 // The reciprocal endpoints are intact; a counterleg has
                 // lost the legal entity required by the whole-entry law.
                 altered.entries[original_index].entry.proposal.legs[0]
-                    .dimension_set.clear();
+                    .dimension_set
+                    .clear();
             }
             7 => {
-                altered.entries[original_index].entry.proposal.legs[0]
-                    .dimension_set[0].1 = VId(u128::MAX);
+                altered.entries[original_index].entry.proposal.legs[0].dimension_set[0].1 =
+                    VId(u128::MAX);
             }
             8 => {
                 altered.entries[original_index].entry.proposal.legs[0]
-                    .amount.mantissa = -1;
+                    .amount
+                    .mantissa = -1;
             }
             9 => {
                 altered.entries[original_index].entry.proposal.legs[0]
-                    .amount.mantissa = 101;
+                    .amount
+                    .mantissa = 101;
             }
             _ => {
                 let dimensions = altered.entries[original_index].entry.proposal.legs[0]
-                    .dimension_set.clone();
+                    .dimension_set
+                    .clone();
                 for (account, side) in [("1000", Side::Debit), ("2000", Side::Credit)] {
                     let mut leg =
                         LegPayload::simple(side, h.account(account), Amount::new(h.usd, i128::MAX));
                     leg.dimension_set = dimensions.clone();
-                    altered.entries[original_index].entry.proposal.legs.push(leg);
+                    altered.entries[original_index]
+                        .entry
+                        .proposal
+                        .legs
+                        .push(leg);
                 }
             }
         }

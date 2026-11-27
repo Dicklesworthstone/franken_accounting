@@ -32,7 +32,9 @@ pub(in crate::report) fn validate_pairs(
     details: &[LegDetails],
 ) -> Result<Vec<Pair>, ReportError> {
     if bytes.len() > 65_536 || legs.len() != details.len() {
-        return Err(invalid("intercompany declaration exceeds its bound or has incomplete legs"));
+        return Err(invalid(
+            "intercompany declaration exceeds its bound or has incomplete legs",
+        ));
     }
     let mut r = Reader::new(bytes);
     if r.u16("intercompany.version")? != 1 {
@@ -40,7 +42,9 @@ pub(in crate::report) fn validate_pairs(
     }
     let count = r.count(2_048, 9, "intercompany.pairs")?;
     if count == 0 {
-        return Err(invalid("intercompany declarations must contain a complete pair"));
+        return Err(invalid(
+            "intercompany declarations must contain a complete pair",
+        ));
     }
     let unit = legs.first().map(|leg| leg.unit);
     let mut entities = Vec::with_capacity(details.len());
@@ -51,23 +55,34 @@ pub(in crate::report) fn validate_pairs(
                 "native intercompany entries require one unit, nonnegative amounts and no FX valuation",
             ));
         }
-        let mut dimensions = detail.dimensions.iter()
-            .filter(|(kind, _)| *kind == 1).map(|(_, value)| *value);
+        let mut dimensions = detail
+            .dimensions
+            .iter()
+            .filter(|(kind, _)| *kind == 1)
+            .map(|(_, value)| *value);
         let entity = match (dimensions.next(), dimensions.next()) {
             (Some(entity), None) => entity,
-            _ => return Err(invalid(
-                "every intercompany entry leg must name exactly one legal entity",
-            )),
+            _ => {
+                return Err(invalid(
+                    "every intercompany entry leg must name exactly one legal entity",
+                ));
+            }
         };
         entities.push(entity);
         let totals = totals.entry(entity).or_default();
-        let total = if leg.debit { &mut totals.0 } else { &mut totals.1 };
+        let total = if leg.debit {
+            &mut totals.0
+        } else {
+            &mut totals.1
+        };
         *total = total
             .checked_add(leg.mantissa)
             .ok_or_else(|| invalid("intercompany per-entity total overflow"))?;
     }
     if totals.values().any(|(debits, credits)| debits != credits) {
-        return Err(invalid("a complete intercompany entry must balance each legal entity"));
+        return Err(invalid(
+            "a complete intercompany entry must balance each legal entity",
+        ));
     }
     let mut previous = None;
     let mut used = BTreeSet::new();
@@ -81,7 +96,9 @@ pub(in crate::report) fn validate_pairs(
         }
         previous = Some(key);
         if left >= right || right >= legs.len() || !used.insert(left) || !used.insert(right) {
-            return Err(invalid("pair leg ordinals must be ascending, in range and used once"));
+            return Err(invalid(
+                "pair leg ordinals must be ascending, in range and used once",
+            ));
         }
         let lhs = &legs[left];
         let rhs = &legs[right];
@@ -96,7 +113,11 @@ pub(in crate::report) fn validate_pairs(
                 "reciprocal pairs require distinct accounts and entities, equal positive native amounts and opposite sides",
             ));
         }
-        pairs.push(Pair { key: key.into(), left, right });
+        pairs.push(Pair {
+            key: key.into(),
+            left,
+            right,
+        });
     }
     r.finish("intercompany pairs")?;
     Ok(pairs)
@@ -121,7 +142,12 @@ mod tests {
     fn fixture() -> (Vec<Leg>, Vec<LegDetails>) {
         let legs = [(1, true), (2, false), (3, true), (4, false)]
             .into_iter()
-            .map(|(account, debit)| Leg { account, debit, unit: 0, mantissa: 100 })
+            .map(|(account, debit)| Leg {
+                account,
+                debit,
+                unit: 0,
+                mantissa: 100,
+            })
             .collect();
         let details = [10, 10, 20, 20]
             .into_iter()

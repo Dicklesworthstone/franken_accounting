@@ -415,7 +415,8 @@ pub struct VerifiedReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Selection {    Periods(Vec<String>),
+enum Selection {
+    Periods(Vec<String>),
     AsOf(i32),
     Activity(Vec<String>),
     Statement(statement::Selection),
@@ -2438,7 +2439,9 @@ fn verify_report_with_subledger_inputs(
             } else {
                 BTreeMap::new()
             };
-            let mut intercompany = request.parameters.is_intercompany()
+            let mut intercompany = request
+                .parameters
+                .is_intercompany()
                 .then(procedure::intercompany::Context::default);
             let mut tracing =
                 request
@@ -2756,7 +2759,12 @@ fn verify_report_with_subledger_inputs(
             }
             let (verified, output) = if let Some(context) = &intercompany {
                 procedure::replay_intercompany(
-                    request, cert.book, cert.known_at, entries, definitions, context,
+                    request,
+                    cert.book,
+                    cert.known_at,
+                    entries,
+                    definitions,
+                    context,
                 )?
             } else {
                 procedure::replay(request, cert.book, cert.known_at, entries, definitions)?

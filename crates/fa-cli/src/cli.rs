@@ -8623,7 +8623,10 @@ fn attach_intercompany_pairs(doc: &Json, proposal: &mut EntryPayload) -> Result<
         return Err(usage("intercompany_pairs must be an array", FIX));
     };
     if items.is_empty() || items.len() > fa_model::limits::MAX_LEGS_PER_ENTRY / 2 {
-        return Err(usage("intercompany_pairs has an invalid number of pairs", FIX));
+        return Err(usage(
+            "intercompany_pairs has an invalid number of pairs",
+            FIX,
+        ));
     }
     let mut pairs = Vec::with_capacity(items.len());
     for item in items {
@@ -8632,8 +8635,7 @@ fn attach_intercompany_pairs(doc: &Json, proposal: &mut EntryPayload) -> Result<
         };
         let mut seen = std::collections::BTreeSet::new();
         for (name, _) in fields {
-            if !matches!(name.as_str(), "pair_key" | "left_leg" | "right_leg")
-                || !seen.insert(name)
+            if !matches!(name.as_str(), "pair_key" | "left_leg" | "right_leg") || !seen.insert(name)
             {
                 return Err(usage(
                     format!("unknown or repeated intercompany pair field {name}"),
@@ -8649,7 +8651,10 @@ fn attach_intercompany_pairs(doc: &Json, proposal: &mut EntryPayload) -> Result<
             match item.get(name) {
                 Some(Json::Int(value)) => u16::try_from(*value)
                     .map_err(|_| usage(format!("intercompany {name} is out of range"), FIX)),
-                _ => Err(usage(format!("intercompany {name} must be an integer"), FIX)),
+                _ => Err(usage(
+                    format!("intercompany {name} must be an integer"),
+                    FIX,
+                )),
             }
         };
         pairs.push(fa_model::IntercompanyPair {

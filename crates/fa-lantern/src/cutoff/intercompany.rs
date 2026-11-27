@@ -10,20 +10,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use fa_journal::KernelError;
 use fa_journal::genesis::BookContext;
 use fa_model::{
-    EntryClass, EntryOrigin, EntryPayload, LEGAL_ENTITY_DIMENSION, LegPayload,
-    SupersessionKind,
+    EntryClass, EntryOrigin, EntryPayload, LEGAL_ENTITY_DIMENSION, LegPayload, SupersessionKind,
 };
 use fgdb_types::VId;
 
 use crate::jet::ordinal;
-use crate::{
-    Cite, Finding, LanternError, Meter, Severity, Snapshot, SnapshotEntry, Statistic,
-};
+use crate::{Cite, Finding, LanternError, Meter, Severity, Snapshot, SnapshotEntry, Statistic};
 
 const ID: &str = "recon.intercompany";
 
 fn corrupt(message: impl Into<String>) -> LanternError {
-    KernelError::Corrupt(format!("intercompany declaration history: {}", message.into())).into()
+    KernelError::Corrupt(format!(
+        "intercompany declaration history: {}",
+        message.into()
+    ))
+    .into()
 }
 
 fn pair_bytes(proposal: &EntryPayload) -> Option<&[u8]> {
@@ -42,7 +43,9 @@ fn entity(leg: &LegPayload, declared: &BTreeSet<VId>) -> Result<VId, LanternErro
         .map(|(_, value)| *value);
     match (values.next(), values.next()) {
         (Some(value), None) if declared.contains(&value) => Ok(value),
-        _ => Err(corrupt("a paired leg must name exactly one declared legal entity")),
+        _ => Err(corrupt(
+            "a paired leg must name exactly one declared legal entity",
+        )),
     }
 }
 
@@ -65,7 +68,9 @@ fn history(
         if entry.entry.proposal.class == EntryClass::REVERSAL {
             for supersession in &entry.entry.proposal.supersession {
                 if supersession.kind == SupersessionKind::Reverses
-                    && reversed_by.insert(supersession.target.vid, entry.vid).is_some()
+                    && reversed_by
+                        .insert(supersession.target.vid, entry.vid)
+                        .is_some()
                 {
                     return Err(corrupt("an entry is reversed more than once"));
                 }
@@ -115,7 +120,9 @@ fn history(
         for (debits, credits) in entity_totals.values() {
             work.compare(1)?;
             if debits != credits {
-                return Err(corrupt("a paired entry does not balance in each legal entity"));
+                return Err(corrupt(
+                    "a paired entry does not balance in each legal entity",
+                ));
             }
         }
         if let Some(pairs) = pairs {
@@ -155,9 +162,7 @@ fn history(
                         pair.pair_key
                     )));
                 }
-                if proposal.class != EntryClass::REVERSAL
-                    && !original_keys.insert(pair.pair_key)
-                {
+                if proposal.class != EntryClass::REVERSAL && !original_keys.insert(pair.pair_key) {
                     return Err(corrupt("an original pair_key is reused"));
                 }
                 ordinals.insert(pair.left_leg);
@@ -186,7 +191,9 @@ fn history(
             || pair_bytes(&target.entry.proposal) != pair_bytes(proposal)
             || target.entry.proposal.legs.len() != proposal.legs.len()
         {
-            return Err(corrupt("a pair reversal does not preserve its immutable target"));
+            return Err(corrupt(
+                "a pair reversal does not preserve its immutable target",
+            ));
         }
         for (original, reversal) in target.entry.proposal.legs.iter().zip(&proposal.legs) {
             work.compare(1)?;
@@ -196,7 +203,9 @@ fn history(
                 || original.dimension_set != reversal.dimension_set
                 || original.side.flipped() != reversal.side
             {
-                return Err(corrupt("a pair reversal is not the exact monetary side-swap"));
+                return Err(corrupt(
+                    "a pair reversal is not the exact monetary side-swap",
+                ));
             }
         }
     }

@@ -4,11 +4,11 @@ mod certificate;
 mod manifest;
 mod reconciliation;
 
-pub use manifest::VerifiedFeedManifest;
 pub use certificate::{
     CertifiedExternalFeed, EXTERNAL_FEED_CERTIFICATE_FORMAT, ExternalFeedCertificate,
     MAX_EXTERNAL_FEED_CERTIFICATE_BYTES,
 };
+pub use manifest::VerifiedFeedManifest;
 pub use reconciliation::{
     EXTERNAL_FEED_REPORT_FORMAT, ExternalFeedContribution, ExternalFeedLeg,
     ExternalFeedReconciliation, ExternalFeedRequest, ExternalFeedRow, ExternalFeedTotal,

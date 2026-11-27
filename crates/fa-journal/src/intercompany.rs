@@ -44,10 +44,7 @@ pub(crate) fn admit(
     base_unit: UnitId,
     entities: &[Option<String>],
 ) -> Result<(), Refusal> {
-    let Some(pairs) = proposal
-        .intercompany_pairs()
-        .map_err(invalid_declaration)?
-    else {
+    let Some(pairs) = proposal.intercompany_pairs().map_err(invalid_declaration)? else {
         return Ok(());
     };
     pairs
@@ -87,12 +84,16 @@ pub(crate) fn admit(
         let (Some(Some(left_entity)), Some(Some(right_entity))) =
             (entities.get(left), entities.get(right))
         else {
-            return Err(nonreciprocal_pair("both intercompany legs must belong to declared legal entities")
-                .at("pair_key", pair.pair_key.as_str()));
+            return Err(nonreciprocal_pair(
+                "both intercompany legs must belong to declared legal entities",
+            )
+            .at("pair_key", pair.pair_key.as_str()));
         };
         if left_entity == right_entity {
-            return Err(nonreciprocal_pair("intercompany counterpart legs must belong to different legal entities")
-                .at("pair_key", pair.pair_key.as_str()));
+            return Err(nonreciprocal_pair(
+                "intercompany counterpart legs must belong to different legal entities",
+            )
+            .at("pair_key", pair.pair_key.as_str()));
         }
     }
     Ok(())
@@ -182,7 +183,10 @@ pub(crate) fn projection_edges(
                 eid: pair_edge_id(proposal.book_id, &pair.pair_key, reversal),
                 src: leg_vid(entry_vid, pair.left_leg),
                 dst: leg_vid(entry_vid, pair.right_leg),
-                props: vec![(property::CODE, scalar_text("intercompany pair_key", &pair.pair_key)?)],
+                props: vec![(
+                    property::CODE,
+                    scalar_text("intercompany pair_key", &pair.pair_key)?,
+                )],
                 ordinal: pair.left_leg,
             })
         })

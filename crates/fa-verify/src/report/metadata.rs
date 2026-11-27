@@ -3,9 +3,9 @@
 
 mod asset_cost;
 mod cash_policy;
-pub(super) mod intercompany;
 #[cfg(test)]
 mod cutoff_tests;
+pub(super) mod intercompany;
 
 use super::{ReportError, Selection, failed, text};
 use crate::codec::Reader;

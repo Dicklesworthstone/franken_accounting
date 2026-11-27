@@ -75,8 +75,7 @@ use wire::{BankLine, claim_props, match_props};
 pub fn admits_statement_account(account: &AccountRow) -> bool {
     account.is_leaf
         && ((account.account_type == AccountType::ASSET.0 && account.normal_balance == 0)
-            || (account.account_type == AccountType::LIABILITY.0
-                && account.normal_balance == 1))
+            || (account.account_type == AccountType::LIABILITY.0 && account.normal_balance == 1))
 }
 
 /// Exact reference to one immutable native confirmation or correction.

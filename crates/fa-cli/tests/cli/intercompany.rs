@@ -13,8 +13,7 @@ fn intercompany_json_posts_retries_refuses_reuse_and_reverses() -> std::io::Resu
         out
     };
     run(&[
-        "book", "create", "--name", "Group",
-        "--entity", "A:Alpha", "--entity", "B:Beta",
+        "book", "create", "--name", "Group", "--entity", "A:Alpha", "--entity", "B:Beta",
     ]);
     run(&["chart", "import", "--template", "us-gaap-smb"]);
     run(&["period", "create", "--fiscal-year", "2026"]);
@@ -49,27 +48,44 @@ fn intercompany_json_posts_retries_refuses_reuse_and_reverses() -> std::io::Resu
     );
     let (code, out, err) = fa(
         Some(&book),
-        &["post", "--intent", &reused, "--evidence", &evidence, "--json"],
+        &[
+            "post",
+            "--intent",
+            &reused,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
     );
     assert_eq!(code, 6, "{out}\n{err}");
     assert!(out.contains("pair_key"), "{out}");
 
     for (name, terms) in [
-        ("foreign-book", r#""pair_key":"sale-A-B","left_leg":1,"right_leg":2,"book":"other""#),
+        (
+            "foreign-book",
+            r#""pair_key":"sale-A-B","left_leg":1,"right_leg":2,"book":"other""#,
+        ),
         ("incomplete", r#""pair_key":"sale-A-B","left_leg":1"#),
-        ("reused-leg", r#""pair_key":"sale-A-B","left_leg":1,"right_leg":1"#),
+        (
+            "reused-leg",
+            r#""pair_key":"sale-A-B","left_leg":1,"right_leg":1"#,
+        ),
     ] {
         let invalid = write(
             &dir,
             &format!("{name}.json"),
-            &original.replace(
-                r#""pair_key":"sale-A-B","left_leg":1,"right_leg":2"#,
-                terms,
-            ),
+            &original.replace(r#""pair_key":"sale-A-B","left_leg":1,"right_leg":2"#, terms),
         );
         let (code, out, err) = fa(
             Some(&book),
-            &["post", "--intent", &invalid, "--evidence", &evidence, "--json"],
+            &[
+                "post",
+                "--intent",
+                &invalid,
+                "--evidence",
+                &evidence,
+                "--json",
+            ],
         );
         assert_eq!(code, 2, "{name}: {out}\n{err}");
     }
@@ -82,7 +98,14 @@ fn intercompany_json_posts_retries_refuses_reuse_and_reverses() -> std::io::Resu
     assert_eq!(field(&verified, "edges_checked"), Some("51"));
     let (code, out, err) = fa(
         Some(&book),
-        &["post", "--intent", &reused, "--evidence", &evidence, "--json"],
+        &[
+            "post",
+            "--intent",
+            &reused,
+            "--evidence",
+            &evidence,
+            "--json",
+        ],
     );
     assert_eq!(code, 6, "{out}\n{err}");
     run(&["verify", "entities", "--period", "FY2026-P03"]);
